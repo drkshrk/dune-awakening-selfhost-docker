@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+cmd="${1:-help}"
+target="${2:-}"
+
+case "$cmd" in
+  start)
+    runtime/scripts/start-all.sh
+    ;;
+
+  stop)
+    runtime/scripts/stop-all.sh
+    ;;
+
+  status)
+    runtime/scripts/status.sh
+    ;;
+
+  ps)
+    docker ps --filter "name=dune-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    ;;
+
+  ports)
+    runtime/scripts/ports.sh
+    ;;
+
+  ready)
+    runtime/scripts/ready.sh
+    ;;
+
+  logs)
+    case "$target" in
+      postgres)        docker logs -f dune-postgres ;;
+      rmq-admin)       docker logs -f dune-rmq-admin ;;
+      rmq-game)        docker logs -f dune-rmq-game ;;
+      text-router|tr)  docker logs -f dune-text-router ;;
+      director|bgd)    docker logs -f dune-director ;;
+      gateway|sgw)     docker logs -f dune-server-gateway ;;
+      survival|survival-1) docker logs -f dune-server-survival-1 ;;
+      overmap)         docker logs -f dune-server-overmap ;;
+      "")
+        echo "Usage: runtime/scripts/dune logs <postgres|rmq-admin|rmq-game|text-router|director|gateway|survival|overmap>"
+        exit 1
+        ;;
+      *)
+        echo "Unknown log target: $target"
+        exit 1
+        ;;
+    esac
+    ;;
+
+  restart)
+    case "$target" in
+      survival|survival-1)
+        set -a; [ -f .env ] && . ./.env; set +a
+        runtime/scripts/start-server-survival-1.sh
+        ;;
+      overmap)
+        set -a; [ -f .env ] && . ./.env; set +a
+        runtime/scripts/start-server-overmap.sh
+        ;;
+      gateway|sgw)
+        set -a; [ -f .env ] && . ./.env; set +a
+        runtime/scripts/start-server-gateway.sh
+        ;;
+      director|bgd)
+        set -a; [ -f .env ] && . ./.env; set +a
+        runtime/scripts/start-director.sh
+        ;;
+      text-router|tr)
+        set -a; [ -f .env ] && . ./.env; set +a
+        runtime/scripts/start-text-router.sh
+        ;;
+      "")
+        echo "Usage: runtime/scripts/dune restart <survival|overmap|gateway|director|text-router>"
+        exit 1
+        ;;
+      *)
+        echo "Unknown restart target: $target"
+        exit 1
+        ;;
+    esac
+    ;;
+
+  update)
+    set -a
+    [ -f .env ] && . ./.env
+    set +a
+    runtime/scripts/update.sh
+    ;;
+
+  help|--help|-h)
+    cat <<'EOF'
+Usage:
+  runtime/scripts/dune start
+  runtime/scripts/dune stop
+  runtime/scripts/dune status
+  runtime/scripts/dune ps
+  runtime/scripts/dune ports
+  runtime/scripts/dune ready
+  runtime/scripts/dune logs <service>
+  runtime/scripts/dune restart <service>
+  runtime/scripts/dune update
+
+Services for logs/restart:
+  postgres
+  rmq-admin
+  rmq-game
+  text-router | tr
+  director    | bgd
+  gateway     | sgw
+  survival    | survival-1
+  overmap
+EOF
+    ;;
+
+  *)
+    echo "Unknown command: $cmd"
+    echo "Run: runtime/scripts/dune help"
+    exit 1
+    ;;
+esac

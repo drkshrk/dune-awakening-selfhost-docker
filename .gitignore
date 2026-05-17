@@ -1,0 +1,23 @@
+# Local config / secrets
+.env
+runtime/secrets/
+runtime/generated/
+
+# Runtime state / generated service configs
+runtime/game/
+runtime/rabbitmq-admin/
+runtime/rabbitmq-game/
+runtime/postgres/
+runtime/director/
+runtime/server-gateway/
+runtime/fake-k8s-serviceaccount/
+
+# Work/output
+work/
+*.log
+*.tmp
+.DS_Store
+
+# Python/cache
+__pycache__/
+*.pyc

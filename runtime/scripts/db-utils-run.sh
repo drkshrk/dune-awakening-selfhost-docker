@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DB_UTILS_IMAGE="registry.funcom.com/funcom/self-hosting/seabass-server-db-utils:1960494-0-shipping"
+
+docker run --rm \
+  --network dune-net \
+  --entrypoint sh \
+  "$DB_UTILS_IMAGE" \
+  -lc "
+set -e
+
+mkdir -p /tmp/pg17/bin
+ln -sf /usr/bin/psql /tmp/pg17/bin/psql
+ln -sf /usr/bin/pg_dump /tmp/pg17/bin/pg_dump
+ln -sf /usr/bin/pg_restore /tmp/pg17/bin/pg_restore
+ln -sf /usr/bin/pg_isready /tmp/pg17/bin/pg_isready
+
+exec \"\$@\"
+" sh "$@"

@@ -1,0 +1,13 @@
+.env
+runtime/secrets/
+runtime/generated/
+runtime/game/
+runtime/rabbitmq-admin/
+runtime/rabbitmq-game/
+runtime/postgres/
+runtime/director/
+runtime/server-gateway/
+runtime/fake-k8s-serviceaccount/
+work/
+*.log
+.git/

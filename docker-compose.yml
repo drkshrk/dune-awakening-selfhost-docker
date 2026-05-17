@@ -1,0 +1,33 @@
+services:
+  orchestrator:
+    build:
+      context: ./orchestrator
+    image: dune-orchestrator:dev
+    container_name: dune-orchestrator
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      SERVER_IP: "${SERVER_IP}"
+      SERVER_TITLE: "${SERVER_TITLE}"
+      SERVER_REGION: "${SERVER_REGION}"
+      STEAM_APP_ID: "${STEAM_APP_ID:-3104830}"
+      DUNE_ROOT: "/srv/dune"
+      DUNE_SERVER_DIR: "/srv/dune/server"
+      DUNE_STEAM_DIR: "/srv/dune/steam"
+      DUNE_GENERATED_DIR: "/srv/dune/generated"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - dune-server:/srv/dune/server
+      - dune-steam:/srv/dune/steam
+      - dune-cache:/srv/dune/cache
+      - dune-generated:/srv/dune/generated
+      - ./work:/work
+    stdin_open: true
+    tty: true
+    command: ["daemon"]
+
+volumes:
+  dune-server:
+  dune-steam:
+  dune-cache:
+  dune-generated:
