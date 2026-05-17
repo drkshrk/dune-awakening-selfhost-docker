@@ -30,13 +30,16 @@ Dedicated/on-demand maps are not fully automated yet. The current MVP starts the
 - UFW or equivalent firewall
 - Valid Funcom self-host token
 - SteamCMD access through the orchestrator container
+- An existing/generated Funcom self-host battlegroup ID
+
+> First-time battlegroup creation/discovery is not automated yet. A future `dune init` command should handle that. For now, this MVP expects you to import an existing/generated battlegroup ID.
 
 ## Ports
 
 Public ports:
 
 - TCP 31982: RabbitMQ game TLS
-- UDP 7777-7810 : Game Servers
+- UDP 7777-7810: Game servers
 - UDP 7888: Survival_1 server-to-server
 - UDP 7889: Overmap server-to-server
 
@@ -70,7 +73,6 @@ SERVER_IP=auto
 SERVER_TITLE="My Dune Server"
 SERVER_REGION="Europe Test"
 STEAM_APP_ID=3104830
-BATTLEGROUP_ID=sh-your-funcom-battlegroup-id
 ```
 
 Create the local secret file:
@@ -81,7 +83,20 @@ nano runtime/secrets/funcom-token.txt
 chmod 600 runtime/secrets/funcom-token.txt
 ```
 
-Do not commit `.env` or anything in `runtime/secrets/`.
+Import your existing/generated battlegroup ID:
+
+```bash
+mkdir -p runtime/generated
+nano runtime/generated/battlegroup.env
+```
+
+Example `runtime/generated/battlegroup.env`:
+
+```env
+BATTLEGROUP_ID=sh-your-generated-funcom-battlegroup-id
+```
+
+Do not commit `.env`, `runtime/secrets/`, or `runtime/generated/`.
 
 Install the command wrapper:
 
@@ -160,10 +175,13 @@ Automatic restarts after update are planned.
 
 The Docker image should contain the orchestrator code, not baked-in old game files. Game server files and Funcom image tarballs are downloaded and updated at runtime into persistent volumes.
 
-The Funcom token and `BATTLEGROUP_ID` appear to be linked. Use the battlegroup ID authorized for your token.
+The Funcom token and `BATTLEGROUP_ID` might be linked. Use the battlegroup ID generated/authorized for your token.
+
+The current MVP is best understood as an import-and-run workflow for an existing/generated Funcom self-host battlegroup. First-time battlegroup generation/discovery should be added later as `dune init`.
 
 ## Current limitations
 
+- First-time battlegroup creation/discovery is not automated yet.
 - Dedicated/on-demand maps are not automated yet.
 - The fake Kubernetes service account/IGWO behavior is a compatibility workaround.
 - Overmap and Survival_1 are always-on.
