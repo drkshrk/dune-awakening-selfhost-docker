@@ -1,4 +1,3 @@
-````markdown
 # Dune Docker Lab
 
 Experimental Docker-native launcher for Dune: Awakening self-host server components.
@@ -56,7 +55,7 @@ Clone the repo:
 ```bash
 git clone <your-repo-url> dune-docker-lab
 cd dune-docker-lab
-````
+```
 
 Create `.env` from the example:
 
@@ -166,17 +165,8 @@ The Funcom token and `BATTLEGROUP_ID` appear to be linked. Use the battlegroup I
 
 ## Current limitations
 
-* Dedicated/on-demand maps are not automated yet.
-* The fake Kubernetes service account/IGWO behavior is a compatibility workaround.
-* Overmap and Survival_1 are always-on.
-* Update flow is scaffolded but still needs real-world testing after an actual upstream update.
-* This is experimental and should not be treated as production-ready.
-
-````
-
-After saving, verify:
-
-```bash
-head -5 README.md
-tail -10 README.md
-````
+- Dedicated/on-demand maps are not automated yet.
+- The fake Kubernetes service account/IGWO behavior is a compatibility workaround.
+- Overmap and Survival_1 are always-on.
+- Update flow is scaffolded but still needs real-world testing after an actual upstream update.
+- This is experimental and should not be treated as production-ready.
