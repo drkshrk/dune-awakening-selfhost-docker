@@ -118,6 +118,22 @@ check_game_server_ready() {
     "This is normal after init/start/restart; game maps can take several minutes to finish loading."
 }
 
+game_server_rmq_connections_ready() {
+  local attempt
+
+  for attempt in 1 2 3; do
+    if docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null | grep -q '^sg\..*running'; then
+      return 0
+    fi
+
+    if [ "$attempt" -lt 3 ]; then
+      sleep 2
+    fi
+  done
+
+  return 1
+}
+
 echo "=== Container checks ==="
 for c in \
   dune-postgres \
@@ -205,7 +221,7 @@ fi
 
 echo
 echo "=== RabbitMQ game users ==="
-if docker exec dune-rmq-game rabbitmqctl list_connections user state 2>/dev/null | grep -q '^sg\..*running'; then
+if game_server_rmq_connections_ready; then
   mark_ok "game server sg.* RMQ connections"
 elif is_running dune-server-survival-1 || is_running dune-server-overmap; then
   mark_wait "game server sg.* RMQ connections"

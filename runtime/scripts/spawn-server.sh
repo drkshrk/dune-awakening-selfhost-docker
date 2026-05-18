@@ -119,6 +119,24 @@ CONTAINER_NAME="dune-server-${safe_name}"
 
 memory_for_map() {
   local map="$1"
+  local map_key
+  local env_key
+  local configured
+
+  map_key="$(printf '%s' "$map" | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9]/_/g; s/__*/_/g; s/^_//; s/_$//')"
+  env_key="DUNE_MEMORY_${map_key}"
+  configured="${!env_key:-}"
+
+  if [ -n "$configured" ]; then
+    echo "$configured"
+    return 0
+  fi
+
+  if [ -n "${DUNE_MEMORY_DEFAULT:-}" ]; then
+    echo "$DUNE_MEMORY_DEFAULT"
+    return 0
+  fi
+
   python3 - "$map" <<'PY'
 import json
 import sys

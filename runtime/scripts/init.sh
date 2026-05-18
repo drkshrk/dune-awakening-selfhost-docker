@@ -206,6 +206,9 @@ echo
 echo "This will create local config, save your Funcom token locally, generate a battlegroup ID,"
 echo "download/load server assets, run DB setup/update, and start the Docker stack."
 echo
+echo "Important: dune init creates a fresh local world and resets the local Postgres database."
+echo "Existing local config/state is backed up first, but players should treat this as a reset."
+echo
 
 check_running_stack
 confirm_overwrite
@@ -291,6 +294,31 @@ echo
 echo "Generating battlegroup ID using Funcom's world name format..."
 BATTLEGROUP_ID="$(derive_battlegroup_id "$FUNCOM_TOKEN")"
 
+echo
+echo "=== Setup summary ==="
+echo "Server title: $SERVER_TITLE"
+echo "Region:       $SERVER_REGION"
+echo "Hosting mode: $SERVER_IP_MODE"
+echo "Server IP:    $SERVER_IP"
+echo "Steam app id: $STEAM_APP_ID"
+echo "Battlegroup:  $BATTLEGROUP_ID"
+if [ "$SERVER_IP_MODE" = "public" ]; then
+  cat <<'EOF'
+
+Public hosting reminder:
+  Open or forward TCP 31982.
+  Open or forward UDP 7777-7810.
+EOF
+fi
+echo
+echo "This will now stop existing local Dune services, reset the local database volume,"
+echo "download/load assets if needed, apply world partitions, and start a fresh stack."
+read -r -p "Create this fresh local world now? [y/N]: " final_answer
+case "$final_answer" in
+  y|Y|yes|YES) ;;
+  *) echo "Init cancelled."; exit 1 ;;
+esac
+
 fresh_reset_runtime
 
 cat > .env <<EOF
@@ -337,14 +365,16 @@ runtime/scripts/start-all.sh
 echo
 echo "Init complete."
 echo "Survival_1 can take several minutes to become READY."
+echo "After local READY, the in-game server browser may still take a few minutes"
+echo "to show population and sietch availability."
 echo
 runtime/scripts/ready.sh || true
 
 cat <<EOF
 
 Next commands:
-  dune status
   dune ready
+  dune status
   dune logs survival
   dune logs overmap
 EOF

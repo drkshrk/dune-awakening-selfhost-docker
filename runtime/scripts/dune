@@ -46,7 +46,12 @@ case "$cmd" in
     ;;
 
   autoscaler)
-    runtime/scripts/autoscaler.sh
+    shift || true
+    if [ "$#" -eq 0 ]; then
+      runtime/scripts/autoscaler.sh
+    else
+      runtime/scripts/autoscaler-control.sh "$@"
+    fi
     ;;
 
   ports)
@@ -58,24 +63,8 @@ case "$cmd" in
     ;;
 
   logs)
-    case "$target" in
-      postgres)        docker logs -f dune-postgres ;;
-      rmq-admin)       docker logs -f dune-rmq-admin ;;
-      rmq-game)        docker logs -f dune-rmq-game ;;
-      text-router|tr)  docker logs -f dune-text-router ;;
-      director|bgd)    docker logs -f dune-director ;;
-      gateway|sgw)     docker logs -f dune-server-gateway ;;
-      survival|survival-1) docker logs -f dune-server-survival-1 ;;
-      overmap)         docker logs -f dune-server-overmap ;;
-      "")
-        echo "Usage: runtime/scripts/dune logs <postgres|rmq-admin|rmq-game|text-router|director|gateway|survival|overmap>"
-        exit 1
-        ;;
-      *)
-        echo "Unknown log target: $target"
-        exit 1
-        ;;
-    esac
+    shift || true
+    runtime/scripts/logs.sh "$@"
     ;;
 
   restart)
@@ -119,6 +108,29 @@ case "$cmd" in
     runtime/scripts/update.sh "$@"
     ;;
 
+  version)
+    runtime/scripts/version.sh
+    ;;
+
+  doctor)
+    runtime/scripts/doctor.sh
+    ;;
+
+  db)
+    shift || true
+    runtime/scripts/db.sh "$@"
+    ;;
+
+  config|server)
+    shift || true
+    runtime/scripts/config.sh "$@"
+    ;;
+
+  memory)
+    shift || true
+    runtime/scripts/memory.sh "$@"
+    ;;
+
   help|--help|-h)
     cat <<'EOF'
 Usage:
@@ -127,16 +139,21 @@ Usage:
   runtime/scripts/dune start
   runtime/scripts/dune stop
   runtime/scripts/dune status
+  runtime/scripts/dune version
+  runtime/scripts/dune doctor
   runtime/scripts/dune ps
   runtime/scripts/dune servers
   runtime/scripts/dune spawn <map-name|partition-id>
   runtime/scripts/dune despawn <map-name|partition-id|container-name>
-  runtime/scripts/dune autoscaler
+  runtime/scripts/dune autoscaler [status|start|stop|restart|logs|run]
   runtime/scripts/dune ports
   runtime/scripts/dune ready
-  runtime/scripts/dune logs <service>
+  runtime/scripts/dune logs <service> [--raw]
   runtime/scripts/dune restart <service>
   runtime/scripts/dune update [check|auto enable|auto disable|auto status|--yes]
+  runtime/scripts/dune db [backup|list|status|import <backup-file>]
+  runtime/scripts/dune config title ["New Server Name"]
+  runtime/scripts/dune memory [status|set <map> <memory>|unset <map>]
 
 Services for logs/restart:
   postgres

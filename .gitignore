@@ -2,6 +2,8 @@
 .env
 runtime/secrets/
 runtime/generated/
+runtime/backups/
+*.bak-before-*
 
 # Runtime state / generated service configs
 runtime/game/

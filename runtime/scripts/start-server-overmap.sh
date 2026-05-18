@@ -22,6 +22,7 @@ SERVER_TITLE="${SERVER_TITLE:-My Dune Server}"
 SERVER_REGION="${SERVER_REGION:-Europe Test}"
 SERVER_IP="${SERVER_IP:-auto}"
 BATTLEGROUP_ID="${BATTLEGROUP_ID:-dune-docker}"
+MEMORY="${DUNE_MEMORY_OVERMAP:-2g}"
 
 if [ "$SERVER_IP" = "auto" ]; then
   SERVER_IP="$(curl -4fsSL https://api.ipify.org || echo 127.0.0.1)"
@@ -54,8 +55,8 @@ docker run -d \
   --privileged \
   --cap-add SYS_ADMIN \
   --security-opt seccomp=unconfined \
-  --memory 2g \
-  --memory-reservation 2g \
+  --memory "$MEMORY" \
+  --memory-reservation "$MEMORY" \
   -v "$PWD/runtime/game/overmap/Saved:/home/dune/server/DuneSandbox/Saved" \
   -v "$PWD/runtime/game/artifacts:/home/dune/artifacts" \
   -v "$PWD/runtime/fake-k8s-serviceaccount:/var/run/secrets/kubernetes.io/serviceaccount:ro" \
