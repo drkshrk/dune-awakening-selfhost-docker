@@ -16,6 +16,77 @@ prompt_default() {
   printf '%s' "$value"
 }
 
+detect_public_ip() {
+  local ip=""
+
+  if command -v curl >/dev/null 2>&1; then
+    for url in \
+      "https://api.ipify.org" \
+      "https://ipv4.icanhazip.com" \
+      "https://ifconfig.me/ip"
+    do
+      ip="$(curl -fsS4 --max-time 8 "$url" 2>/dev/null | tr -d '[:space:]' || true)"
+      if printf '%s' "$ip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+        printf '%s' "$ip"
+        return 0
+      fi
+    done
+  fi
+
+  if command -v wget >/dev/null 2>&1; then
+    for url in \
+      "https://api.ipify.org" \
+      "https://ipv4.icanhazip.com"
+    do
+      ip="$(wget -qO- -T 8 "$url" 2>/dev/null | tr -d '[:space:]' || true)"
+      if printf '%s' "$ip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+        printf '%s' "$ip"
+        return 0
+      fi
+    done
+  fi
+
+  return 1
+}
+
+is_private_ipv4() {
+  local ip="$1"
+  printf '%s' "$ip" | grep -Eq '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'
+}
+
+detect_lan_ip() {
+  local ip=""
+
+  if command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '
+      {
+        for (i = 1; i <= NF; i++) {
+          if ($i == "src") {
+            print $(i + 1)
+            exit
+          }
+        }
+      }
+    ' | tr -d '[:space:]' || true)"
+
+    if is_private_ipv4 "$ip"; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  fi
+
+  if command -v hostname >/dev/null 2>&1; then
+    ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' | head -n1 || true)"
+
+    if is_private_ipv4 "$ip"; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 check_running_stack() {
   local running
   running="$(docker ps --filter "name=dune-" --format "{{.Names}}" | grep -v '^dune-orchestrator$' || true)"
@@ -47,6 +118,53 @@ confirm_overwrite() {
     esac
   fi
 }
+
+fresh_reset_runtime() {
+  echo
+  echo "Preparing fresh runtime state..."
+
+  mkdir -p runtime/backups runtime/generated
+
+  local backup_dir
+  backup_dir="runtime/backups/init-reset-$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$backup_dir"
+
+  echo "Backing up existing local config/state to:"
+  echo "  $backup_dir"
+
+  [ -f .env ] && cp -a .env "$backup_dir/.env"
+  [ -f runtime/generated/battlegroup.env ] && cp -a runtime/generated/battlegroup.env "$backup_dir/battlegroup.env"
+  [ -f runtime/secrets/funcom-token.txt ] && cp -a runtime/secrets/funcom-token.txt "$backup_dir/funcom-token.txt"
+
+  echo "$backup_dir" > runtime/generated/last-init-backup.txt
+
+  echo
+  echo "Stopping existing Dune stack..."
+  runtime/scripts/stop-all.sh || true
+
+  echo
+  echo "Resetting Postgres volume for fresh init..."
+
+  if docker volume inspect dune-postgres-data >/dev/null 2>&1; then
+    local volume_mount
+    volume_mount="$(docker volume inspect -f '{{ .Mountpoint }}' dune-postgres-data 2>/dev/null || true)"
+
+    if [ -n "$volume_mount" ] && [ -d "$volume_mount" ]; then
+      echo "Backing up existing Postgres volume..."
+      tar -czf "$backup_dir/dune-postgres-data.tgz" -C "$volume_mount" .
+      echo "Postgres volume backup:"
+      echo "  $backup_dir/dune-postgres-data.tgz"
+    else
+      echo "Could not find Postgres volume mountpoint; skipping volume tar backup."
+    fi
+
+    docker volume rm dune-postgres-data >/dev/null
+    echo "Removed old Postgres volume: dune-postgres-data"
+  else
+    echo "No existing Postgres volume found."
+  fi
+}
+
 
 derive_battlegroup_id() {
   TOKEN="$1" python3 - <<'PY'
@@ -110,8 +228,53 @@ while [ -z "$SERVER_REGION" ]; do
 done
 
 echo
-SERVER_IP="$(prompt_default "Server/player-facing IP, or auto" "auto")"
-STEAM_APP_ID="$(prompt_default "Steam app id" "3104830")"
+echo "Detecting player-facing IP addresses..."
+PUBLIC_IP="$(detect_public_ip || true)"
+LAN_IP="$(detect_lan_ip || true)"
+
+echo
+echo "How will players connect to this server?"
+echo "  1) Public / internet server"
+echo "     Use this for VPS, dedicated servers, or home servers with port forwarding."
+echo "     Detected public IP: ${PUBLIC_IP:-not detected}"
+echo
+echo "  2) Local / LAN server"
+echo "     Use this for players on the same local network only."
+echo "     Detected local IP:  ${LAN_IP:-not detected}"
+echo
+
+SERVER_IP=""
+while [ -z "$SERVER_IP" ]; do
+  read -r -p "Choice [1/2]: " ip_choice
+
+  case "$ip_choice" in
+    1)
+      if [ -z "$PUBLIC_IP" ]; then
+        echo "Public IP was not detected. Check internet access and try again."
+        exit 1
+      fi
+      SERVER_IP="$PUBLIC_IP"
+      SERVER_IP_MODE="public"
+      ;;
+    2)
+      if [ -z "$LAN_IP" ]; then
+        echo "Local/LAN IP was not detected. Check the host network and try again."
+        exit 1
+      fi
+      SERVER_IP="$LAN_IP"
+      SERVER_IP_MODE="local"
+      ;;
+    *)
+      echo "Invalid choice. Pick 1 for public or 2 for local/LAN."
+      ;;
+  esac
+done
+
+echo "Selected player-facing IP: $SERVER_IP ($SERVER_IP_MODE)"
+
+# Funcom self-host server Steam app id. This is selected automatically, not prompted.
+STEAM_APP_ID="${STEAM_APP_ID:-3104830}"
+echo "Steam app id: $STEAM_APP_ID"
 
 echo
 echo "Paste your Funcom self-host service token."
@@ -128,8 +291,11 @@ echo
 echo "Generating battlegroup ID using Funcom's world name format..."
 BATTLEGROUP_ID="$(derive_battlegroup_id "$FUNCOM_TOKEN")"
 
+fresh_reset_runtime
+
 cat > .env <<EOF
 SERVER_IP=$SERVER_IP
+SERVER_IP_MODE=$SERVER_IP_MODE
 SERVER_TITLE="$SERVER_TITLE"
 SERVER_REGION="$SERVER_REGION"
 STEAM_APP_ID=$STEAM_APP_ID
@@ -145,7 +311,7 @@ chmod 600 .env
 chmod 600 runtime/generated/battlegroup.env
 chmod 600 runtime/secrets/funcom-token.txt
 
-export SERVER_IP SERVER_TITLE SERVER_REGION STEAM_APP_ID BATTLEGROUP_ID
+export SERVER_IP SERVER_IP_MODE SERVER_TITLE SERVER_REGION STEAM_APP_ID BATTLEGROUP_ID
 
 echo
 echo "Wrote local config:"
@@ -161,8 +327,8 @@ echo "Starting orchestrator container..."
 docker compose up -d --build orchestrator
 
 echo
-echo "Downloading/loading assets and running database update..."
-runtime/scripts/update.sh
+echo "Downloading/loading assets and running database setup/update..."
+runtime/scripts/update.sh install
 
 echo
 echo "Starting Dune stack..."

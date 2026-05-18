@@ -112,10 +112,11 @@ case "$cmd" in
     ;;
 
   update)
+    shift || true
     set -a
     [ -f .env ] && . ./.env
     set +a
-    runtime/scripts/update.sh
+    runtime/scripts/update.sh "$@"
     ;;
 
   help|--help|-h)
@@ -135,7 +136,7 @@ Usage:
   runtime/scripts/dune ready
   runtime/scripts/dune logs <service>
   runtime/scripts/dune restart <service>
-  runtime/scripts/dune update
+  runtime/scripts/dune update [check|auto enable|auto disable|auto status|--yes]
 
 Services for logs/restart:
   postgres
