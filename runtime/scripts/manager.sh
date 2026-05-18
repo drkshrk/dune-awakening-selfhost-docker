@@ -147,43 +147,11 @@ show_world_partition_count() {
 }
 
 autoscaler_status() {
-  local pid_file="runtime/generated/autoscaler.pid"
-  local log_file="runtime/logs/autoscaler.log"
-  local pid=""
-
-  echo
-  echo "=== Autoscaler status ==="
-
-  if [ -f "$pid_file" ]; then
-    pid="$(cat "$pid_file" 2>/dev/null || true)"
-  fi
-
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    echo "Autoscaler: running"
-    echo "PID:        $pid"
-  else
-    echo "Autoscaler: not running or no live PID file"
-    [ -n "$pid" ] && echo "Last PID:    $pid"
-  fi
-
-  if [ -f "$log_file" ]; then
-    echo "Log:        $log_file"
-  else
-    echo "Log:        not created yet"
-  fi
+  "$DUNE" autoscaler status
 }
 
 show_autoscaler_logs() {
-  local log_file="runtime/logs/autoscaler.log"
-
-  echo
-  echo "=== Autoscaler logs ==="
-
-  if [ -f "$log_file" ]; then
-    tail -n 160 "$log_file"
-  else
-    echo "Autoscaler log is not available yet: $log_file"
-  fi
+  "$DUNE" autoscaler logs
 }
 
 follow_dune_logs() {
@@ -283,9 +251,9 @@ start_stop_menu() {
     cat <<'EOF'
 Start / Stop server
 ===================
-  1) Start stack
-  2) Stop stack
-  3) Restart whole stack
+  1) Start battlegroup
+  2) Stop battlegroup
+  3) Restart battlegroup
   4) Back
 EOF
     echo
@@ -300,7 +268,7 @@ EOF
         ;;
       3)
         echo
-        echo "Restart whole stack will run 'dune stop' and then 'dune start'. Players will be disconnected."
+        echo "Restart battlegroup will run 'dune stop' and then 'dune start'. Players will be disconnected."
         if confirm "Continue"; then
           run_cmd "$DUNE" stop
           run_cmd "$DUNE" start

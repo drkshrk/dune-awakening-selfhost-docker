@@ -3,8 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-PID_FILE="runtime/generated/autoscaler.pid"
 LOG_FILE="runtime/logs/autoscaler.log"
+CONTAINER_NAME="dune-autoscaler"
 
 usage() {
   cat <<'EOF'
@@ -20,29 +20,19 @@ Legacy:
 EOF
 }
 
-autoscaler_pid() {
-  [ -f "$PID_FILE" ] || return 1
-  cat "$PID_FILE" 2>/dev/null || true
-}
-
-is_live_pid() {
-  local pid="$1"
-  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
-}
-
 status() {
-  local pid
-  pid="$(autoscaler_pid || true)"
-
   echo "=== Autoscaler status ==="
-  if is_live_pid "$pid"; then
+  if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
     echo "State: running"
-    echo "PID:   $pid"
+    docker ps --filter "name=^${CONTAINER_NAME}$" --format "Container: {{.Names}}\nStatus:    {{.Status}}"
+  elif docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    echo "State: stopped"
+    docker ps -a --filter "name=^${CONTAINER_NAME}$" --format "Container: {{.Names}}\nStatus:    {{.Status}}"
   else
     echo "State: stopped"
-    [ -n "$pid" ] && echo "Last PID: $pid"
+    echo "Container: not created"
   fi
-  echo "Log:   $LOG_FILE"
+  echo "Logs:  dune autoscaler logs"
 }
 
 start() {
@@ -50,37 +40,23 @@ start() {
 }
 
 stop() {
-  local pid
-  pid="$(autoscaler_pid || true)"
-
-  if ! is_live_pid "$pid"; then
+  if ! docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
     echo "Autoscaler is not running."
-    rm -f "$PID_FILE"
     return 0
   fi
 
-  echo "Stopping autoscaler pid $pid..."
-  kill "$pid"
-
-  for _ in 1 2 3 4 5; do
-    if ! kill -0 "$pid" 2>/dev/null; then
-      rm -f "$PID_FILE"
-      echo "Autoscaler stopped."
-      return 0
-    fi
-    sleep 1
-  done
-
-  echo "Autoscaler did not stop after SIGTERM."
-  echo "You can inspect it with: ps -p $pid"
-  return 1
+  echo "Stopping autoscaler..."
+  docker rm -f "$CONTAINER_NAME" >/dev/null
+  echo "Autoscaler stopped."
 }
 
 logs() {
-  if [ -f "$LOG_FILE" ]; then
+  if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+    docker logs --tail 160 "$CONTAINER_NAME"
+  elif [ -f "$LOG_FILE" ]; then
     tail -n 160 "$LOG_FILE"
   else
-    echo "Autoscaler log is not available yet: $LOG_FILE"
+    echo "Autoscaler logs are not available yet."
   fi
 }
 

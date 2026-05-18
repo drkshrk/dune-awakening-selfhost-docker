@@ -3,17 +3,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-PID_FILE="runtime/generated/autoscaler.pid"
-LOG_FILE="runtime/logs/autoscaler.log"
+CONTAINER_NAME="dune-autoscaler"
+IMAGE="dune-orchestrator:dev"
 
 mkdir -p runtime/generated runtime/logs
 
-if [ -f "$PID_FILE" ]; then
-  old_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
-  if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-    echo "Autoscaler already running: pid $old_pid"
-    exit 0
-  fi
+if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+  echo "Autoscaler already running: $CONTAINER_NAME"
+  exit 0
+fi
+
+if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
 
 if ! docker ps --format '{{.Names}}' | grep -qx dune-director; then
@@ -26,11 +27,24 @@ if ! docker ps --format '{{.Names}}' | grep -qx dune-postgres; then
   exit 1
 fi
 
-echo "Starting autoscaler..."
-nohup runtime/scripts/autoscaler.sh >> "$LOG_FILE" 2>&1 &
-pid="$!"
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "Cannot start autoscaler: Docker image not found: $IMAGE"
+  echo "Start or build the orchestrator first:"
+  echo "  docker compose up -d --build orchestrator"
+  exit 1
+fi
 
-echo "$pid" > "$PID_FILE"
+echo "Starting autoscaler container..."
+docker run -d \
+  --name "$CONTAINER_NAME" \
+  --restart unless-stopped \
+  --entrypoint bash \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD:$PWD" \
+  -w "$PWD" \
+  "$IMAGE" \
+  runtime/scripts/autoscaler.sh >/dev/null
 
-echo "Autoscaler started: pid $pid"
-echo "Log: $LOG_FILE"
+echo "Autoscaler started: $CONTAINER_NAME"
+echo "Logs:"
+echo "  dune autoscaler logs"

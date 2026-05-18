@@ -3,6 +3,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+echo "=== Stopping autoscaler ==="
+runtime/scripts/autoscaler-control.sh stop || true
+
+echo
 echo "=== Stopping game servers first ==="
 docker rm -f dune-server-overmap dune-server-survival-1 2>/dev/null || true
 

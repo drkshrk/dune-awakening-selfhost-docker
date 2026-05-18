@@ -117,12 +117,8 @@ signal_state() {
 }
 
 autoscaler_state() {
-  local pid_file="runtime/generated/autoscaler.pid"
-  local pid=""
-
-  [ -f "$pid_file" ] && pid="$(cat "$pid_file" 2>/dev/null || true)"
-  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-    echo "RUNNING (pid $pid)"
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-autoscaler; then
+    echo "RUNNING"
   else
     echo "STOPPED"
   fi

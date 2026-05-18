@@ -24,7 +24,15 @@ This is an unofficial community project. It is not affiliated with, endorsed by,
 | Docker Compose | Required |
 | Funcom self-host token | Required |
 | Disk space | 100 GB+ recommended |
-| RAM | 20 GB+ recommended |
+| RAM | See sizing guide below |
+
+### RAM sizing guide
+
+| Server layout | Recommended RAM |
+|---|---:|
+| Basic Hagga Basin / Sietch layout | At least 20 GB |
+| Hagga Basin plus Story/Social maps | 30 GB |
+| Hagga Basin plus Story/Social maps plus Deep Desert | 40 GB |
 
 ## Install
 
@@ -61,8 +69,8 @@ dune init
 |---|---|
 | `dune manager` | Interactive control panel |
 | `dune init` | Fresh setup / reset setup |
-| `dune start` | Start the stack |
-| `dune stop` | Stop the stack |
+| `dune start` | Start the battlegroup and autoscaler |
+| `dune stop` | Stop the battlegroup and autoscaler |
 | `dune ready` | Quick OK / WAIT / FAIL readiness check |
 | `dune status` | Safe dashboard summary |
 | `dune doctor` | Troubleshooting checks with suggested fixes |
@@ -122,6 +130,8 @@ dune autoscaler restart
 dune autoscaler logs
 dune servers
 ```
+
+The autoscaler starts with `dune start` so maps can be deployed automatically when players travel to dynamic regions.
 
 Dynamic maps use UDP `7779-7810` for game traffic and `7890-7921` for server-to-server traffic.
 

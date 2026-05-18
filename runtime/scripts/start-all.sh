@@ -40,6 +40,13 @@ echo "=== Starting Overmap ==="
 runtime/scripts/start-server-overmap.sh
 
 echo
+echo "=== Starting Autoscaler ==="
+runtime/scripts/start-autoscaler.sh || {
+  echo "Autoscaler did not start. Dynamic maps will not spawn automatically."
+  echo "Check with: dune autoscaler status"
+}
+
+echo
 echo "=== Final quick status ==="
 docker ps --filter "name=dune-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
@@ -56,5 +63,6 @@ cat <<'EOF'
 Started. Notes:
 - Survival_1 can take several minutes to become fully READY.
 - Overmap can also take a few minutes.
+- Autoscaler starts with the battlegroup so dynamic maps can spawn on demand.
 - Use runtime/scripts/status.sh after startup to check readiness.
 EOF
