@@ -1,52 +1,82 @@
 # Dune Awakening Self-Host Docker
 
-Experimental Docker-native launcher for Dune: Awakening self-host server components.
+Docker-based launcher for Dune: Awakening self-host servers.
 
-This project replaces the normal local/k3s-style setup with Docker containers and a simple `dune` command wrapper.
+This project replaces the normal local/k3s-style setup with Docker containers and a simple `dune` command.
 
-## Current working stack
+It supports:
 
-Core services:
+| Mode | Use case |
+|---|---|
+| Public / Internet | VPS, dedicated server, or home server with port forwarding |
+| Local / LAN | Private server for players on the same local network |
 
-- Postgres
-- RabbitMQ admin
-- RabbitMQ game TLS
-- TextRouter
-- Director
-- ServerGateway
+> This project is experimental and community-built. It is not an official Funcom deployment.
 
-Always-on game servers:
+---
 
-- Overmap
-- Survival_1
+## Features
 
-Dedicated/on-demand maps are not fully automated yet. The current MVP starts the minimal always-on farm and leaves future work for dynamic map spawning.
+- Simple `dune` command wrapper
+- First-time setup with `dune init`
+- Public or local/LAN hosting mode
+- Automatic public/LAN IP detection
+- Automatic Steam app ID selection
+- Automatic server file download through SteamCMD
+- Automatic Funcom Docker image loading
+- Fresh database setup
+- Automatic world partition setup
+- Always-on Overmap and Survival_1
+- Autoscaling support for the other maps
+- Readiness checks with clear `OK`, `WAIT`, and `FAIL` states
+- Manual and automatic update support
+
+---
 
 ## Requirements
 
-- Linux server/VPS
-- Docker Engine
-- Docker Compose
-- UFW or equivalent firewall
-- Valid Funcom self-host token
-- At least 100 GB free disk space recommended
-- 20 GB+ RAM recommended for normal use
+| Requirement | Notes |
+|---|---|
+| Linux server or Linux PC | VPS, dedicated server, or local Linux machine |
+| Docker Engine | Required |
+| Docker Compose | Required |
+| Funcom self-host token | Required |
+| Disk space | 100 GB+ recommended |
+| RAM | 20 GB+ recommended |
+| Firewall access | Required for public hosting |
+
+---
 
 ## Ports
 
-Public ports:
+### Public/player-facing ports
 
-- TCP 31982: RabbitMQ game TLS
-- UDP 7777-7810: Game servers
+| Port | Protocol | Purpose |
+|---|---:|---|
+| 31982 | TCP | RabbitMQ game TLS |
+| 7777-7810 | UDP | Game servers |
 
-Localhost-only ports:
+For public hosting, open or forward:
 
-- TCP 15432: Postgres
-- TCP 32573: RabbitMQ admin
-- TCP 5059: TextRouter
-- TCP 11717: Director
+```bash
+sudo ufw allow 31982/tcp
+sudo ufw allow 7777:7810/udp
+```
 
-## Setup
+### Local-only ports
+
+These are bound to localhost:
+
+| Port | Protocol | Purpose |
+|---|---:|---|
+| 15432 | TCP | Postgres |
+| 32573 | TCP | RabbitMQ admin |
+| 5059 | TCP | TextRouter |
+| 11717 | TCP | Director |
+
+---
+
+## Install
 
 Clone the repo:
 
@@ -55,7 +85,7 @@ git clone https://github.com/Red-Blink/dune-awakening-selfhost-docker.git
 cd dune-awakening-selfhost-docker
 ```
 
-Install the command wrapper:
+Install the `dune` command:
 
 ```bash
 sudo runtime/scripts/install-command.sh
@@ -67,178 +97,328 @@ Run first-time setup:
 dune init
 ```
 
-`dune init` will ask for:
+---
 
-- Server name
-- Region: `Europe Test` or `North America Test`
-- Server/player-facing IP, or `auto`
-- Steam app ID, default `3104830`
-- Funcom self-host token
+## First-time setup
 
-The Funcom token input is hidden while typing/pasting.
+`dune init` asks for:
 
-During initialization, the tool will:
+| Prompt | Description |
+|---|---|
+| Server title | The name shown in-game |
+| Region | Europe Test or North America Test |
+| Hosting mode | Public / Internet or Local / LAN |
+| Funcom token | Your self-host service token |
 
-1. Save local configuration to `.env`.
-2. Save the Funcom token to `runtime/secrets/funcom-token.txt`.
-3. Generate the battlegroup ID using Funcom's self-host world-name format.
-4. Save the generated battlegroup ID to `runtime/generated/battlegroup.env`.
-5. Start the orchestrator container.
-6. Download/update server files with SteamCMD.
-7. Load Funcom Docker image tarballs.
-8. Detect image tags.
-9. Run database setup/update.
-10. Start the Docker stack.
+The token input is hidden while typing or pasting.
 
-Do not commit `.env`, `runtime/secrets/`, `runtime/generated/`, or runtime game data.
+`dune init` automatically:
 
-## Common commands
+1. Detects your public and local/LAN IP addresses.
+2. Lets you choose how players will connect.
+3. Generates a battlegroup ID.
+4. Saves local config.
+5. Downloads or verifies server files.
+6. Loads Funcom Docker images.
+7. Starts fresh Postgres.
+8. Runs database setup.
+9. Applies world partitions.
+10. Starts the server stack.
+11. Runs a readiness check.
 
-Open the interactive manager:
+### Important
 
-```bash
-dune manager
+`dune init` is a fresh-start setup command.
+
+Running it again resets the local server database and starts a new fresh world. Existing local state is backed up automatically, but players should treat `dune init` as a reset command.
+
+---
+
+## Public vs Local/LAN hosting
+
+| Option | Who can connect? | Requires port forwarding? |
+|---|---|---|
+| Public / Internet | Players over the internet | Yes, unless hosted on a VPS/dedicated server with open ports |
+| Local / LAN | Players on the same local network | No |
+
+During setup, the selected address is saved as:
+
+```env
+SERVER_IP=<selected-ip>
+SERVER_IP_MODE=public
 ```
 
-Start the stack:
+or:
 
-```bash
-dune start
+```env
+SERVER_IP=<selected-ip>
+SERVER_IP_MODE=local
 ```
 
-Stop the stack:
+---
 
-```bash
-dune stop
-```
+## Commands
 
-Check readiness:
+| Command | Description |
+|---|---|
+| `dune init` | Fresh first-time setup / reset setup |
+| `dune manager` | Open the interactive manager |
+| `dune start` | Start the stack |
+| `dune stop` | Stop the stack |
+| `dune ready` | Check if the stack is ready |
+| `dune status` | Show full status |
+| `dune ports` | Show listening ports |
+| `dune ps` | Show containers |
+| `dune update` | Check for and apply updates interactively |
+| `dune update check` | Check if an update is available |
+| `dune update --yes` | Apply update without prompting |
+| `dune update auto enable` | Enable daily automatic updates |
+| `dune update auto disable` | Disable automatic updates |
+| `dune update auto status` | Show automatic update status |
+
+---
+
+## Logs
+
+| Command | Logs |
+|---|---|
+| `dune logs survival` | Survival_1 |
+| `dune logs overmap` | Overmap |
+| `dune logs director` | Director |
+| `dune logs gateway` | ServerGateway |
+| `dune logs text-router` | TextRouter |
+| `dune logs rmq-game` | RabbitMQ game |
+
+---
+
+## Restart services
+
+| Command | Restarts |
+|---|---|
+| `dune restart survival` | Survival_1 |
+| `dune restart overmap` | Overmap |
+| `dune restart director` | Director |
+| `dune restart gateway` | ServerGateway |
+| `dune restart text-router` | TextRouter |
+
+---
+
+## Readiness checks
+
+Run:
 
 ```bash
 dune ready
 ```
 
-Show full status:
+`dune ready` uses three states:
 
-```bash
-dune status
+| State | Meaning |
+|---|---|
+| OK | Check passed |
+| WAIT | Normal startup/warm-up |
+| FAIL | Something needs attention |
+
+Example healthy output:
+
+```text
+OK   Survival_1 ready
+OK   Overmap ready
+READY: Dune Awakening Self-Host Docker stack looks healthy.
 ```
 
-Show ports/listeners:
+During startup, maps may show as warming:
 
-```bash
-dune ports
+```text
+WAIT Survival_1 warming
+WAIT Overmap warming
+WARMING: required containers are up; one or more services/maps are still starting.
 ```
 
-Show containers:
+This is normal after setup, start, update, or restart. Large maps can take a few minutes to become ready.
+
+When the local stack is ready, the in-game server browser may still take a few minutes to show population and sietch availability while Funcom/FLS and the game client refresh.
+
+---
+
+## Updates
+
+Check for an update:
 
 ```bash
-dune ps
+dune update check
 ```
 
-Follow logs:
-
-```bash
-dune logs survival
-dune logs overmap
-dune logs director
-dune logs gateway
-dune logs text-router
-dune logs rmq-game
-```
-
-Restart individual services:
-
-```bash
-dune restart survival
-dune restart overmap
-dune restart director
-dune restart gateway
-dune restart text-router
-```
-
-## Interactive manager
-
-The Linux interactive manager is available with:
-
-```bash
-dune manager
-```
-
-It provides a menu for:
-
-- First-time init
-- Start/stop/update
-- Status/ready/ports
-- Restarting key services
-- Following logs
-- Opening a shell inside the orchestrator container
-
-This is the Docker/Linux equivalent of the normal battlegroup management menu, without Hyper-V or Windows PowerShell.
-
-## Updating
-
-Run:
+Apply an update interactively:
 
 ```bash
 dune update
 ```
 
-Current behavior:
-
-1. Stops Overmap and Survival_1.
-2. Runs SteamCMD `app_update`.
-3. Loads Funcom image tarballs.
-4. Detects updated Docker image tags.
-5. Runs DB migration/update.
-
-After update, restart services manually:
+Apply an update without prompting:
 
 ```bash
-dune restart text-router
-dune restart director
-dune restart gateway
-dune restart survival
-dune restart overmap
+dune update --yes
 ```
 
-Automatic restarts after update are planned.
+The update flow:
 
-## Generated local files
+1. Checks Steam for a newer build.
+2. Stops game servers if an update is available.
+3. Updates server files through SteamCMD.
+4. Loads updated Funcom Docker images.
+5. Detects image tags.
+6. Runs database migrations.
+7. Restarts the stack.
 
-`dune init` creates local files that should not be committed:
+If no update is available, nothing is changed.
+
+SteamCMD has retry logic for intermittent Steam/Funcom install errors.
+
+---
+
+## Automatic updates
+
+Enable automatic updates:
+
+```bash
+dune update auto enable
+```
+
+Default schedule:
 
 ```text
-.env
-runtime/secrets/funcom-token.txt
-runtime/generated/battlegroup.env
-runtime/generated/image-tags.env
+05:00:00 daily
 ```
 
-The generated battlegroup file looks like:
+Choose a custom time:
 
-```env
-BATTLEGROUP_ID=sh-<hostid>-<suffix>
+```bash
+dune update auto enable 04:30:00
 ```
 
-The format follows Funcom's setup logic:
+Check status:
 
-```text
-sh-<token HostId lowercase>-<6 lowercase letters>
+```bash
+dune update auto status
 ```
 
-## Important design notes
+Disable automatic updates:
 
-The Docker image should contain the orchestrator code, not baked-in old game files. Game server files and Funcom image tarballs are downloaded and updated at runtime into persistent volumes.
+```bash
+dune update auto disable
+```
 
-The battlegroup ID is generated during `dune init` from the Funcom self-host token's `HostId`, matching Funcom's world-name format.
+Automatic updates use a systemd timer. The updater still checks Steam first and does nothing if no update is available.
 
-The current MVP is a Docker-native minimal self-host stack. It starts the core services plus Overmap and Survival_1 as always-on servers.
+---
+
+## Maps and autoscaling
+
+Always-on maps:
+
+| Map | Status |
+|---|---|
+| Survival_1 | Always running |
+| Overmap | Always running |
+
+Other maps are handled by autoscaling.
+
+The autoscaler can spawn and stop map servers as needed for the full map catalog, including social hubs, Deep Desert, caves, dungeons, and story maps.
+
+---
+
+## Server browser notes
+
+A healthy Docker stack does not always mean the in-game browser updates instantly.
+
+Normal order:
+
+1. Gateway declares the server.
+2. Survival_1 and Overmap become ready.
+3. Director registers partition/server state.
+4. Director sends population/activity to Funcom/FLS.
+5. The in-game browser refreshes.
+
+If `dune ready` is green but population or sietch availability is not visible yet, wait a few minutes and refresh the in-game server list.
+
+---
+
+## Useful checks
+
+See how long Survival_1 and Overmap have been running:
+
+```bash
+docker ps \
+  --filter "name=dune-server-survival-1" \
+  --filter "name=dune-server-overmap" \
+  --format "table {{.Names}}\t{{.Status}}"
+```
+
+Show exact start timestamps:
+
+```bash
+for c in dune-server-survival-1 dune-server-overmap; do
+  echo "=== $c ==="
+  docker ps --filter "name=^${c}$" --format "Status: {{.Status}}"
+  docker inspect "$c" --format 'Started: {{.State.StartedAt}}'
+done
+```
+
+Check world partitions:
+
+```bash
+docker exec dune-postgres psql -U dune -d dune -c "
+select partition_id, map, dimension_index, label, blocked
+from world_partition
+order by partition_id;
+"
+```
+
+Check recent Funcom/FLS declarations:
+
+```bash
+docker logs dune-director --since 15m 2>&1 | grep -Ei \
+  'DeclareBattlegroupUpdates|DeclarePopulation|UpDeclarations|Heartbeat|Survival_1|Overmap|partition 1|partition 2' \
+  | tail -n 160
+```
+
+---
+
+## Local files
+
+The setup creates local runtime files such as:
+
+| Path | Purpose |
+|---|---|
+| `.env` | Local server config |
+| `runtime/secrets/funcom-token.txt` | Funcom self-host token |
+| `runtime/generated/battlegroup.env` | Generated battlegroup ID |
+| `runtime/generated/image-tags.env` | Detected Funcom image tags |
+| `runtime/backups/` | Automatic backups from reset/init |
+
+These files are managed by the tool.
+
+---
+
+## Security
+
+Your Funcom self-host token is sensitive.
+
+Do not share logs that include:
+
+- `ServiceAuthToken`
+- `GameRmqSecret`
+- `runtime/secrets/funcom-token.txt`
+
+If a token is accidentally shared, rotate/regenerate it from the Funcom self-host account page.
+
+---
 
 ## Current limitations
 
-- Dedicated/on-demand maps are not automated yet.
-- The fake Kubernetes service account/IGWO behavior is a compatibility workaround.
-- Update flow is scaffolded but still needs real-world testing after an actual upstream update.
-- Automatic service restart after update is not implemented yet.
-- This is experimental and should not be treated as production-ready.
+- This is experimental.
+- Public hosting still requires correct firewall and/or router port forwarding.
+- Local/LAN hosting is only reachable by players on the same network.
+- Autoscaling is available, but still needs more real-world testing across all maps.
+- Some compatibility behavior exists to replace parts of the normal k3s/Kubernetes environment.
