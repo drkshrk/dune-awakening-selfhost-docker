@@ -4,6 +4,15 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT_DIR="$(pwd)"
 
+[ -f .env ] && . ./.env
+[ -f runtime/generated/battlegroup.env ] && . runtime/generated/battlegroup.env
+. runtime/scripts/runtime-env.sh
+
+SERVER_TITLE="$(resolve_server_title)"
+SERVER_REGION="$(resolve_server_region)"
+SERVER_IP="$(resolve_server_ip)"
+export SERVER_TITLE SERVER_REGION SERVER_IP
+
 APP_ID="${STEAM_APP_ID:-4754530}"
 
 echo "=== Dune update scaffold ==="
