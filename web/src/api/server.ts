@@ -6,6 +6,7 @@ export const serverApi = {
   readiness: () => api<{ stdout: string }>("/api/server/readiness"),
   ports: () => api<{ stdout: string }>("/api/server/ports"),
   services: () => api<{ stdout: string }>("/api/server/services"),
+  doctor: () => api<{ stdout: string }>("/api/server/doctor"),
   start: () => post<{ task: Task }>("/api/server/start"),
   stop: () => post<{ task: Task }>("/api/server/stop"),
   restart: () => post<{ task: Task }>("/api/server/restart"),

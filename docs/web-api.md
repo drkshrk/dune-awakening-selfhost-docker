@@ -25,13 +25,15 @@ Base path for the native RedBlink API: `/api`.
 | `/api/server/readiness` | GET | Readiness | `dune ready` |
 | `/api/server/ports` | GET | Ports | `dune ports` |
 | `/api/server/services` | GET | Services | `dune ps` |
+| `/api/server/doctor` | GET | Doctor diagnostics | `dune doctor` |
 | `/api/server/start` | POST | Start task | `dune start` |
 | `/api/server/stop` | POST | Stop task | `dune stop` |
 | `/api/server/restart` | POST | Restart task | `dune stop` then `dune start` |
 | `/api/server/restart-service` | POST | Restart service task | `dune restart <validated-service>` |
 | `/api/logs/services` | GET | Service names | Static allowlist until dynamic discovery is added |
 | `/api/logs/:service` | GET | Service logs | `dune logs <validated-service>` |
-| `/api/logs/:service/stream` | GET | Service log SSE stream | `dune logs <validated-service>` |
+| `/api/logs/:service/stream` | GET | Service log SSE stream | `dune logs <validated-service>` or validated Docker logs for dynamic `dune-server-*` containers |
+| `/api/logs/:service/download` | GET | Download redacted logs | `dune logs <validated-service>` or validated Docker logs for dynamic `dune-server-*` containers |
 | `/api/updates/check-game` | POST | Game update check task | `dune update check` |
 | `/api/updates/apply-game` | POST | Game update task | `dune update --yes` |
 | `/api/updates/check-stack` | POST | Stack update check task | `dune self-update check` |
@@ -39,6 +41,7 @@ Base path for the native RedBlink API: `/api`.
 | `/api/backups` | GET | Backup list | `dune db list` |
 | `/api/backups/create` | POST | Create backup task | `dune db backup` |
 | `/api/backups/restore` | POST | Restore backup task | `dune db restore <validated-backup>` |
+| `/api/backups/:name` | DELETE | Delete backup task | `dune db delete <validated-backup>` |
 | `/api/database/tables` | GET | Database tables | `dune database tables <schema>` |
 | `/api/database/table/:name` | GET | Preview table | `dune database preview <schema.table>` |
 | `/api/database/query` | POST | Advanced SQL execution | Read-only `dune database sql <query>`; destructive SQL requires confirmation phrase and pre-query `dune db backup` |

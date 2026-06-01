@@ -24,6 +24,7 @@ const simpleOperations = {
   readiness: ["ready"],
   services: ["ps"],
   ports: ["ports"],
+  doctor: ["doctor"],
   start: ["start"],
   stop: ["stop"],
   updateCheck: ["update", "check"],
@@ -63,6 +64,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["logs", validateServiceName(payload.service)];
     case "backupRestore":
       return ["db", "restore", validateBackupName(payload.backup)];
+    case "backupDelete":
+      return ["db", "delete", validateBackupName(payload.backup)];
     case "databaseTables":
       return ["database", "tables", payload.schema || "dune"];
     case "databasePreview":
@@ -128,6 +131,47 @@ export function runDune(config, args, options = {}) {
       else reject(Object.assign(new Error(`dune ${args.join(" ")} failed with exit ${code}`), result));
     });
   });
+}
+
+export function runDockerLogs(service, options = {}) {
+  const container = validateServiceName(service);
+  if (!/^dune-server-[a-z0-9-]+$/i.test(container)) {
+    return Promise.reject(new Error(`Docker log access is only allowed for dynamic dune-server containers: ${container}`));
+  }
+  const args = ["logs", "--tail", String(options.tail || 400)];
+  if (options.follow) args.push("-f");
+  args.push(container);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn("docker", args, {
+      shell: false,
+      env: { ...process.env }
+    });
+    const timeout = setTimeout(() => child.kill("SIGTERM"), options.timeoutMs || 30000);
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      const text = redact(chunk.toString());
+      stdout += text;
+      options.onLine?.(text, "stdout");
+    });
+    child.stderr.on("data", (chunk) => {
+      const text = redact(chunk.toString());
+      stderr += text;
+      options.onLine?.(text, "stderr");
+    });
+    child.on("error", reject);
+    child.on("close", (code, signal) => {
+      clearTimeout(timeout);
+      const result = { code, signal, stdout, stderr, args: ["docker", ...args] };
+      if (code === 0 || signal === "SIGTERM") resolve(result);
+      else reject(Object.assign(new Error(`docker ${args.join(" ")} failed with exit ${code}`), result));
+    });
+  });
+}
+
+export function isDynamicServerService(service) {
+  return /^dune-server-[a-z0-9-]+$/i.test(String(service || ""));
 }
 
 function validatePlayerId(value) {

@@ -35,7 +35,7 @@ Current verification:
 
 - `npm test` in `admin-server/` passes.
 - `npm run build` in `web/` passes.
-- Backend tests currently cover signed sessions, CSRF rejection/acceptance, service validation, command allowlist, noninteractive update flags, backup name validation, item validation, teleport argument validation, SQL read-only/destructive detection, and secret redaction.
+- Backend tests currently cover signed sessions, CSRF rejection/acceptance, service validation, command allowlist, lifecycle/status/doctor mappings, logs command validation, noninteractive update flags, backup restore/delete name validation, item validation, teleport argument validation, SQL read-only/destructive detection, task creation/completion, and secret redaction.
 - `docker compose -f docker-compose.web.yml config` passed previously.
 - HTTP bind smoke test could not run inside the sandbox because binding returned `EPERM`.
 

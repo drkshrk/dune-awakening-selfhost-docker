@@ -1,11 +1,11 @@
 import { createServer } from "node:http";
-import { readFileSync, existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream } from "node:fs";
+import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { loadConfig, publicConfig } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json } from "./auth.js";
 import { TaskManager, publicTask } from "./tasks.js";
 import { preflight } from "./preflight.js";
-import { buildDuneArgs, isReadOnlySql, runDune, validateServiceName } from "./runner.js";
+import { buildDuneArgs, isDynamicServerService, isReadOnlySql, runDockerLogs, runDune, validateServiceName } from "./runner.js";
 import { audit } from "./audit.js";
 import { redact } from "./redact.js";
 
@@ -76,6 +76,7 @@ async function handleApi(req, res) {
   if (path === "/api/server/readiness") return commandJson(res, "readiness");
   if (path === "/api/server/ports") return commandJson(res, "ports");
   if (path === "/api/server/services") return commandJson(res, "services");
+  if (path === "/api/server/doctor") return commandJson(res, "doctor");
   if (path === "/api/server/start" && req.method === "POST") return task(req, res, "server", "start", {});
   if (path === "/api/server/stop" && req.method === "POST") return task(req, res, "server", "stop", {});
   if (path === "/api/server/restart" && req.method === "POST") return task(req, res, "server", "restartAll", {});
@@ -84,7 +85,7 @@ async function handleApi(req, res) {
     return task(req, res, "server", "restartService", { service: body.service });
   }
 
-  if (path === "/api/logs/services") return json(res, 200, { services: knownServices() });
+  if (path === "/api/logs/services") return json(res, 200, { services: await discoverServices() });
   if (path.startsWith("/api/logs/")) return logsRoute(req, res, path);
 
   if (path === "/api/updates/check-game" && req.method === "POST") return task(req, res, "updates", "updateCheck", {});
@@ -98,6 +99,10 @@ async function handleApi(req, res) {
   if (path === "/api/backups/restore" && req.method === "POST") {
     const body = await readJson(req);
     return task(req, res, "backup", "backupRestore", { backup: body.backup });
+  }
+  if (path.startsWith("/api/backups/") && req.method === "DELETE") {
+    const backup = decodeURIComponent(path.split("/").pop());
+    return task(req, res, "backup", "backupDelete", { backup });
   }
   if (path === "/api/database/tables") return commandJson(res, "databaseTables", { schema: url.searchParams.get("schema") || "dune" });
   if (path.startsWith("/api/database/table/")) return commandJson(res, "databasePreview", { table: decodeURIComponent(path.split("/").pop()), limit: url.searchParams.get("limit") || 50 });
@@ -126,6 +131,45 @@ async function commandJson(res, operation, payload = {}) {
   const args = buildDuneArgs(operation, payload);
   const result = await runDune(config, args);
   return json(res, 200, { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code });
+}
+
+async function discoverServices() {
+  const services = new Set(knownServices());
+  if (config.mockMode) return [...services].sort();
+  try {
+    const result = await runDune(config, buildDuneArgs("services"), { timeoutMs: 8000 });
+    for (const name of parseServiceNames(result.stdout)) services.add(name);
+  } catch {
+    // Fall back to the static allowlist when Docker is not reachable.
+  }
+  return [...services].sort();
+}
+
+function parseServiceNames(text) {
+  const names = [];
+  const aliases = new Map([
+    ["dune-postgres", "postgres"],
+    ["dune-rmq-admin", "rmq-admin"],
+    ["dune-rmq-game", "rmq-game"],
+    ["dune-text-router", "text-router"],
+    ["dune-director", "director"],
+    ["dune-server-gateway", "gateway"],
+    ["dune-server-survival-1", "survival-1"],
+    ["dune-server-overmap", "overmap"],
+    ["dune-orchestrator", "orchestrator"],
+    ["dune-autoscaler", "autoscaler"]
+  ]);
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || /^names\s+/i.test(trimmed)) continue;
+    const name = trimmed.split(/\s+/)[0];
+    if (aliases.has(name)) {
+      names.push(aliases.get(name));
+    } else if (/^dune-server-[a-z0-9-]+$/i.test(name)) {
+      names.push(name);
+    }
+  }
+  return names;
 }
 
 async function databaseQuery(req, res) {
@@ -176,10 +220,25 @@ function taskRoute(req, res, path) {
 async function logsRoute(req, res, path) {
   const parts = path.split("/");
   const service = validateServiceName(parts[3]);
+  if (parts[4] === "download") {
+    try {
+      const result = await readLogs(service, { timeoutMs: 30000 });
+      const filename = `dune-${service}-logs.txt`.replace(/[^A-Za-z0-9._-]/g, "_");
+      res.writeHead(200, {
+        "content-type": "text/plain; charset=utf-8",
+        "content-disposition": `attachment; filename="${filename}"`
+      });
+      res.end(result.stdout || result.stderr || "");
+    } catch (error) {
+      json(res, 500, { error: redact(error.stdout || error.message || error) });
+    }
+    return;
+  }
   if (parts[4] === "stream") {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
     try {
-      await runDune(config, buildDuneArgs("logs", { service }), {
+      await readLogs(service, {
+        follow: true,
         timeoutMs: 30 * 60 * 1000,
         onLine: (line) => res.write(`data: ${JSON.stringify({ line })}\n\n`)
       });
@@ -190,7 +249,7 @@ async function logsRoute(req, res, path) {
   }
   let output = "";
   try {
-    await runDune(config, buildDuneArgs("logs", { service }), {
+    await readLogs(service, {
       timeoutMs: 5000,
       onLine: (line) => { output += line; }
     });
@@ -198,6 +257,13 @@ async function logsRoute(req, res, path) {
     if (!output) output = redact(error.stdout || error.message || "");
   }
   return json(res, 200, { operation: "logs", stdout: output, stderr: "", exitCode: 0 });
+}
+
+function readLogs(service, options) {
+  if (isDynamicServerService(service)) {
+    return runDockerLogs(service, options);
+  }
+  return runDune(config, buildDuneArgs("logs", { service }), options);
 }
 
 async function setupState() {

@@ -7,20 +7,24 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, rgba(170, 111, 45, .18), transparent 38%), #0d0f12; }
-button, input { font: inherit; }
-button {
+button, input, select { font: inherit; }
+button, .button-link {
   border: 1px solid #4d4032;
   background: #25201b;
   color: #f7e7c7;
   padding: 10px 14px;
   border-radius: 6px;
   cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-button:hover { border-color: #c68b4a; }
+button:hover, .button-link:hover { border-color: #c68b4a; }
 button.active { background: #9b5f2a; border-color: #d49a5c; }
 button.danger { border-color: #8d3434; color: #ffc9c9; }
 button:disabled { opacity: .45; cursor: not-allowed; }
-input {
+input, select {
   width: 100%;
   border: 1px solid #4d4032;
   background: #151719;
@@ -79,6 +83,8 @@ main { padding: 22px; min-width: 0; }
 .error-banner { background: #351b1b; border: 1px solid #8d3434; padding: 12px; border-radius: 6px; margin-bottom: 14px; }
 .drawer { border-left: 1px solid #302b25; padding: 12px; color: #d9c8aa; }
 .gauge { display: grid; gap: 4px; background: #171a1d; border: 1px solid #302b25; border-radius: 8px; padding: 12px; }
+.service-table { display: grid; gap: 10px; margin-top: 14px; }
+.service-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
 @media (max-width: 900px) {
   .app-shell, .wizard { grid-template-columns: 1fr; }
