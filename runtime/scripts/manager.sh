@@ -2541,6 +2541,36 @@ admin_known_player_rows() {
   " 2>/dev/null || true
 }
 
+admin_specialization_online_player_rows() {
+  docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
+    select
+      coalesce(ps.player_pawn_id, a.id) as actor_id,
+      coalesce(nullif(ps.character_name, ''), '<unknown>') as character_name,
+      ps.account_id,
+      coalesce(ps.online_status::text, '') as online_status,
+      coalesce(fs.map, wp.map, '') as map,
+      coalesce(ps.server_id, '') as server_id
+    from dune.player_state ps
+    left join dune.actors a on a.id = ps.player_pawn_id
+    left join dune.farm_state fs on fs.server_id = ps.server_id
+    left join dune.world_partition wp on wp.partition_id = ps.previous_server_partition_id
+    where coalesce(ps.player_pawn_id, a.id) is not null
+      and (a.id is null or a.class ilike '%PlayerCharacter%')
+      and (
+        ps.online_status <> 'Offline'
+        or (
+          ps.reconnect_grace_period_end is not null
+          and ps.reconnect_grace_period_end > (current_timestamp at time zone 'UTC')
+        )
+        or (
+          ps.last_avatar_activity is not null
+          and ps.last_avatar_activity > (current_timestamp - interval '5 minutes')
+        )
+      )
+    order by character_name, actor_id;
+  " 2>/dev/null || true
+}
+
 admin_choose_player() {
   local rows=()
   local choice row fls_id account_id character_name online_status map_name server_id manual_id
@@ -2778,6 +2808,7 @@ admin_tools_menu() {
       "Spawn Vehicle" \
       "Clean Inventory" \
       "Reset Progression" \
+      "Grant Specialization XP" \
       "Command History" \
       "Back" || return
     choice="$MENU_CHOICE"
@@ -2794,8 +2825,9 @@ admin_tools_menu() {
       9) admin_run_flow admin_spawn_vehicle_flow ;;
       10) admin_run_flow admin_destructive_flow "Clean Inventory" clean-inventory ;;
       11) admin_run_flow admin_destructive_flow "Reset Progression" reset-progression ;;
-      12) admin_run_flow run_cmd "$DUNE" admin history ;;
-      13) return ;;
+      12) admin_run_flow admin_specialization_xp_flow ;;
+      13) admin_run_flow run_cmd "$DUNE" admin history ;;
+      14) return ;;
     esac
   done
 }
@@ -2912,6 +2944,166 @@ admin_skill_module_flow() {
   echo
   if confirm "Publish skill level update"; then
     run_cmd env DUNE_ADMIN_ASSUME_YES=1 "$DUNE" admin skill-module "$player_id" "$module" "$level"
+  else
+    echo "Cancelled."
+  fi
+}
+
+admin_specialization_xp_flow() {
+  local character choice track level xp grant_keystones dry_run unlock_faction actor_id account_id online_status map_name server_id row args=()
+  local tracks=("Crafting" "Gathering" "Exploration" "Combat" "Sabotage")
+  local rows=() i
+
+  if ! docker inspect -f '{{.State.Running}}' dune-postgres 2>/dev/null | grep -qx 'true'; then
+    error_msg "Postgres container is not running, so online players cannot be listed."
+    return 1
+  fi
+
+  mapfile -t rows < <(admin_specialization_online_player_rows)
+  if [ "${#rows[@]}" -eq 0 ]; then
+    echo "No online players with a resolvable PlayerCharacter pawn were found."
+    return 1
+  fi
+
+  echo
+  echo "Select Online Player"
+  echo "===================="
+  echo
+  for i in "${!rows[@]}"; do
+    IFS=$'\t' read -r actor_id character account_id online_status map_name server_id <<< "${rows[$i]}"
+    printf '%s) %s\n' "$((i + 1))" "$character"
+    printf '   actor id: %s\n' "$actor_id"
+    printf '   local account id: %s\n' "$account_id"
+    printf '   status: %s\n' "${online_status:-unknown}"
+    [ -z "${map_name:-}" ] || printf '   map: %s\n' "$map_name"
+    [ -z "${server_id:-}" ] || printf '   server: %s\n' "$server_id"
+    echo
+  done
+  echo "0) Back"
+  echo
+
+  prompt_text "Player Number:" choice || return
+  choice="$(sanitize_numeric_prompt_value "$choice")"
+  if [ "$choice" = "0" ]; then
+    ACTION_CANCELLED=1
+    return 0
+  fi
+  if ! printf '%s' "$choice" | grep -Eq '^[1-9][0-9]*$' || [ "$choice" -gt "${#rows[@]}" ]; then
+    error_msg "Invalid player selection."
+    return 1
+  fi
+
+  row="${rows[$((choice - 1))]}"
+  IFS=$'\t' read -r actor_id character account_id online_status map_name server_id <<< "$row"
+  [ -n "${actor_id:-}" ] || { error_msg "Selected player has no pawn actor id."; return 1; }
+
+  echo
+  echo "Specialization Track"
+  echo "===================="
+  echo
+  echo "1) All tracks"
+  local i
+  for i in "${!tracks[@]}"; do
+    printf '%s) %s\n' "$((i + 2))" "${tracks[$i]}"
+  done
+  echo "0) Back"
+  echo
+  prompt_text "Track Selection [1]:" choice allow-empty || return
+  choice="$(sanitize_numeric_prompt_value "${choice:-1}")"
+  choice="${choice:-1}"
+  if [ "$choice" = "0" ]; then
+    ACTION_CANCELLED=1
+    return 0
+  fi
+  if [ "$choice" = "1" ]; then
+    args+=(--all)
+    track="All tracks"
+  elif printf '%s' "$choice" | grep -Eq '^[2-6]$'; then
+    track="${tracks[$((choice - 2))]}"
+    args+=(--track "$track")
+  else
+    error_msg "Invalid track selection."
+    return 1
+  fi
+
+  prompt_text "Level [100]:" level allow-empty || return
+  level="$(sanitize_numeric_prompt_value "${level:-100}")"
+  level="${level:-100}"
+  if ! printf '%s' "$level" | grep -Eq '^[0-9]+$' || [ "$level" -gt 100 ]; then
+    error_msg "Level must be an integer between 0 and 100."
+    return 1
+  fi
+
+  prompt_text "XP amount [44182]:" xp allow-empty || return
+  xp="$(sanitize_numeric_prompt_value "${xp:-44182}")"
+  xp="${xp:-44182}"
+  if ! printf '%s' "$xp" | grep -Eq '^[0-9]+$'; then
+    error_msg "XP amount must be a non-negative integer."
+    return 1
+  fi
+
+  if confirm "Grant all specialization keystones too"; then
+    grant_keystones=1
+    args+=(--grant-keystones)
+  else
+    grant_keystones=0
+  fi
+
+  echo
+  echo "Faction Unlock"
+  echo "=============="
+  echo
+  echo "Specialization may require the faction journey to be unlocked."
+  echo "1) Do not change faction"
+  echo "2) Unlock Atreides"
+  echo "3) Unlock Harkonnen"
+  echo "0) Back"
+  echo
+  prompt_text "Faction Selection [1]:" choice allow-empty || return
+  choice="$(sanitize_numeric_prompt_value "${choice:-1}")"
+  choice="${choice:-1}"
+  case "$choice" in
+    0)
+      ACTION_CANCELLED=1
+      return 0
+      ;;
+    1)
+      unlock_faction=""
+      ;;
+    2)
+      unlock_faction="Atreides"
+      args+=(--unlock-faction "$unlock_faction")
+      ;;
+    3)
+      unlock_faction="Harkonnen"
+      args+=(--unlock-faction "$unlock_faction")
+      ;;
+    *)
+      error_msg "Invalid faction selection."
+      return 1
+      ;;
+  esac
+
+  if confirm "Dry run only"; then
+    dry_run=1
+    args+=(--dry-run)
+  else
+    dry_run=0
+  fi
+
+  echo
+  echo "Apply specialization database update?"
+  echo "  Player: $character"
+  echo "  Actor id: $actor_id"
+  echo "  Track: $track"
+  echo "  Level: $level"
+  echo "  XP amount: $xp"
+  echo "  Grant keystones: $([ "$grant_keystones" = "1" ] && echo yes || echo no)"
+  echo "  Unlock faction journey: ${unlock_faction:-no}"
+  echo "  Dry run: $([ "$dry_run" = "1" ] && echo yes || echo no)"
+  echo
+  if confirm "Continue with specialization update"; then
+    run_cmd env DUNE_ADMIN_ASSUME_YES=1 "$DUNE" admin specialization-xp "$character" "${args[@]}" --level "$level" --xp "$xp" --actor-id "$actor_id"
   else
     echo "Cancelled."
   fi

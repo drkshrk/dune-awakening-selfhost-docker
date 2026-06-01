@@ -19,6 +19,10 @@ work/
 *.log
 *.tmp
 .DS_Store
+admin-server/node_modules/
+web/node_modules/
+web/dist/
+*.tsbuildinfo
 
 # Python/cache
 __pycache__/

@@ -145,7 +145,7 @@ Common beginner tasks:
 | Admin item granting | Admin Tools | `dune admin grant-item ...` |
 | Kick player | Admin Tools | `dune admin kick ...` |
 | Vehicle spawning | Admin Tools | `dune admin spawn-vehicle ...` |
-| XP, skill, water, progression admin tools | Admin Tools | `dune admin award-xp`, `skill-points`, `skill-module`, `refill-water` |
+| XP, skill, specialization, water, progression admin tools | Admin Tools | `dune admin award-xp`, `skill-points`, `skill-module`, `specialization-xp`, `refill-water` |
 | Database backups/import/restore | Database Maintenance | `dune db backup`, `import`, `restore`, `delete` |
 | Character transfer/account takeover | Database Maintenance | `dune db transfer ...` |
 | Database browser and SQL export | Advanced Tools | `dune database ...`, `runtime/generated/db-exports/` |
@@ -398,6 +398,11 @@ dune admin award-xp PLAYER_FLS_ID 1000
 dune admin skill-points PLAYER_FLS_ID 10
 dune admin skill-modules
 dune admin skill-module PLAYER_FLS_ID Skills.Ability.Hypersprint 1
+dune admin specialization-xp "Character Name" --all --level 100 --xp 44182
+dune admin specialization-xp "Character Name" --track Combat --level 100 --xp 44182
+dune admin specialization-xp "Character Name" --all --actor-id 12345 --dry-run
+dune admin specialization-max "Character Name" --grant-keystones --unlock-faction Atreides
+dune admin specialization-max "Character Name" --grant-keystones --dry-run
 dune admin refill-water PLAYER_FLS_ID
 dune admin vehicle-list
 dune admin spawn-vehicle PLAYER_FLS_ID Sandbike T6
@@ -558,6 +563,7 @@ Available manager actions:
 - Give XP
 - Set Skill Points
 - Set Skill Level
+- Grant Specialization XP
 - Refill Water
 - Teleport Player
 - Spawn Vehicle
@@ -571,9 +577,55 @@ Important notes:
 - Kick Player requires the selected player's FLS `PlayerId`. It works best for online players.
 - Spawn Vehicle selects a player, reads their location, selects a vehicle/template, and spawns about 4 meters in front of that player.
 - Admin commands publish through `dune-rmq-game` using the same RabbitMQ command path as Grant Item.
+- Specialization XP tools are different: they directly edit PostgreSQL specialization tables, validate the target character and schema first, and create a database backup before writes.
 - The command result says whether the runtime path accepted the message. Some effects still need live in-game observation.
 - Destructive actions require confirmation.
 - Admin logs are stored in `runtime/generated/admin-command-history.tsv` and `runtime/generated/admin-command-audit.jsonl`.
+
+Specialization commands:
+
+```bash
+dune admin specialization-xp "Character Name" --all --level 100 --xp 44182
+dune admin specialization-xp "Character Name" --track Combat --level 100 --xp 44182
+dune admin specialization-xp "Character Name" --all --actor-id 12345 --dry-run
+dune admin specialization-max "Character Name" --grant-keystones --unlock-faction Atreides
+dune admin specialization-max "Character Name" --grant-keystones --dry-run
+```
+
+Supported specialization tracks are `Crafting`, `Gathering`, `Exploration`, `Combat`, and `Sabotage`. The max helper uses level `100` and XP amount `44182`. These commands resolve the character's pawn actor id from `dune.player_state`/`dune.actors`, require a unique character match, and update `dune.specialization_tracks`; if a partial name matches multiple characters, rerun with the exact name or `--actor-id <id>`. `--grant-keystones` also inserts all rows from `dune.specialization_keystones_map` into `dune.purchased_specialization_keystones`. `--unlock-faction Atreides|Harkonnen` sets the selected faction in `dune.player_faction`, creates a reputation row, and marks the `DA_FQ_ClimbTheRanks.JoinAHouse` journey nodes complete/revealed for that account. Use these only as a server admin with backups. The player may need to relog, or affected services may need a restart, if the game has cached specialization or journey state.
+
+## Arrakis Server Console
+
+This repo includes an optional browser admin UI called Arrakis Server Console. It sits on top of the existing Docker runtime and wraps `runtime/scripts/dune` through a safe, allowlisted backend API.
+
+Local development:
+
+```bash
+cd admin-server
+npm install
+DUNE_DOCKER_DIR="$(pwd)/.." npm run dev
+
+cd ../web
+npm install
+npm run dev
+```
+
+Container mode:
+
+```bash
+docker compose -f docker-compose.web.yml up -d --build
+```
+
+Open `http://localhost:8088` for the built app, or `http://localhost:5173` during frontend development. The initial admin password is generated at `runtime/secrets/admin-web-password.txt`.
+
+See:
+
+- `docs/web-ui.md`
+- `docs/web-setup-wizard.md`
+- `docs/security.md`
+- `docs/docker-admin-deployment.md`
+- `docs/development-web.md`
+- `docs/api.md`
 
 ## Database And Backups
 

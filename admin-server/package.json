@@ -1,0 +1,15 @@
+{
+  "name": "arrakis-server-console-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Safe web API for RedBlink Dune Awakening Docker control",
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18.19.0"
+  }
+}

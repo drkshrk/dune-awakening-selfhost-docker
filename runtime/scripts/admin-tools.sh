@@ -32,6 +32,8 @@ Usage:
   runtime/scripts/dune admin skill-points <player-id|*> <points>
   runtime/scripts/dune admin skill-module <player-id|*> <module> <level>
   runtime/scripts/dune admin skill-modules [query]
+  runtime/scripts/dune admin specialization-xp <character-name> (--all|--track <track>) [--level <level>] [--xp <xp>] [--grant-keystones] [--unlock-faction <Atreides|Harkonnen>] [--dry-run] [--yes] [--actor-id <id>]
+  runtime/scripts/dune admin specialization-max <character-name> [--grant-keystones] [--unlock-faction <Atreides|Harkonnen>] [--dry-run] [--yes]
   runtime/scripts/dune admin refill-water <player-id|*> [amount]
   runtime/scripts/dune admin clean-inventory <player-id|*>
   runtime/scripts/dune admin reset-progression <player-id|*>
@@ -573,6 +575,378 @@ except ValueError:
     print(f"{sys.argv[2]} must be a number.", file=sys.stderr)
     raise SystemExit(1)
 PY
+}
+
+psql_admin() {
+  require_postgres_running
+  docker exec "$POSTGRES_CONTAINER" psql -U postgres -d dune "$@"
+}
+
+backup_database_for_admin_write() {
+  local output backup_file
+
+  output="$(runtime/scripts/db.sh backup)"
+  printf '%s\n' "$output" >&2
+  backup_file="$(printf '%s\n' "$output" | awk '/runtime\/backups\/db\/.*\.backup$/ {print $1; exit}')"
+  [ -n "$backup_file" ] || backup_file="unknown"
+  printf '%s' "$backup_file"
+}
+
+specialization_tracks_csv() {
+  local mode="$1" track="$2"
+  if [ "$mode" = "all" ]; then
+    printf '%s' "Crafting,Gathering,Exploration,Combat,Sabotage"
+  else
+    printf '%s' "$track"
+  fi
+}
+
+specialization_track_sql_array() {
+  local tracks_csv="$1" track out="" sep=""
+  IFS=',' read -r -a tracks <<< "$tracks_csv"
+  for track in "${tracks[@]}"; do
+    case "$track" in
+      Crafting|Gathering|Exploration|Combat|Sabotage) ;;
+      *) echo "Invalid specialization track: $track" >&2; return 1 ;;
+    esac
+    out="$out$sep'$track'"
+    sep=","
+  done
+  printf 'ARRAY[%s]::dune.specializationtracktype[]' "$out"
+}
+
+validate_specialization_schema() {
+  local missing
+
+  missing="$(psql_admin -At -v ON_ERROR_STOP=1 -c "
+    with required(kind, name, present) as (
+      values
+        ('table', 'dune.specialization_tracks', to_regclass('dune.specialization_tracks') is not null),
+        ('table', 'dune.purchased_specialization_keystones', to_regclass('dune.purchased_specialization_keystones') is not null),
+        ('table', 'dune.specialization_keystones_map', to_regclass('dune.specialization_keystones_map') is not null),
+        ('table', 'dune.actors', to_regclass('dune.actors') is not null),
+        ('table', 'dune.player_state', to_regclass('dune.player_state') is not null),
+        ('table', 'dune.factions', to_regclass('dune.factions') is not null),
+        ('table', 'dune.player_faction', to_regclass('dune.player_faction') is not null),
+        ('table', 'dune.player_faction_reputation', to_regclass('dune.player_faction_reputation') is not null),
+        ('table', 'dune.journey_story_node', to_regclass('dune.journey_story_node') is not null),
+        ('type', 'dune.specializationtracktype', to_regtype('dune.specializationtracktype') is not null)
+    )
+    select string_agg(kind || ' ' || name, ', ')
+    from required
+    where not present;
+  " | tr -d '\r')"
+
+  if [ -n "$missing" ]; then
+    echo "Missing required specialization schema object(s): $missing" >&2
+    exit 1
+  fi
+}
+
+specialization_character_matches() {
+  local character="$1" character_sql
+  character_sql="${character//\'/\'\'}"
+  psql_admin -At -F $'\t' -v ON_ERROR_STOP=1 -c "
+    with exact_matches as (
+      select distinct
+        coalesce(ps.player_pawn_id, a.id) as actor_id,
+        ps.character_name,
+        ps.account_id,
+        coalesce(ps.online_status::text, 'Unknown') as online_status,
+        true as exact_match
+      from dune.player_state ps
+      left join dune.actors a on a.id = ps.player_pawn_id
+      where lower(ps.character_name) = lower('$character_sql')
+        and coalesce(ps.player_pawn_id, a.id) is not null
+        and (a.id is null or a.class ilike '%PlayerCharacter%')
+      union
+      select distinct
+        a.id as actor_id,
+        ps.character_name,
+        ps.account_id,
+        coalesce(ps.online_status::text, 'Unknown') as online_status,
+        true as exact_match
+      from dune.player_state ps
+      join dune.actors a on a.owner_account_id = ps.account_id
+      where ps.player_pawn_id is null
+        and lower(ps.character_name) = lower('$character_sql')
+        and a.class ilike '%PlayerCharacter%'
+    ),
+    partial_matches as (
+      select distinct
+        coalesce(ps.player_pawn_id, a.id) as actor_id,
+        ps.character_name,
+        ps.account_id,
+        coalesce(ps.online_status::text, 'Unknown') as online_status,
+        false as exact_match
+      from dune.player_state ps
+      left join dune.actors a on a.id = ps.player_pawn_id
+      where ps.character_name ilike '%' || '$character_sql' || '%'
+        and coalesce(ps.player_pawn_id, a.id) is not null
+        and (a.id is null or a.class ilike '%PlayerCharacter%')
+      union
+      select distinct
+        a.id as actor_id,
+        ps.character_name,
+        ps.account_id,
+        coalesce(ps.online_status::text, 'Unknown') as online_status,
+        false as exact_match
+      from dune.player_state ps
+      join dune.actors a on a.owner_account_id = ps.account_id
+      where ps.player_pawn_id is null
+        and ps.character_name ilike '%' || '$character_sql' || '%'
+        and a.class ilike '%PlayerCharacter%'
+    ),
+    chosen as (
+      select * from exact_matches
+      union all
+      select * from partial_matches
+      where not exists (select 1 from exact_matches)
+    )
+    select actor_id, character_name, account_id, online_status, exact_match
+    from chosen
+    order by exact_match desc, character_name, actor_id;
+  " | tr -d '\r'
+}
+
+resolve_specialization_character() {
+  local character="$1" actor_override="${2:-}" rows count
+
+  if [ -n "$actor_override" ]; then
+    validate_int "$actor_override" "Actor id"
+    rows="$(psql_admin -At -F $'\t' -v ON_ERROR_STOP=1 -c "
+      select a.id, coalesce(ps.character_name, '<unknown>'), coalesce(ps.account_id::text, ''), coalesce(ps.online_status::text, 'Unknown'), true
+      from dune.actors a
+      left join dune.player_state ps on ps.player_pawn_id = a.id or ps.account_id = a.owner_account_id
+      where a.id = $actor_override::bigint
+        and a.class ilike '%PlayerCharacter%'
+      limit 1;
+    " | tr -d '\r')"
+    [ -n "$rows" ] || { echo "No PlayerCharacter actor found for actor_id $actor_override." >&2; exit 1; }
+    printf '%s\n' "$rows"
+    return 0
+  fi
+
+  rows="$(specialization_character_matches "$character")"
+  count="$(printf '%s\n' "$rows" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
+  case "${count:-0}" in
+    0)
+      echo "No character matched: $character" >&2
+      exit 1
+      ;;
+    1)
+      printf '%s\n' "$rows"
+      ;;
+    *)
+      echo "Character name is ambiguous: $character" >&2
+      echo "Matches:" >&2
+      printf '%s\n' "$rows" | awk -F '\t' '{ printf "  - %s (actor_id=%s, account_id=%s, status=%s)\n", $2, $1, $3, $4 }' >&2
+      echo "Rerun with an exact full character name, or use --actor-id <id>." >&2
+      exit 1
+      ;;
+  esac
+}
+
+specialization_preview() {
+  local actor_id="$1"
+  psql_admin -P pager=off -v ON_ERROR_STOP=1 -c "
+    select track_type, xp_amount, level
+    from dune.specialization_tracks
+    where player_id = $actor_id::bigint
+    order by track_type::text;
+  "
+}
+
+normalize_faction_name() {
+  local faction="$1"
+  case "${faction,,}" in
+    atreides) printf '%s' "Atreides" ;;
+    harkonnen) printf '%s' "Harkonnen" ;;
+    none|"") printf '%s' "" ;;
+    *) echo "Faction must be Atreides or Harkonnen." >&2; return 1 ;;
+  esac
+}
+
+specialization_apply_sql() {
+  local actor_id="$1" account_id="$2" level="$3" xp="$4" tracks_csv="$5" grant_keystones="$6" unlock_faction="$7"
+  local track_array keystone_sql faction_sql unlock_faction_sql
+
+  track_array="$(specialization_track_sql_array "$tracks_csv")"
+  unlock_faction_sql="${unlock_faction//\'/\'\'}"
+  keystone_sql=""
+  if [ "$grant_keystones" = "1" ]; then
+    keystone_sql="
+      insert into dune.purchased_specialization_keystones (player_id, keystone_id)
+      select $actor_id::bigint, id
+      from dune.specialization_keystones_map
+      on conflict do nothing;
+    "
+  fi
+  faction_sql=""
+  if [ -n "$unlock_faction" ]; then
+    faction_sql="
+      insert into dune.player_faction (actor_id, faction_id, utc_time_faction_change)
+      select $actor_id::bigint, f.id, now()
+      from dune.factions f
+      where lower(f.name) = lower('$unlock_faction_sql')
+      on conflict (actor_id)
+      do update set faction_id = excluded.faction_id, utc_time_faction_change = excluded.utc_time_faction_change;
+
+      insert into dune.player_faction_reputation (actor_id, faction_id, reputation_amount)
+      select $actor_id::bigint, f.id, 0
+      from dune.factions f
+      where lower(f.name) = lower('$unlock_faction_sql')
+      on conflict (actor_id, faction_id)
+      do nothing;
+
+      update dune.journey_story_node
+      set complete_condition_state = 'true'::jsonb,
+          reveal_condition_state = 'true'::jsonb,
+          has_pending_reward = false,
+          fail_condition_state = '{}'::jsonb
+      where account_id = $account_id::bigint
+        and story_node_id like 'DA_FQ_ClimbTheRanks.JoinAHouse%';
+    "
+  fi
+
+  psql_admin -v ON_ERROR_STOP=1 -c "
+      begin;
+      insert into dune.specialization_tracks (player_id, track_type, xp_amount, level)
+      select $actor_id::bigint, unnest($track_array), $xp::bigint, $level::integer
+      on conflict (player_id, track_type)
+      do update set xp_amount = excluded.xp_amount, level = excluded.level;
+      $keystone_sql
+      $faction_sql
+      commit;
+    "
+}
+
+specialization_xp_command() {
+  local character="${1:-}" mode="" track="" level="100" xp="44182" grant_keystones=0 dry_run=0 assume_yes=0 actor_override="" unlock_faction=""
+  local arg tracks_csv row actor_id character_name account_id online_status exact_match answer backup_file payload
+
+  [ -n "$character" ] || { echo "Usage: dune admin specialization-xp <character-name> (--all|--track <track>) [--level <level>] [--xp <xp>] [--grant-keystones] [--unlock-faction <Atreides|Harkonnen>] [--dry-run] [--yes]" >&2; exit 2; }
+  shift || true
+  while [ "$#" -gt 0 ]; do
+    arg="$1"
+    case "$arg" in
+      --all) mode="all" ;;
+      --track)
+        shift || { echo "--track requires a value." >&2; exit 2; }
+        mode="track"; track="$1"
+        ;;
+      --level)
+        shift || { echo "--level requires a value." >&2; exit 2; }
+        level="$1"
+        ;;
+      --xp)
+        shift || { echo "--xp requires a value." >&2; exit 2; }
+        xp="$1"
+        ;;
+      --grant-keystones) grant_keystones=1 ;;
+      --unlock-faction)
+        shift || { echo "--unlock-faction requires a value." >&2; exit 2; }
+        unlock_faction="$(normalize_faction_name "$1")"
+        ;;
+      --dry-run) dry_run=1 ;;
+      --yes|-y) assume_yes=1 ;;
+      --actor-id)
+        shift || { echo "--actor-id requires a value." >&2; exit 2; }
+        actor_override="$1"
+        ;;
+      --*) echo "Unknown specialization-xp option: $arg" >&2; exit 2 ;;
+      *) echo "Unexpected argument: $arg" >&2; exit 2 ;;
+    esac
+    shift
+  done
+  [ "${DUNE_ADMIN_DRY_RUN:-0}" = "1" ] && dry_run=1
+  [ "${DUNE_ADMIN_ASSUME_YES:-0}" = "1" ] && assume_yes=1
+  [ -n "$mode" ] || { echo "Choose --all or --track <track>." >&2; exit 2; }
+  validate_int "$level" "Level"
+  validate_int "$xp" "XP amount"
+  [ "$level" -ge 0 ] && [ "$level" -le 100 ] || { echo "Level must be between 0 and 100." >&2; exit 1; }
+  [ "$xp" -ge 0 ] || { echo "XP amount must be zero or greater." >&2; exit 1; }
+
+  tracks_csv="$(specialization_tracks_csv "$mode" "$track")"
+  specialization_track_sql_array "$tracks_csv" >/dev/null
+  validate_specialization_schema
+  row="$(resolve_specialization_character "$character" "$actor_override")"
+  IFS=$'\t' read -r actor_id character_name account_id online_status exact_match <<< "$row"
+  if [ -n "$unlock_faction" ] && [ -z "${account_id:-}" ]; then
+    echo "Cannot unlock faction journey because the selected actor did not resolve to a player_state account_id." >&2
+    exit 1
+  fi
+
+  echo "Specialization update preview:"
+  echo "  Character: $character_name"
+  echo "  Actor id: $actor_id"
+  echo "  Account id: ${account_id:-unknown}"
+  echo "  Status: ${online_status:-Unknown}"
+  echo "  Tracks: $tracks_csv"
+  echo "  Level: $level"
+  echo "  XP amount: $xp"
+  echo "  Grant all keystones: $([ "$grant_keystones" = "1" ] && echo yes || echo no)"
+  echo "  Unlock faction journey: ${unlock_faction:-no}"
+  echo
+  echo "Current specialization tracks:"
+  specialization_preview "$actor_id" || true
+
+  payload="$(python3 - "$actor_id" "$character_name" "$tracks_csv" "$level" "$xp" "$grant_keystones" "$unlock_faction" <<'PY'
+import json, sys
+actor_id, name, tracks, level, xp, keystones, faction = sys.argv[1:]
+print(json.dumps({
+    "ActorId": int(actor_id),
+    "Character": name,
+    "Tracks": tracks.split(","),
+    "Level": int(level),
+    "XpAmount": int(xp),
+    "GrantKeystones": keystones == "1",
+    "UnlockFaction": faction or None,
+}, separators=(",", ":")))
+PY
+)"
+
+  if [ "$dry_run" = "1" ]; then
+    echo
+    echo "Dry run: no backup created and no database writes performed."
+    echo "Would upsert dune.specialization_tracks and grant keystones: $([ "$grant_keystones" = "1" ] && echo yes || echo no)."
+    [ -z "$unlock_faction" ] || echo "Would unlock faction journey for: $unlock_faction."
+    audit_admin_action "SpecializationXP" "$actor_id" "$character_name" "$payload" "postgres:dune" "dry-run"
+    return 0
+  fi
+
+  echo
+  echo "WARNING: this directly edits specialization tables in PostgreSQL."
+  [ -z "$unlock_faction" ] || echo "WARNING: this will also set the player's faction to $unlock_faction and mark JoinAHouse journey nodes complete."
+  echo "A database backup will be created before the write."
+  if [ "$assume_yes" != "1" ]; then
+    read -r -p "Type APPLY SPECIALIZATION XP to continue: " answer
+    [ "$answer" = "APPLY SPECIALIZATION XP" ] || { echo "Cancelled."; exit 1; }
+  fi
+
+  backup_file="$(backup_database_for_admin_write)"
+  echo
+  specialization_apply_sql "$actor_id" "$account_id" "$level" "$xp" "$tracks_csv" "$grant_keystones" "$unlock_faction"
+  audit_admin_action "SpecializationXP" "$actor_id" "$character_name" "$payload" "postgres:dune" "applied backup=$backup_file"
+
+  echo
+  echo "Specialization update applied."
+  echo "  Character: $character_name"
+  echo "  Actor id: $actor_id"
+  echo "  Tracks updated: $tracks_csv"
+  echo "  XP amount: $xp"
+  echo "  Level: $level"
+  echo "  Keystones granted: $([ "$grant_keystones" = "1" ] && echo yes || echo no)"
+  echo "  Faction journey unlocked: ${unlock_faction:-no}"
+  echo "  Backup: $backup_file"
+  echo "The player may need to relog, or affected services may need a restart, if specialization state is cached."
+}
+
+specialization_max_command() {
+  local character="${1:-}"
+  [ -n "$character" ] || { echo "Usage: dune admin specialization-max <character-name> [--grant-keystones] [--unlock-faction <Atreides|Harkonnen>] [--dry-run] [--yes]" >&2; exit 2; }
+  shift || true
+  specialization_xp_command "$character" --all --level 100 --xp 44182 "$@"
 }
 
 build_outer_b64() {
@@ -1307,8 +1681,8 @@ Unsupported upstream admin actions in this Docker port:
   server-side handler in this stack.
 - CheatScript and ServerExec are not exposed because the inspected upstream service
   marks them as live-tested no-ops.
-- Direct specialization-XP-by-track is not exposed. Live testing in the reference manager
-  found AwardXP ignores Category and grants generic player XP only.
+- Direct specialization track edits are exposed as specialization-xp/specialization-max
+  database admin tools. They update PostgreSQL directly and create a backup before writes.
 
 Implemented tools use the same Docker-native RabbitMQ admin command path as item
 grants and write audit history to runtime/generated/admin-command-history.tsv.
@@ -1365,6 +1739,14 @@ case "$cmd" in
   skill-modules)
     shift || true
     skill_modules_command "${1:-}"
+    ;;
+  specialization-xp)
+    shift || true
+    specialization_xp_command "$@"
+    ;;
+  specialization-max)
+    shift || true
+    specialization_max_command "$@"
     ;;
   refill-water)
     shift || true

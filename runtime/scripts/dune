@@ -248,6 +248,8 @@ Usage:
   runtime/scripts/dune admin skill-points <player-id|*> <points>
   runtime/scripts/dune admin skill-module <player-id|*> <module> <level>
   runtime/scripts/dune admin skill-modules [query]
+  runtime/scripts/dune admin specialization-xp <character-name> (--all|--track <track>) [--level <level>] [--xp <xp>] [--grant-keystones] [--unlock-faction <Atreides|Harkonnen>] [--dry-run] [--yes] [--actor-id <id>]
+  runtime/scripts/dune admin specialization-max <character-name> [--grant-keystones] [--unlock-faction <Atreides|Harkonnen>] [--dry-run] [--yes]
   runtime/scripts/dune admin refill-water <player-id|*> [amount]
   runtime/scripts/dune admin clean-inventory <player-id|*>
   runtime/scripts/dune admin reset-progression <player-id|*>

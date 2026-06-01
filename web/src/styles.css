@@ -1,0 +1,88 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #0d0f12;
+  color: #f3efe7;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, rgba(170, 111, 45, .18), transparent 38%), #0d0f12; }
+button, input { font: inherit; }
+button {
+  border: 1px solid #4d4032;
+  background: #25201b;
+  color: #f7e7c7;
+  padding: 10px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+button:hover { border-color: #c68b4a; }
+button.active { background: #9b5f2a; border-color: #d49a5c; }
+button.danger { border-color: #8d3434; color: #ffc9c9; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+input {
+  width: 100%;
+  border: 1px solid #4d4032;
+  background: #151719;
+  color: #fff7e6;
+  padding: 10px 12px;
+  border-radius: 6px;
+}
+label { display: grid; gap: 6px; color: #ceb894; }
+code { color: #ffd08a; }
+
+.app-shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+.sidebar { border-right: 1px solid #2f2a25; background: rgba(14, 15, 17, .88); padding: 22px; }
+.sidebar h1 { font-size: 20px; line-height: 1.2; margin: 0 0 24px; }
+.sidebar nav { display: grid; gap: 8px; }
+.sidebar nav button { display: flex; gap: 10px; align-items: center; justify-content: flex-start; background: transparent; }
+main { padding: 22px; min-width: 0; }
+.topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; border-bottom: 1px solid #2f2a25; padding-bottom: 16px; }
+.topbar div { display: grid; gap: 4px; }
+.topbar span { color: #aa9c87; }
+
+.login-screen { display: grid; min-height: 100vh; place-items: center; }
+.login-panel, .panel, .hero-panel { background: rgba(23, 24, 26, .92); border: 1px solid #312a22; border-radius: 8px; padding: 20px; box-shadow: 0 16px 60px rgba(0,0,0,.35); }
+.login-panel { width: min(440px, calc(100vw - 32px)); display: grid; gap: 14px; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.wide { grid-column: 1 / -1; }
+.panel-title, .action-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.action-row { justify-content: flex-start; margin: 12px 0; }
+.two-col { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end; max-width: 760px; }
+.service-card, .check-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #171a1d; border: 1px solid #302b25; border-radius: 8px; padding: 14px; }
+.service-card div, .check-card div { display: grid; gap: 4px; }
+.service-card span, .check-card p { margin: 0; color: #ad9f89; }
+.badge { border-radius: 999px; padding: 4px 9px; font-size: 12px; text-transform: uppercase; border: 1px solid #555; color: #ddd; }
+.badge-pass, .badge-succeeded { border-color: #3d8b62; color: #9be6bd; }
+.badge-warn, .badge-running { border-color: #a97932; color: #ffd08a; }
+.badge-fail, .badge-failed { border-color: #a74949; color: #ffc0c0; }
+.badge-info, .badge-queued { border-color: #5983b7; color: #b6d5ff; }
+.wizard { display: grid; grid-template-columns: 250px 1fr; gap: 16px; }
+.stepper { display: grid; gap: 8px; align-content: start; }
+.stepper button { text-align: left; }
+.wizard-controls { margin-top: 18px; display: flex; justify-content: space-between; }
+.check-grid { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.requirements { color: #d9c8aa; }
+.mini-output, .log-box, .command-preview {
+  white-space: pre-wrap;
+  overflow: auto;
+  background: #090b0d;
+  border: 1px solid #2d2925;
+  border-radius: 6px;
+  padding: 14px;
+  color: #e9dcc8;
+  max-height: 380px;
+}
+.log-box.large { min-height: 480px; }
+.command-preview { color: #ffd08a; }
+.empty, .danger-note, .error, .error-banner { color: #ffc0c0; }
+.error-banner { background: #351b1b; border: 1px solid #8d3434; padding: 12px; border-radius: 6px; margin-bottom: 14px; }
+.drawer { border-left: 1px solid #302b25; padding: 12px; color: #d9c8aa; }
+.gauge { display: grid; gap: 4px; background: #171a1d; border: 1px solid #302b25; border-radius: 8px; padding: 12px; }
+
+@media (max-width: 900px) {
+  .app-shell, .wizard { grid-template-columns: 1fr; }
+  .sidebar { border-right: 0; border-bottom: 1px solid #2f2a25; }
+  .sidebar nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid, .two-col { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,20 @@
+services:
+  arrakis-console:
+    build:
+      context: .
+      dockerfile: admin-server/Dockerfile
+    image: arrakis-server-console:dev
+    container_name: arrakis-server-console
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      DUNE_DOCKER_DIR: /repo
+      ADMIN_BIND_HOST: 0.0.0.0
+      ADMIN_BIND_PORT: 8088
+      ADMIN_AUTH_DISABLED: "${ADMIN_AUTH_DISABLED:-0}"
+      ALLOW_HOST_BOOTSTRAP: "${ALLOW_HOST_BOOTSTRAP:-false}"
+      ADMIN_MOCK_MODE: "${ADMIN_MOCK_MODE:-0}"
+      ADMIN_STATIC_DIR: /app/web-dist
+    volumes:
+      - ./:/repo
+      - /var/run/docker.sock:/var/run/docker.sock
