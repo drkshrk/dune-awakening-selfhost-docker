@@ -307,10 +307,11 @@ enable_dual() {
   apply_partition_labels
   write_director_override
   apply_usergame
-  restart_director_if_running
   recycle_idle_deepdesert_servers
   if [ "${RECYCLED_DEEPDESERT_SERVERS:-0}" = "1" ]; then
     echo "Refreshing dune-director after DeepDesert_1 recycle so the current instances re-register cleanly..."
+    restart_director_if_running
+  else
     restart_director_if_running
   fi
   echo

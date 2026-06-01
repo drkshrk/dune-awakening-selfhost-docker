@@ -180,6 +180,21 @@ else
 fi
 
 echo
+echo "=== Sietch state ==="
+if is_running dune-postgres; then
+  if runtime/scripts/sietches.sh validate >/tmp/dune-doctor-sietch.out 2>/tmp/dune-doctor-sietch.err; then
+    ok "Sietch generated state matches current world partitions"
+  else
+    fail_msg "Sietch generated state validation failed"
+    sed 's/^/     /' /tmp/dune-doctor-sietch.out 2>/dev/null || true
+    sed 's/^/     /' /tmp/dune-doctor-sietch.err 2>/dev/null || true
+  fi
+  rm -f /tmp/dune-doctor-sietch.out /tmp/dune-doctor-sietch.err
+else
+  warn_msg "Skipping Sietch state validation because dune-postgres is not running"
+fi
+
+echo
 echo "=== RabbitMQ and service signals ==="
 if is_running dune-rmq-game && docker exec dune-rmq-game rabbitmq-diagnostics -q ping >/dev/null 2>&1; then
   ok "RabbitMQ game reachable"

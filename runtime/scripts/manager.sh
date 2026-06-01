@@ -6,6 +6,8 @@ cd "$(dirname "$0")/../.."
 DUNE="runtime/scripts/dune"
 USERSETTINGS_PY="runtime/scripts/usersettings.py"
 ADMIN_ITEMS_FILE="runtime/data/admin-items.json"
+ADMIN_VEHICLES_FILE="runtime/data/admin-vehicles.json"
+ADMIN_SKILL_MODULES_FILE="runtime/data/admin-skill-modules.json"
 source runtime/scripts/runtime-env.sh
 MENU_INTERRUPTED=0
 ACTION_CANCELLED=0
@@ -13,6 +15,7 @@ MENU_CHOICE=""
 MENU_ACTIVE_TTY=""
 MENU_ALT_SCREEN_ACTIVE=0
 MENU_CURSOR_HIDDEN=0
+ADMIN_SELECTION_CANCELLED=0
 
 restore_menu_tty() {
   if [ "${MENU_CURSOR_HIDDEN:-0}" -eq 1 ] && [ -t 2 ]; then
@@ -122,6 +125,11 @@ pause() {
   fi
   echo
   prompt_text "Press Enter to return to menu..." _pause allow-empty >/dev/null || true
+}
+
+admin_back_to_menu() {
+  ACTION_CANCELLED=1
+  ADMIN_SELECTION_CANCELLED=1
 }
 
 clear_screen() {
@@ -1412,6 +1420,69 @@ edit_usergame_config_field() {
   esac
 }
 
+edit_userengine_config_field() {
+  local field_id="$1"
+  local label="$2"
+  local kind="$3"
+
+  case "$kind" in
+    bool)
+      edit_userengine_boolean_field "$field_id" "Set $label" "True" "False" "True" "False"
+      ;;
+    bool-lower)
+      edit_userengine_boolean_field "$field_id" "Set $label" "true" "false" "true" "false"
+      ;;
+    int)
+      edit_userengine_numeric_field "$field_id" "New $label (/back to cancel):" int
+      ;;
+    float)
+      edit_userengine_numeric_field "$field_id" "New $label (/back to cancel):" float
+      ;;
+    text)
+      local value=""
+      prompt_text "New $label (/back to cancel):" value allow-empty || return
+      value="$(sanitize_prompt_value "$value")"
+      if [ -z "$value" ] || [ "$value" = "/back" ]; then
+        info "No changes made."
+        return
+      fi
+      save_userengine_field "$field_id" "$value"
+      ;;
+  esac
+}
+
+edit_userengine_category_menu() {
+  local title="$1"
+  shift
+  local entries=("$@")
+  local labels=()
+  local entry field_id label kind choice
+
+  while true; do
+    load_usersettings_values engine
+
+    labels=()
+    for entry in "${entries[@]}"; do
+      IFS='|' read -r field_id label kind <<< "$entry"
+      labels+=("$label  Current: $(usersettings_value "$field_id")")
+    done
+    labels+=("Back")
+
+    MENU_CONTEXT_TEXT="$(userengine_about_text)"
+    menu_or_back "$title" "${labels[@]}" || return
+    MENU_CONTEXT_TEXT=""
+    choice="$MENU_CHOICE"
+    if [ "$choice" -gt "${#entries[@]}" ]; then
+      return
+    fi
+
+    entry="${entries[$((choice - 1))]}"
+    IFS='|' read -r field_id label kind <<< "$entry"
+    edit_userengine_config_field "$field_id" "$label" "$kind"
+    pause
+  done
+}
+
 edit_usergame_category_menu() {
   local map="$1"
   local partition_id="$2"
@@ -1468,25 +1539,112 @@ edit_userengine_menu() {
   while true; do
     load_usersettings_values engine
     MENU_CONTEXT_TEXT="$(userengine_about_text)"
-    menu_or_back "Edit UserEngine (Global Defaults)"       "Port  Current: $(usersettings_value port)"       "IGWPort  Current: $(usersettings_value igw_port)"       "Mining Output Multiplier  Current: $(usersettings_value mining_output_multiplier)"       "Vehicle Mining Multiplier  Current: $(usersettings_value vehicle_mining_output_multiplier)"       "PvP Resource Multiplier  Current: $(usersettings_value pvp_resource_multiplier)"       "Vehicle Durability Damage  Current: $(usersettings_value vehicle_durability_damage_multiplier)"       "Sandstorm Enabled  Current: $(usersettings_value sandstorm_enabled)"       "Sandstorm Treasure Enabled  Current: $(usersettings_value sandstorm_treasure_enabled)"       "Sandworm Enabled  Current: $(usersettings_value sandworm_enabled)"       "Sandworm Collision Interaction  Current: $(usersettings_value sandworm_collision_interaction)"       "Sandworm Danger Zones Enabled  Current: $(usersettings_value sandworm_danger_zones_enabled)"       "Sandworm Invulnerability On Exit  Current: $(usersettings_value sandworm_invulnerability_on_exit)"       "Sandworm Invulnerability On Restart  Current: $(usersettings_value sandworm_invulnerability_on_restart)"       "Back" || return
+    menu_or_back "Edit UserEngine (Global Defaults)" \
+      "Port  Current: $(usersettings_value port)" \
+      "IGWPort  Current: $(usersettings_value igw_port)" \
+      "Engine Console Variables" \
+      "PvP / Security" \
+      "Storms / Building" \
+      "Progression / Economy" \
+      "Harvesting / Crafting" \
+      "Survival / Combat" \
+      "World / Guilds / Vehicles" \
+      "Inventory / Sandworms / Patrol Ships" \
+      "Back" || return
     MENU_CONTEXT_TEXT=""
     choice="$MENU_CHOICE"
 
     case "$choice" in
       1) edit_userengine_port_field port "Port"; pause ;;
       2) edit_userengine_port_field igw_port "IGWPort"; pause ;;
-      3) edit_userengine_numeric_field mining_output_multiplier "New mining output multiplier (example: 1.0 or 10.0, /back to cancel):" float; pause ;;
-      4) edit_userengine_numeric_field vehicle_mining_output_multiplier "New vehicle mining multiplier (example: 1.0 or 10.0, /back to cancel):" float; pause ;;
-      5) edit_userengine_numeric_field pvp_resource_multiplier "New PvP resource multiplier (example: 2.5, /back to cancel):" float; pause ;;
-      6) edit_userengine_numeric_field vehicle_durability_damage_multiplier "New vehicle durability damage multiplier (example: 1.0, /back to cancel):" float; pause ;;
-      7) edit_userengine_boolean_field sandstorm_enabled "Set Sandstorm" "Enabled (1)" "Disabled (0)" "1" "0"; pause ;;
-      8) edit_userengine_boolean_field sandstorm_treasure_enabled "Set Sandstorm Treasure" "Enabled (1)" "Disabled (0)" "1" "0"; pause ;;
-      9) edit_userengine_boolean_field sandworm_enabled "Set Sandworm" "Enabled (1)" "Disabled (0)" "1" "0"; pause ;;
-      10) edit_userengine_boolean_field sandworm_collision_interaction "Set Sandworm Collision Interaction" "True" "False" "true" "false"; pause ;;
-      11) edit_userengine_boolean_field sandworm_danger_zones_enabled "Set Sandworm Danger Zones" "True" "False" "true" "false"; pause ;;
-      12) edit_userengine_numeric_field sandworm_invulnerability_on_exit "Seconds of sandworm invulnerability on exit (/back to cancel):" float; pause ;;
-      13) edit_userengine_numeric_field sandworm_invulnerability_on_restart "Seconds of sandworm invulnerability after restart (/back to cancel):" float; pause ;;
-      14) return ;;
+      3)
+        edit_userengine_category_menu "UserEngine Console Variables" \
+          "mining_output_multiplier|Mining Output Multiplier|float" \
+          "vehicle_mining_output_multiplier|Vehicle Mining Multiplier|float" \
+          "pvp_resource_multiplier|PvP Resource Multiplier|float" \
+          "vehicle_durability_damage_multiplier|Vehicle Durability Damage|float" \
+          "sandstorm_enabled|Sandstorm Enabled|bool-lower" \
+          "sandstorm_treasure_enabled|Sandstorm Treasure Enabled|bool-lower" \
+          "sandworm_enabled|Sandworm Enabled|bool-lower" \
+          "sandworm_collision_interaction|Sandworm Collision Interaction|bool-lower" \
+          "sandworm_danger_zones_enabled|Sandworm Danger Zones Enabled|bool-lower" \
+          "sandworm_invulnerability_on_exit|Sandworm Invulnerability On Exit|float" \
+          "sandworm_invulnerability_on_restart|Sandworm Invulnerability On Restart|float"
+        ;;
+      4)
+        edit_userengine_category_menu "UserEngine PvP / Security" \
+          "force_pvp_all_partitions|Force PvP On All Partitions|bool" \
+          "security_zones_enabled|Security Zones Enabled|bool" \
+          "legacy_pvp_enabled|Legacy bPvPEnabled|bool" \
+          "server_pve|Server PvE|bool"
+        ;;
+      5)
+        edit_userengine_category_menu "UserEngine Storms / Building" \
+          "coriolis_auto_spawn_enabled|Coriolis Storm Enabled|bool" \
+          "storm_cycle_duration|Storm Cycle Duration|int" \
+          "storm_duration|Storm Duration|int" \
+          "storm_warning_duration|Storm Warning Duration|int" \
+          "storm_cycle_wait|Storm Cycle Wait|int" \
+          "max_landclaim_segments|Max Landclaim Segments|int" \
+          "building_blueprint_max_extensions|Building Blueprint Max Extensions|int" \
+          "base_backup_max_extensions|Base Backup Max Extensions|int" \
+          "building_restriction_limits_enabled|Building Restriction Limits Enabled|bool"
+        ;;
+      6)
+        edit_userengine_category_menu "UserEngine Progression / Economy" \
+          "global_xp_multiplier|Global XP Multiplier|float" \
+          "global_fame_multiplier|Global Fame Multiplier|float" \
+          "global_progression_speed_multiplier|Global Progression Speed Multiplier|float" \
+          "guild_creation_cost|Guild Creation Cost|int" \
+          "sell_order_price_percentage_fee|Sell Order Price Percentage Fee|float" \
+          "spice_tax_amount|Spice Tax Amount|float" \
+          "spice_tax_interval|Spice Tax Interval|int"
+        ;;
+      7)
+        edit_userengine_category_menu "UserEngine Harvesting / Crafting" \
+          "global_harvest_amount_multiplier|Global Harvest Amount Multiplier|float" \
+          "global_harvest_health_multiplier|Global Harvest Health Multiplier|float" \
+          "cutteray_hem_multiplier_per_node_tier_table|Cutteray Hem Multiplier Per Node Tier Table|float" \
+          "minimum_augmentable_item_quality|Minimum Augmentable Item Quality|int" \
+          "item_durability_loss_multiplier|Item Durability Loss Multiplier|float" \
+          "item_deterioration_rate|Item Deterioration Rate|float"
+        ;;
+      8)
+        edit_userengine_category_menu "UserEngine Survival / Combat" \
+          "water_consumption_rate|Water Consumption Rate|float" \
+          "water_consumption_in_storm_multiplier|Water Consumption In Storm Multiplier|float" \
+          "global_damage_to_npcs_multiplier|Global Damage To NPCs Multiplier|float" \
+          "global_damage_to_players_multiplier|Global Damage To Players Multiplier|float" \
+          "global_health_multiplier|Global Health Multiplier|float" \
+          "global_building_damage_multiplier|Global Building Damage Multiplier|float" \
+          "building_decay_rate_multiplier|Building Decay Rate Multiplier|float" \
+          "enable_building_stability|Enable Building Stability|bool" \
+          "inventory_weight_multiplier|Inventory Weight Multiplier|float" \
+          "player_starting_water|Player Starting Water|float" \
+          "default_reconnect_grace_period_seconds|Default Reconnect Grace Period Seconds|int"
+        ;;
+      9)
+        edit_userengine_category_menu "UserEngine World / Guilds / Vehicles" \
+          "cycle_duration_in_days|Cycle Duration In Days|int" \
+          "db_wipe_enabled|DB Wipe Enabled|bool" \
+          "max_guild_members_allowed|Max Guild Members Allowed|int" \
+          "max_guilds_allowed|Max Guilds Allowed|int" \
+          "max_permissions_per_actor|Max Permissions Per Actor|int" \
+          "vehicle_quicksand_damage|Vehicle Quicksand Damage|float"
+        ;;
+      10)
+        edit_userengine_category_menu "UserEngine Inventory / Sandworms / Patrol Ships" \
+          "player_inventory_starting_size|Player Inventory Starting Size|int" \
+          "player_inventory_starting_volume_capacity|Player Inventory Starting Volume Capacity|float" \
+          "sandworm_system|Sandworm System|text" \
+          "worm_detection_distance|Worm Detection Distance|float" \
+          "min_worm_spawn_interval|Min Worm Spawn Interval|float" \
+          "min_distance_between_sandworms|Min Distance Between Sandworms|float" \
+          "sandworm_quicksand_speed_modifier|Sandworm Quicksand Speed Modifier|float" \
+          "patrol_ship_spawn_time|Patrol Ship Spawn Time|float" \
+          "patrol_ship_despawn_time|Patrol Ship Despawn Time|float"
+        ;;
+      11) return ;;
     esac
   done
 }
@@ -2295,6 +2453,48 @@ for item in sorted(rows, key=lambda value: (str(value.get("source") or "").casef
 PY
 }
 
+admin_vehicle_rows() {
+  python3 - "$ADMIN_VEHICLES_FILE" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1], encoding="utf-8"))
+for row in rows:
+    print("\t".join([
+        str(row.get("id") or ""),
+        str(row.get("actor_class") or ""),
+        ", ".join(str(t) for t in row.get("templates") or []),
+    ]))
+PY
+}
+
+admin_vehicle_template_rows() {
+  local vehicle_id="$1"
+  python3 - "$ADMIN_VEHICLES_FILE" "$vehicle_id" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1], encoding="utf-8"))
+wanted = sys.argv[2].casefold()
+for row in rows:
+    if str(row.get("id") or "").casefold() == wanted:
+        for template in row.get("templates") or []:
+            print(str(template))
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+admin_skill_module_rows() {
+  python3 - "$ADMIN_SKILL_MODULES_FILE" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1], encoding="utf-8"))
+for row in sorted(rows, key=lambda r: (str(r.get("category") or ""), str(r.get("name") or ""))):
+    print("\t".join([
+        str(row.get("id") or ""),
+        str(row.get("name") or ""),
+        str(row.get("category") or ""),
+        str(row.get("maxLevel") or 1),
+    ]))
+PY
+}
+
 admin_online_player_rows() {
   docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
     select
@@ -2321,14 +2521,41 @@ admin_online_player_rows() {
   " 2>/dev/null || true
 }
 
+admin_known_player_rows() {
+  docker exec dune-postgres psql -U dune -d dune -At -F $'\t' -c "
+    select
+      coalesce(nullif(a.\"user\", ''), nullif(a.funcom_id, '')) as fls_id,
+      ps.account_id,
+      coalesce(nullif(ps.character_name, ''), '<unknown>') as character_name,
+      coalesce(ps.online_status::text, '') as online_status,
+      coalesce(fs.map, wp.map, '') as map,
+      coalesce(ps.server_id, '') as server_id
+    from dune.player_state ps
+    left join dune.accounts a on a.id = ps.account_id
+    left join dune.farm_state fs on fs.server_id = ps.server_id
+    left join dune.world_partition wp on wp.partition_id = ps.previous_server_partition_id
+    where coalesce(nullif(a.\"user\", ''), nullif(a.funcom_id, '')) <> ''
+    order by
+      case when ps.online_status <> 'Offline' then 0 else 1 end,
+      lower(coalesce(nullif(ps.character_name, ''), ps.account_id::text));
+  " 2>/dev/null || true
+}
+
 admin_choose_player() {
   local rows=()
   local choice row fls_id account_id character_name online_status map_name server_id manual_id
   local i
 
+  ADMIN_SELECTION_CANCELLED=0
+
   if ! docker inspect -f '{{.State.Running}}' dune-postgres 2>/dev/null | grep -qx 'true'; then
     error_msg "Postgres container is not running, so online players cannot be listed."
-    prompt_text "Enter Player FLS ID manually, or * for all online players:" manual_id || return 1
+    prompt_text "Enter Player FLS ID manually, * for all online players, or 0 to go back:" manual_id || return 1
+    manual_id="$(sanitize_numeric_prompt_value "$manual_id")"
+    if [ "$manual_id" = "0" ]; then
+      admin_back_to_menu
+      return 0
+    fi
     ADMIN_SELECTED_PLAYER_ID="$manual_id"
     ADMIN_SELECTED_PLAYER_LABEL="$manual_id"
     return 0
@@ -2364,7 +2591,8 @@ admin_choose_player() {
   choice="$(sanitize_numeric_prompt_value "$choice")"
   case "$choice" in
     0)
-      return 1
+      admin_back_to_menu
+      return 0
       ;;
     A|a)
       ADMIN_SELECTED_PLAYER_ID="*"
@@ -2406,6 +2634,7 @@ admin_grant_item_flow() {
   ADMIN_SELECTED_PLAYER_ID=""
   ADMIN_SELECTED_PLAYER_LABEL=""
   admin_choose_player || return
+  [ "${ADMIN_SELECTION_CANCELLED:-0}" -eq 0 ] || return 0
   player_id="$ADMIN_SELECTED_PLAYER_ID"
   player_label="$ADMIN_SELECTED_PLAYER_LABEL"
 
@@ -2431,6 +2660,7 @@ admin_grant_item_flow() {
   prompt_text "Category Number:" choice || return
   choice="$(sanitize_numeric_prompt_value "$choice")"
   if [ "$choice" = "0" ]; then
+    ACTION_CANCELLED=1
     return 0
   fi
   if ! printf '%s' "$choice" | grep -Eq '^[1-9][0-9]*$' || [ "$choice" -gt "${#category_rows[@]}" ]; then
@@ -2464,6 +2694,7 @@ admin_grant_item_flow() {
   prompt_text "Item Number:" choice || return
   choice="$(sanitize_numeric_prompt_value "$choice")"
   if [ "$choice" = "0" ]; then
+    ACTION_CANCELLED=1
     return 0
   fi
   if ! printf '%s' "$choice" | grep -Eq '^[1-9][0-9]*$' || [ "$choice" -gt "${#item_rows[@]}" ]; then
@@ -2537,45 +2768,354 @@ admin_tools_menu() {
   while true; do
     menu_or_back "Admin Tools" \
       "Grant Item" \
+      "Player Lookup / Location" \
+      "Kick Player" \
+      "Give XP" \
+      "Set Skill Points" \
+      "Set Skill Level" \
+      "Refill Water" \
+      "Teleport Player" \
+      "Spawn Vehicle" \
+      "Clean Inventory" \
+      "Reset Progression" \
+      "Command History" \
       "Back" || return
     choice="$MENU_CHOICE"
 
     case "$choice" in
-      1) admin_grant_item_flow; pause ;;
-      2) return ;;
+      1) admin_run_flow admin_grant_item_flow ;;
+      2) admin_run_flow admin_player_location_flow ;;
+      3) admin_run_flow admin_kick_player_flow ;;
+      4) admin_run_flow admin_simple_number_flow "Give XP" award-xp "Experience amount" 1 100000000 ;;
+      5) admin_run_flow admin_simple_number_flow "Set Skill Points" skill-points "Skill points" 0 100000 ;;
+      6) admin_run_flow admin_skill_module_flow ;;
+      7) admin_run_flow admin_simple_number_flow "Refill Water" refill-water "Water amount" 1 1000000;;
+      8) admin_run_flow admin_teleport_flow ;;
+      9) admin_run_flow admin_spawn_vehicle_flow ;;
+      10) admin_run_flow admin_destructive_flow "Clean Inventory" clean-inventory ;;
+      11) admin_run_flow admin_destructive_flow "Reset Progression" reset-progression ;;
+      12) admin_run_flow run_cmd "$DUNE" admin history ;;
+      13) return ;;
     esac
   done
 }
 
-admin_kick_player_flow() {
-  local player_id player_label
+admin_run_flow() {
+  set +e
+  "$@"
+  local rc=$?
+  set -e
+  if [ "$rc" -ne 0 ] && [ "${ACTION_CANCELLED:-0}" -ne 1 ]; then
+    echo
+    echo "Admin action returned status $rc."
+  fi
+  pause
+  return 0
+}
 
+admin_player_location_flow() {
+  local player_id
   ADMIN_SELECTED_PLAYER_ID=""
   ADMIN_SELECTED_PLAYER_LABEL=""
   admin_choose_player || return
+  [ "${ADMIN_SELECTION_CANCELLED:-0}" -eq 0 ] || return 0
   player_id="$ADMIN_SELECTED_PLAYER_ID"
-  player_label="$ADMIN_SELECTED_PLAYER_LABEL"
+  [ "$player_id" != "*" ] || { error_msg "Player lookup requires a specific player."; return 1; }
+  run_cmd "$DUNE" admin player-location "$player_id"
+}
 
+admin_simple_number_flow() {
+  local title="$1" command="$2" prompt="$3"
+  local min_value="${4:--2147483648}" max_value="${5:-2147483647}"
+  local player_id amount
+  ADMIN_SELECTED_PLAYER_ID=""
+  ADMIN_SELECTED_PLAYER_LABEL=""
+  admin_choose_player || return 1
+  [ "${ADMIN_SELECTION_CANCELLED:-0}" -eq 0 ] || return 0
+  player_id="$ADMIN_SELECTED_PLAYER_ID"
+  prompt_text "$prompt:" amount || return 1
+  amount="$(sanitize_numeric_prompt_value "$amount")"
+  if ! printf '%s' "$amount" | grep -Eq '^-?[0-9]+$'; then
+    error_msg "$prompt must be an integer."
+    return 1
+  fi
+  if [ "$amount" -lt "$min_value" ] || [ "$amount" -gt "$max_value" ]; then
+    error_msg "$prompt must be between $min_value and $max_value."
+    return 1
+  fi
   echo
-  if [ "$player_id" = "*" ]; then
-    echo "Kick all online players now?"
-    echo "  Target: $player_label"
-    echo "  Scope: whatever the running server farm currently considers online"
-    echo
-    if confirm "Publish KickPlayer for all online players"; then
-      run_cmd "$DUNE" admin kick --all-online --yes
-    else
-      echo "Cancelled."
-    fi
+  echo "$title now?"
+  echo "  Player: $ADMIN_SELECTED_PLAYER_LABEL"
+  echo "  Amount: $amount"
+  echo
+  if confirm "Publish $title"; then
+    run_cmd env DUNE_ADMIN_ASSUME_YES=1 "$DUNE" admin "$command" "$player_id" "$amount"
+  else
+    echo "Cancelled."
+  fi
+}
+
+admin_skill_module_flow() {
+  local player_id module level choice row module_id module_name module_category max_level
+  local rows=()
+  ADMIN_SELECTED_PLAYER_ID=""
+  ADMIN_SELECTED_PLAYER_LABEL=""
+  admin_choose_player || return
+  [ "${ADMIN_SELECTION_CANCELLED:-0}" -eq 0 ] || return 0
+  player_id="$ADMIN_SELECTED_PLAYER_ID"
+  if [ ! -r "$ADMIN_SKILL_MODULES_FILE" ]; then
+    error_msg "Missing skill module catalog: $ADMIN_SKILL_MODULES_FILE"
+    return 1
+  fi
+  mapfile -t rows < <(admin_skill_module_rows)
+  echo
+  echo "Select Skill Module"
+  echo "==================="
+  echo
+  local i
+  for i in "${!rows[@]}"; do
+    IFS=$'\t' read -r module_id module_name module_category max_level <<< "${rows[$i]}"
+    printf '%s) %s [%s]\n' "$((i + 1))" "$module_name" "$module_category"
+    printf '   id: %s, max level: %s\n' "$module_id" "$max_level"
+  done
+  echo "0) Back"
+  echo
+  prompt_text "Skill Module Number:" choice || return
+  choice="$(sanitize_numeric_prompt_value "$choice")"
+  if [ "$choice" = "0" ]; then
+    ACTION_CANCELLED=1
     return 0
   fi
+  if ! printf '%s' "$choice" | grep -Eq '^[1-9][0-9]*$' || [ "$choice" -gt "${#rows[@]}" ]; then
+    error_msg "Invalid skill module selection."
+    return 1
+  fi
+  row="${rows[$((choice - 1))]}"
+  IFS=$'\t' read -r module_id module_name module_category max_level <<< "$row"
+  module="$module_id"
+  prompt_text "Level:" level || return
+  level="$(sanitize_numeric_prompt_value "$level")"
+  if ! printf '%s' "$level" | grep -Eq '^[0-9]+$'; then
+    error_msg "Level must be a non-negative integer."
+    return 1
+  fi
+  if [ "$level" -gt "$max_level" ]; then
+    error_msg "Level must be between 0 and $max_level for $module_name."
+    return 1
+  fi
+  echo
+  echo "Set skill level now?"
+  echo "  Player: $ADMIN_SELECTED_PLAYER_LABEL"
+  echo "  Module: $module_name [$module_category]"
+  echo "  Raw id: $module"
+  echo "  Level: $level"
+  echo
+  if confirm "Publish skill level update"; then
+    run_cmd env DUNE_ADMIN_ASSUME_YES=1 "$DUNE" admin skill-module "$player_id" "$module" "$level"
+  else
+    echo "Cancelled."
+  fi
+}
+
+admin_teleport_flow() {
+  local player_id x y z yaw
+  ADMIN_SELECTED_PLAYER_ID=""
+  ADMIN_SELECTED_PLAYER_LABEL=""
+  admin_choose_player || return
+  [ "${ADMIN_SELECTION_CANCELLED:-0}" -eq 0 ] || return 0
+  player_id="$ADMIN_SELECTED_PLAYER_ID"
+  [ "$player_id" != "*" ] || { error_msg "Teleport requires a specific player."; return 1; }
+  prompt_text "X:" x || return
+  prompt_text "Y:" y || return
+  prompt_text "Z:" z || return
+  prompt_text "Yaw [blank for default]:" yaw allow-empty || return
+  if confirm "Publish teleport command"; then
+    if [ -n "$yaw" ]; then
+      run_cmd env DUNE_ADMIN_ASSUME_YES=1 "$DUNE" admin teleport "$player_id" "$x" "$y" "$z" "$yaw"
+    else
+      run_cmd env DUNE_ADMIN_ASSUME_YES=1 "$DUNE" admin teleport "$player_id" "$x" "$y" "$z"
+    fi
+  else
+    echo "Cancelled."
+  fi
+}
+
+admin_spawn_vehicle_flow() {
+  local player_id class_name template choice row actor templates template_choice
+  local rows=() template_rows=()
+  ADMIN_SELECTED_PLAYER_ID=""
+  ADMIN_SELECTED_PLAYER_LABEL=""
+  admin_choose_player || return
+  [ "${ADMIN_SELECTION_CANCELLED:-0}" -eq 0 ] || return 0
+  player_id="$ADMIN_SELECTED_PLAYER_ID"
+  [ "$player_id" != "*" ] || { error_msg "Vehicle spawn requires a specific player."; return 1; }
+  if [ ! -r "$ADMIN_VEHICLES_FILE" ]; then
+    error_msg "Missing vehicle catalog: $ADMIN_VEHICLES_FILE"
+    return 1
+  fi
+  mapfile -t rows < <(admin_vehicle_rows)
+  echo
+  echo "Select Vehicle"
+  echo "=============="
+  echo
+  local i
+  for i in "${!rows[@]}"; do
+    IFS=$'\t' read -r class_name actor templates <<< "${rows[$i]}"
+    printf '%s) %s\n' "$((i + 1))" "$class_name"
+    printf '   templates: %s\n' "$templates"
+  done
+  echo "0) Back"
+  echo
+  prompt_text "Vehicle Number:" choice || return
+  choice="$(sanitize_numeric_prompt_value "$choice")"
+  if [ "$choice" = "0" ]; then
+    ACTION_CANCELLED=1
+    return 0
+  fi
+  if ! printf '%s' "$choice" | grep -Eq '^[1-9][0-9]*$' || [ "$choice" -gt "${#rows[@]}" ]; then
+    error_msg "Invalid vehicle selection."
+    return 1
+  fi
+  row="${rows[$((choice - 1))]}"
+  IFS=$'\t' read -r class_name actor templates <<< "$row"
+
+  mapfile -t template_rows < <(admin_vehicle_template_rows "$class_name")
+  echo
+  echo "Select Template For $class_name"
+  echo "==============================="
+  echo
+  for i in "${!template_rows[@]}"; do
+    printf '%s) %s\n' "$((i + 1))" "${template_rows[$i]}"
+  done
+  echo "0) Back"
+  echo
+  prompt_text "Template Number:" template_choice || return
+  template_choice="$(sanitize_numeric_prompt_value "$template_choice")"
+  if [ "$template_choice" = "0" ]; then
+    ACTION_CANCELLED=1
+    return 0
+  fi
+  if ! printf '%s' "$template_choice" | grep -Eq '^[1-9][0-9]*$' || [ "$template_choice" -gt "${#template_rows[@]}" ]; then
+    error_msg "Invalid template selection."
+    return 1
+  fi
+  template="${template_rows[$((template_choice - 1))]}"
+  echo
+  echo "Spawn vehicle in front of player now?"
+  echo "  Player: $ADMIN_SELECTED_PLAYER_LABEL"
+  echo "  Vehicle: $class_name"
+  echo "  Template: $template"
+  echo "  Position: about 4 meters in front of the player"
+  echo
+  if confirm "Publish vehicle spawn command"; then
+    run_cmd env DUNE_ADMIN_ASSUME_YES=1 "$DUNE" admin spawn-vehicle "$player_id" "$class_name" "$template"
+  else
+    echo "Cancelled."
+  fi
+}
+
+admin_destructive_flow() {
+  local title="$1" command="$2" player_id
+  ADMIN_SELECTED_PLAYER_ID=""
+  ADMIN_SELECTED_PLAYER_LABEL=""
+  admin_choose_player || return
+  [ "${ADMIN_SELECTION_CANCELLED:-0}" -eq 0 ] || return 0
+  player_id="$ADMIN_SELECTED_PLAYER_ID"
+  echo
+  echo "$title is destructive."
+  echo "  Player: $ADMIN_SELECTED_PLAYER_LABEL"
+  echo
+  if confirm "Continue to $title"; then
+    run_cmd env DUNE_ADMIN_ASSUME_YES=1 "$DUNE" admin "$command" "$player_id"
+  else
+    echo "Cancelled."
+  fi
+}
+
+admin_kick_player_flow() {
+  local player_id player_label choice row fls_id account_id character_name online_status map_name server_id
+  local rows=() using_known=0 i
+
+  ADMIN_SELECTED_PLAYER_ID=""
+  ADMIN_SELECTED_PLAYER_LABEL=""
+
+  ADMIN_SELECTION_CANCELLED=0
+  if ! docker inspect -f '{{.State.Running}}' dune-postgres 2>/dev/null | grep -qx 'true'; then
+    error_msg "Postgres container is not running, so online players cannot be listed."
+    echo "Kick normally requires an online player. Start the stack or use the CLI with a known FLS id."
+    return 1
+  fi
+
+  mapfile -t rows < <(admin_online_player_rows)
+  if [ "${#rows[@]}" -eq 0 ]; then
+    using_known=1
+    mapfile -t rows < <(admin_known_player_rows)
+  fi
+  if [ "${#rows[@]}" -eq 0 ]; then
+    echo "No known players found."
+    return 1
+  fi
+
+  echo
+  if [ "$using_known" -eq 1 ]; then
+    echo "Select Known Player"
+    echo "==================="
+    echo
+    warn "No online players were detected. Kick usually only works for online players."
+  else
+    echo "Select Online Player To Kick"
+    echo "============================"
+    echo
+  fi
+  for i in "${!rows[@]}"; do
+    IFS=$'\t' read -r fls_id account_id character_name online_status map_name server_id <<< "${rows[$i]}"
+    printf '%s) %s\n' "$((i + 1))" "$character_name"
+    printf '   FLS ID: %s\n' "${fls_id:-unknown}"
+    printf '   local account id: %s\n' "$account_id"
+    printf '   status: %s\n' "${online_status:-unknown}"
+    [ -z "${map_name:-}" ] || printf '   map: %s\n' "$map_name"
+    [ -z "${server_id:-}" ] || printf '   server: %s\n' "$server_id"
+    echo
+  done
+  echo "0) Back"
+  echo
+
+  prompt_text "Player Number:" choice || return 1
+  choice="$(sanitize_numeric_prompt_value "$choice")"
+  if [ "$choice" = "0" ]; then
+    ACTION_CANCELLED=1
+    return 0
+  fi
+  if ! printf '%s' "$choice" | grep -Eq '^[1-9][0-9]*$' || [ "$choice" -gt "${#rows[@]}" ]; then
+    error_msg "Invalid player selection."
+    return 1
+  fi
+
+  row="${rows[$((choice - 1))]}"
+  IFS=$'\t' read -r player_id account_id character_name online_status map_name server_id <<< "$row"
+  if [ -z "${player_id:-}" ]; then
+    error_msg "Selected player has no FLS id; KickPlayer requires FLS PlayerId."
+    return 1
+  fi
+  player_label="$character_name ($player_id)"
 
   echo "Kick player now?"
   echo "  Player: $player_label"
   echo "  PlayerId: $player_id"
+  echo "  Status: ${online_status:-unknown}"
+  [ -z "${map_name:-}" ] || echo "  Map: $map_name"
+  if [ "${online_status:-Offline}" = "Offline" ]; then
+    warn "This player is not currently online; the runtime command may not disconnect anyone."
+  fi
+  echo "  Command: KickPlayer"
+  echo "  Reason: not supported by the runtime command"
   echo
   if confirm "Publish KickPlayer now"; then
-    run_cmd "$DUNE" admin kick "$player_id" --yes
+    if [ "${online_status:-Offline}" = "Offline" ]; then
+      run_cmd "$DUNE" admin kick "$player_id" --yes --force --label "$player_label"
+    else
+      run_cmd "$DUNE" admin kick "$player_id" --yes --label "$player_label"
+    fi
   else
     echo "Cancelled."
   fi
@@ -2846,7 +3386,14 @@ dual_deepdesert_menu() {
     case "$choice" in
       1) run_cmd "$DUNE" deepdesert dual status; pause ;;
       2) run_cmd "$DUNE" deepdesert dual enable; pause ;;
-      3) run_cmd "$DUNE" deepdesert dual disable; pause ;;
+      3)
+        if confirm "Disable Dual Deep Desert PvP/PvE now?"; then
+          run_cmd "$DUNE" deepdesert dual disable --force --yes
+        else
+          echo "Cancelled."
+        fi
+        pause
+        ;;
       4) run_cmd "$DUNE" deepdesert dual bootstrap; pause ;;
       5) return ;;
     esac
@@ -2962,6 +3509,8 @@ sietches_menu() {
   while true; do
     menu_or_back "Sietches" \
       "List Maps" \
+      "Validate / Status" \
+      "Reconcile / Repair State" \
       "Edit UserEngine" \
       "Edit Map" \
       "Revert All UserSettings To Defaults" \
@@ -2973,8 +3522,21 @@ sietches_menu() {
 
     case "$choice" in
       1) run_cmd "$DUNE" sietches list; pause ;;
-      2) edit_userengine_menu ;;
+      2) run_cmd "$DUNE" sietches validate; pause ;;
       3)
+        if confirm "Reconcile live Sietch dimensions and republish browser state now?"; then
+          run_cmd "$DUNE" sietches reconcile Survival_1
+          run_cmd "$DUNE" sietches reconcile DeepDesert_1
+          run_cmd "$DUNE" sietches sync
+          run_cmd "$DUNE" sietches validate
+          run_cmd runtime/scripts/publish-sietch-overrides.sh once
+        else
+          echo "Cancelled."
+        fi
+        pause
+        ;;
+      4) edit_userengine_menu ;;
+      5)
         if ! runtime_catalogs_available; then
           echo
           error_msg "Runtime map catalogs are missing."
@@ -2991,7 +3553,7 @@ sietches_menu() {
           pause
         fi
         ;;
-      4)
+      6)
         if confirm "Revert all UserEngine and UserGame overrides to defaults?"; then
           reset_all_usersettings
         else
@@ -2999,10 +3561,10 @@ sietches_menu() {
         fi
         pause
         ;;
-      5) show_current_memory_usage; pause ;;
-      6) run_cmd "$DUNE" memory status; pause ;;
-      7) restore_builtin_memory_defaults; pause ;;
-      8) return ;;
+      7) show_current_memory_usage; pause ;;
+      8) run_cmd "$DUNE" memory status; pause ;;
+      9) restore_builtin_memory_defaults; pause ;;
+      10) return ;;
     esac
   done
 }
@@ -3037,6 +3599,7 @@ edit_survival_menu() {
       "Active Dimensions  Current: ${active:-unknown}" \
       "Edit A Dimension" \
       "Show Dimension Details" \
+      "Validate / Repair Sietch State" \
       "Back To Map List" || return
     choice="$MENU_CHOICE"
 
@@ -3058,7 +3621,14 @@ edit_survival_menu() {
         edit_survival_dimension_menu "$CHOSEN_PARTITION_ID"
         ;;
       6) show_map_dimension_details Survival_1; pause ;;
-      7) return ;;
+      7)
+        run_cmd "$DUNE" sietches reconcile Survival_1
+        run_cmd "$DUNE" sietches sync
+        run_cmd "$DUNE" sietches validate
+        run_cmd runtime/scripts/publish-sietch-overrides.sh once
+        pause
+        ;;
+      8) return ;;
     esac
   done
 }
@@ -3353,13 +3923,15 @@ advanced_menu() {
     menu_or_back "Advanced Tools" \
       "Shell Inside Orchestrator" \
       "Run Doctor Diagnostics" \
+      "Database Management" \
       "Back" || return
     choice="$MENU_CHOICE"
 
     case "$choice" in
       1) run_cmd docker compose exec orchestrator bash; pause ;;
       2) run_cmd "$DUNE" doctor; pause ;;
-      3) return ;;
+      3) run_cmd runtime/scripts/db-manager.sh; pause ;;
+      4) return ;;
     esac
   done
 }

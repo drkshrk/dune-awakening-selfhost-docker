@@ -1236,17 +1236,6 @@ handle_idle_row() {
       ;;
   esac
 
-  if [ "$map" = "DeepDesert_1" ]; then
-    local desired_active assigned_for_map
-    desired_active="$(active_dimensions_for_map "$map")"
-    assigned_for_map="$(map_assigned_count "$map" | tr -d '[:space:]')"
-    [ -n "$assigned_for_map" ] || assigned_for_map=0
-    if [ "$assigned_for_map" -le "$desired_active" ] 2>/dev/null; then
-      clear_idle_since "$(state_key "$map" "$server_id")"
-      return 0
-    fi
-  fi
-
   local key
   key="$(state_key "$map" "$server_id")"
 
@@ -1273,6 +1262,21 @@ handle_idle_row() {
     clear_idle_since "$key"
     return 0
   fi
+
+  case "$map" in
+    SH_Arrakeen|SH_HarkoVillage)
+      if map_has_active_presence "Overmap"; then
+        clear_idle_since "$key"
+        return 0
+      fi
+      ;;
+    DeepDesert_1)
+      if map_has_active_presence "Overmap"; then
+        clear_idle_since "$key"
+        return 0
+      fi
+      ;;
+  esac
 
   local now since age
   now="$(date +%s)"
@@ -1315,6 +1319,61 @@ ensure_social_hub_companions() {
     runtime/scripts/spawn-server.sh "$companion" || {
       echo "ERROR failed to spawn companion map=$companion source=$map"
     }
+  done
+}
+
+ensure_overmap_travel_maps_prewarmed() {
+  local map assigned running
+  local desired_active current_active needed
+
+  if ! map_has_active_presence "Overmap"; then
+    return 0
+  fi
+
+  for map in SH_Arrakeen SH_HarkoVillage; do
+    assigned="$(map_assigned_count "$map")"
+    running="$(container_count_for_map "$map")"
+
+    if [ "$assigned" != "0" ] || [ "$running" != "0" ]; then
+      continue
+    fi
+
+    echo "SPAWN social-hub-prewarm map=$map source=Overmap"
+    runtime/scripts/spawn-server.sh "$map" || {
+      echo "ERROR failed to prewarm social hub map=$map source=Overmap"
+    }
+  done
+
+  map="DeepDesert_1"
+  desired_active="$(active_dimensions_for_map "$map" | tr -d '[:space:]')"
+  [ -n "$desired_active" ] || desired_active=1
+
+  assigned="$(map_assigned_count "$map")"
+  running="$(container_count_for_map "$map")"
+
+  current_active="$assigned"
+  if [ "${running:-0}" -gt "${current_active:-0}" ] 2>/dev/null; then
+    current_active="$running"
+  fi
+
+  if [ "$current_active" -ge "$desired_active" ] 2>/dev/null; then
+    return 0
+  fi
+
+  needed=$((desired_active - current_active))
+  while [ "$needed" -gt 0 ]; do
+    echo "SPAWN overmap-prewarm map=$map target=$desired_active assigned=$assigned containers=$running"
+    runtime/scripts/spawn-server.sh "$map" || {
+      echo "ERROR failed to prewarm map=$map source=Overmap"
+      return 0
+    }
+    assigned="$(map_assigned_count "$map")"
+    running="$(container_count_for_map "$map")"
+    current_active="$assigned"
+    if [ "${running:-0}" -gt "${current_active:-0}" ] 2>/dev/null; then
+      current_active="$running"
+    fi
+    needed=$((desired_active - current_active))
   done
 }
 
@@ -1875,6 +1934,7 @@ reconcile_always_on_maps
 while true; do
   reconcile_always_on_maps
   scan_deepdesert_loading_responses
+  ensure_overmap_travel_maps_prewarmed
   scan_travel_demand
   progress_deepdesert_travel_handoffs
   ensure_social_hub_companions

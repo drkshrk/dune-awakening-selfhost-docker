@@ -6,9 +6,17 @@ cd "$(dirname "$0")/../.."
 PARTITION_CATALOG="runtime/generated/partition-catalog.json"
 SERVER_CATALOG="runtime/generated/server-catalog.json"
 CONFIG_FILE="runtime/generated/sietch-config.json"
+LIFECYCLE_LOG="runtime/generated/sietch-lifecycle.log"
 
 set_config_permissions() {
   chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+}
+
+log_sietch_lifecycle() {
+  local operation="$1"
+  local detail="${2:-}"
+  mkdir -p "$(dirname "$LIFECYCLE_LOG")"
+  printf '%s\t%s\t%s\n' "$(date -Iseconds)" "$operation" "$detail" >>"$LIFECYCLE_LOG"
 }
 
 normalize_config_defaults() {
@@ -43,22 +51,21 @@ if changed:
 PY
 }
 
-map_supports_configurable_active_dimensions() {
-  case "$1" in
-    Survival_1|DeepDesert_1) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-prune_orphan_partition_config() {
+sync_sietch_config_from_db() {
+  local operation="${1:-sync}"
   local db_rows=""
   local db_json=""
 
   if docker_postgres_running; then
     db_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
-      select partition_id, map, dimension_index, coalesce(label, ''), blocked
+      select partition_id,
+             map,
+             dimension_index,
+             coalesce(label, ''),
+             blocked,
+             coalesce(server_id, '')
       from dune.world_partition
-      order by partition_id;
+      order by map, dimension_index, partition_id;
     " 2>/dev/null || true)"
     if [ -n "$db_rows" ]; then
       db_json="$(SIETCH_DB_ROWS="$db_rows" python3 -c '
@@ -67,58 +74,206 @@ import os
 rows = []
 for line in os.environ.get("SIETCH_DB_ROWS", "").splitlines():
     parts = line.split("\t")
-    if len(parts) < 5:
+    if len(parts) < 6:
         continue
-    partition_id, map_name, dimension, label, blocked = parts[:5]
+    partition_id, map_name, dimension, label, blocked, server_id = parts[:6]
     try:
         rows.append({
             "id": int(partition_id),
             "map": map_name,
             "dimension": int(dimension or 0),
             "label": label,
-            "disable": blocked.lower() in ("t", "true", "1", "yes"),
+            "blocked": blocked.lower() in ("t", "true", "1", "yes"),
+            "server_id": server_id,
         })
     except ValueError:
         continue
-print(json.dumps(rows))
+print(json.dumps(rows, separators=(",", ":")))
 ' 2>/dev/null || true)"
     fi
   fi
 
-  SIETCH_DB_PARTITIONS_JSON="$db_json" python3 - "$PARTITION_CATALOG" "$CONFIG_FILE" <<'PY'
+  SIETCH_DB_ROWS_JSON="$db_json" python3 - "$CONFIG_FILE" "$PARTITION_CATALOG" "$operation" <<'PY'
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-partition_path = Path(sys.argv[1])
-config_path = Path(sys.argv[2])
+config_path = Path(sys.argv[1])
+catalog_path = Path(sys.argv[2])
+operation = sys.argv[3]
 
-if not config_path.exists():
-    raise SystemExit
-
-config = json.loads(config_path.read_text())
-partitions_cfg = config.get("partitions")
-if not isinstance(partitions_cfg, dict) or not partitions_cfg:
-    raise SystemExit
-
-db_partitions = os.environ.get("SIETCH_DB_PARTITIONS_JSON")
-if db_partitions:
-    partitions = json.loads(db_partitions)
-elif partition_path.exists():
-    partitions = json.loads(partition_path.read_text())
+if config_path.exists():
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        config = {}
 else:
-    partitions = []
+    config = {}
 
-valid_ids = {str(row.get("id")) for row in partitions if row.get("id") is not None}
-filtered = {key: value for key, value in partitions_cfg.items() if key in valid_ids}
+config.setdefault("maps", {})
+partitions_cfg = config.setdefault("partitions", {})
 
-if filtered == partitions_cfg:
-    raise SystemExit
+db_raw = os.environ.get("SIETCH_DB_ROWS_JSON", "")
+if not db_raw:
+    db_raw = os.environ.get("SIETCH_DB_PARTITIONS_JSON", "")
 
-config["partitions"] = filtered
-config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
+rows = []
+if db_raw:
+    try:
+        rows = json.loads(db_raw)
+    except Exception:
+        rows = []
+elif catalog_path.exists():
+    try:
+        rows = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except Exception:
+        rows = []
+
+rows = [
+    row for row in rows
+    if row.get("id") is not None and row.get("map") and row.get("dimension") is not None
+]
+rows.sort(key=lambda row: (str(row.get("map")), int(row.get("dimension") or 0), int(row.get("id") or 0)))
+
+by_id = {str(row["id"]): row for row in rows}
+by_map_dim = {}
+for row in rows:
+    by_map_dim[(str(row["map"]), str(int(row.get("dimension") or 0)))] = row
+
+changed = False
+events = []
+
+def meaningful(entry):
+    return {
+        key: value for key, value in dict(entry or {}).items()
+        if key in {"display_name", "password"} and value not in ("", None)
+    }
+
+def merge_user_state(dest, src):
+    global changed
+    for key, value in meaningful(src).items():
+        if dest.get(key) != value:
+            dest[key] = value
+            changed = True
+
+def default_display_name(map_name, label):
+    label = str(label or "").strip()
+    if not label:
+        return ""
+    if str(map_name) != "Survival_1":
+        return ""
+    return label if label.lower().startswith("sietch ") else f"Sietch {label}"
+
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+# First, copy existing partition-scoped user values into stable map/dimension slots.
+for partition_id, entry in list(partitions_cfg.items()):
+    user_state = meaningful(entry)
+    if not user_state:
+        continue
+    row = by_id.get(str(partition_id))
+    map_name = entry.get("map")
+    dimension = entry.get("dimension")
+    if row:
+        map_name = str(row.get("map"))
+        dimension = int(row.get("dimension") or 0)
+    elif map_name is not None and dimension is not None:
+        map_name = str(map_name)
+        dimension = int(dimension)
+    else:
+        orphaned = config.setdefault("orphaned_partition_user_state", {})
+        if orphaned.get(str(partition_id)) != user_state:
+            orphaned[str(partition_id)] = dict(user_state, preserved_at=now)
+            events.append(f"preserved orphan partition={partition_id}")
+            changed = True
+        continue
+
+    map_entry = config.setdefault("maps", {}).setdefault(map_name, {})
+    dim_entry = map_entry.setdefault("dimensions", {}).setdefault(str(dimension), {})
+    before = dict(dim_entry)
+    merge_user_state(dim_entry, user_state)
+    if dim_entry != before:
+        events.append(f"copied partition={partition_id} to {map_name} dimension={dimension}")
+
+# Then mirror dimension-scoped state back to current partition IDs and prune stale IDs.
+new_partitions = {}
+for row in rows:
+    partition_id = str(row["id"])
+    map_name = str(row["map"])
+    dimension = str(int(row.get("dimension") or 0))
+    label = str(row.get("label") or "")
+    map_entry = config.setdefault("maps", {}).setdefault(map_name, {})
+    dim_entry = map_entry.setdefault("dimensions", {}).setdefault(dimension, {})
+    old_entry = partitions_cfg.get(partition_id, {})
+
+    # Current partition values win if a user just edited this partition directly.
+    merge_user_state(dim_entry, old_entry)
+
+    mirrored = {
+        "map": map_name,
+        "dimension": int(dimension),
+    }
+    mirrored.update(meaningful(dim_entry))
+    derived_display = default_display_name(map_name, label)
+    if derived_display and not mirrored.get("display_name"):
+        mirrored["display_name"] = derived_display
+    if label:
+        mirrored["label"] = label
+    new_partitions[partition_id] = mirrored
+
+for old_id, old_entry in partitions_cfg.items():
+    if old_id not in new_partitions:
+        user_state = meaningful(old_entry)
+        if user_state:
+            map_name = old_entry.get("map")
+            dimension = old_entry.get("dimension")
+            if map_name is not None and dimension is not None:
+                dim_entry = config.setdefault("maps", {}).setdefault(str(map_name), {}).setdefault("dimensions", {}).setdefault(str(int(dimension)), {})
+                merge_user_state(dim_entry, user_state)
+                events.append(f"removed stale partition={old_id}; preserved on {map_name} dimension={dimension}")
+            else:
+                orphaned = config.setdefault("orphaned_partition_user_state", {})
+                orphaned[str(old_id)] = dict(user_state, preserved_at=now)
+                events.append(f"removed stale partition={old_id}; preserved as orphan")
+        else:
+            events.append(f"removed stale partition={old_id}")
+
+if new_partitions != partitions_cfg:
+    config["partitions"] = new_partitions
+    changed = True
+
+if events:
+    config["last_sietch_sync"] = {
+        "operation": operation,
+        "updated_at": now,
+        "events": events[-25:],
+    }
+    changed = True
+
+if changed:
+    tmp = config_path.with_name(f".{config_path.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(config_path)
+
+print(json.dumps({"changed": changed, "events": events}, separators=(",", ":")))
 PY
+}
+
+map_supports_configurable_active_dimensions() {
+  case "$1" in
+    Survival_1|DeepDesert_1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prune_orphan_partition_config() {
+  local summary
+  summary="$(sync_sietch_config_from_db "ensure-config" || true)"
+  if printf '%s' "$summary" | grep -q '"changed":true'; then
+    log_sietch_lifecycle "sync_config" "$summary"
+  fi
 }
 
 generate_partition_catalog_from_server_catalog() {
@@ -166,6 +321,9 @@ Usage:
   dune sietches set-active <map-name> <count>
   dune sietches set-display <partition-id> <display-name>
   dune sietches set-password <partition-id> [password]
+  dune sietches sync
+  dune sietches validate
+  dune sietches reconcile <map-name>
   dune sietches runtime-args <map-name> <partition-id>
 
 Sietch data comes from the live world_partition table when Postgres is running,
@@ -242,7 +400,7 @@ python_common() {
 
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-postgres; then
     db_rows="$(docker exec dune-postgres psql -U postgres -d dune -At -F $'\t' -c "
-      select partition_id, map, dimension_index, coalesce(label, ''), blocked
+      select partition_id, map, dimension_index, coalesce(label, ''), blocked, coalesce(server_id, '')
       from dune.world_partition
       order by partition_id;
     " 2>/dev/null || true)"
@@ -253,9 +411,9 @@ import os
 rows = []
 for line in os.environ.get("SIETCH_DB_ROWS", "").splitlines():
     parts = line.split("\t")
-    if len(parts) < 5:
+    if len(parts) < 6:
         continue
-    partition_id, map_name, dimension, label, blocked = parts[:5]
+    partition_id, map_name, dimension, label, blocked, server_id = parts[:6]
     try:
         rows.append({
             "id": int(partition_id),
@@ -263,6 +421,7 @@ for line in os.environ.get("SIETCH_DB_ROWS", "").splitlines():
             "dimension": int(dimension or 0),
             "label": label,
             "disable": blocked.lower() in ("t", "true", "1", "yes"),
+            "server_id": server_id,
         })
     except ValueError:
         continue
@@ -444,7 +603,9 @@ memory = env.get(env_key(name)) or catalog_memory or env.get("DUNE_MEMORY_DEFAUL
 partition_config = config.get("partitions", {})
 def default_display_name(row):
     label = str(row.get("label") or "").strip()
-    return f"Sietch {label}" if label else "(unset)"
+    if not label:
+        return "(unset)"
+    return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
 display_values = [
     partition_config.get(str(row.get("id")), {}).get("display_name") or default_display_name(row)
@@ -529,7 +690,9 @@ if active_only:
 partition_config = config.get("partitions", {})
 def default_display_name(row):
     label = str(row.get("label") or "").strip()
-    return f"Sietch {label}" if label else "(unset)"
+    if not label:
+        return "(unset)"
+    return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
 if mode == "--ids":
     for row in rows:
@@ -699,6 +862,164 @@ refresh_survival_browser_state() {
   fi
 }
 
+survival_active_target() {
+  python3 - <<'PY'
+import json
+from pathlib import Path
+
+config_path = Path("runtime/generated/sietch-config.json")
+target = 1
+if config_path.exists():
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        target = int(config.get("maps", {}).get("Survival_1", {}).get("active_dimensions") or 1)
+    except Exception:
+        target = 1
+if target < 1:
+    target = 1
+print(target)
+PY
+}
+
+wait_for_survival_topology_settle() {
+  local target="${1:-1}"
+  local timeout_seconds="${2:-90}"
+  local deadline current_rows assigned_rows
+
+  docker_postgres_running || return 0
+  deadline=$(( $(date +%s) + timeout_seconds ))
+
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    current_rows="$(psql_value "
+with ranked as (
+  select
+    partition_id,
+    coalesce(server_id, '') as server_id,
+    row_number() over (order by dimension_index, partition_id) as ord
+  from dune.world_partition
+  where lower(map) = lower('Survival_1')
+)
+select count(*) from ranked where ord <= ${target};
+" | tr -d '[:space:]')"
+    assigned_rows="$(psql_value "
+with ranked as (
+  select
+    partition_id,
+    coalesce(server_id, '') as server_id,
+    row_number() over (order by dimension_index, partition_id) as ord
+  from dune.world_partition
+  where lower(map) = lower('Survival_1')
+)
+select count(*) from ranked where ord <= ${target} and server_id <> '';
+" | tr -d '[:space:]')"
+    [ -n "$current_rows" ] || current_rows=0
+    [ -n "$assigned_rows" ] || assigned_rows=0
+    if [ "$current_rows" -ge "$target" ] && [ "$assigned_rows" -ge "$target" ]; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "Timed out waiting for Survival_1 topology to settle at ${target} active dimension(s)." >&2
+  return 1
+}
+
+sync_survival_usersettings_state() {
+  python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+root = Path(".")
+sietch_path = root / "runtime" / "generated" / "sietch-config.json"
+usersettings_path = root / "runtime" / "generated" / "usersettings.json"
+
+if not sietch_path.exists():
+    raise SystemExit(0)
+
+try:
+    sietch = json.loads(sietch_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+if usersettings_path.exists():
+    try:
+        usersettings = json.loads(usersettings_path.read_text(encoding="utf-8"))
+    except Exception:
+        usersettings = {}
+else:
+    usersettings = {}
+
+usersettings.setdefault("engine", {})
+usersettings.setdefault("maps", {})
+partitions_cfg = usersettings.setdefault("partitions", {})
+sietch_partitions = sietch.get("partitions", {})
+changed = False
+current_survival_ids = set()
+
+def derived_display_name(entry):
+    label = str(entry.get("label") or "").strip()
+    if not label:
+        return ""
+    if str(entry.get("map") or "") != "Survival_1":
+        return ""
+    return label if label.lower().startswith("sietch ") else f"Sietch {label}"
+
+for partition_id, entry in sietch_partitions.items():
+    if str(entry.get("map") or "") != "Survival_1":
+        continue
+    current_survival_ids.add(str(partition_id))
+    user_entry = partitions_cfg.setdefault(str(partition_id), {})
+    engine_entry = user_entry.setdefault("userengine", {})
+    display_name = entry.get("display_name") or derived_display_name(entry)
+    password = entry.get("password") or ""
+    if display_name:
+        if engine_entry.get("server_display_name") != display_name:
+            engine_entry["server_display_name"] = display_name
+            changed = True
+    elif "server_display_name" in engine_entry:
+        engine_entry.pop("server_display_name", None)
+        changed = True
+    if password:
+        if engine_entry.get("server_login_password") != password:
+            engine_entry["server_login_password"] = password
+            changed = True
+    elif "server_login_password" in engine_entry:
+        engine_entry.pop("server_login_password", None)
+        changed = True
+    if not engine_entry:
+        user_entry.pop("userengine", None)
+    if not user_entry:
+        partitions_cfg.pop(str(partition_id), None)
+        changed = True
+
+for partition_id, user_entry in list(partitions_cfg.items()):
+    if partition_id in current_survival_ids:
+        continue
+    engine_entry = user_entry.get("userengine", {})
+    removed = False
+    if "server_display_name" in engine_entry:
+        engine_entry.pop("server_display_name", None)
+        removed = True
+    if "server_login_password" in engine_entry:
+        engine_entry.pop("server_login_password", None)
+        removed = True
+    if not engine_entry:
+        user_entry.pop("userengine", None)
+    if removed:
+        changed = True
+    if not user_entry:
+        partitions_cfg.pop(partition_id, None)
+        changed = True
+
+if changed:
+    tmp = usersettings_path.with_name(f".{usersettings_path.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(usersettings, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(usersettings_path)
+PY
+  python3 runtime/scripts/usersettings.py materialize-current >/dev/null 2>&1 || true
+}
+
 refresh_survival_director_state() {
   if docker ps --format '{{.Names}}' | grep -qx dune-director; then
     runtime/scripts/start-director.sh >/dev/null 2>&1 || true
@@ -712,9 +1033,17 @@ refresh_survival_gateway_state() {
 }
 
 refresh_survival_control_plane_state() {
+  sync_survival_usersettings_state
   refresh_survival_browser_state
   refresh_survival_director_state
   refresh_survival_gateway_state
+}
+
+restart_survival_server_if_running() {
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-server-survival-1; then
+    echo "Restarting Survival_1 so sietch display/password changes are published by the running server..."
+    runtime/scripts/start-server-survival-1.sh >/dev/null
+  fi
 }
 
 ensure_map_partitions() {
@@ -971,7 +1300,14 @@ where wp.partition_id = ranked.partition_id;
   fi
 
   sync_partition_catalog_from_db
+  sync_sietch_config_from_db "reconcile-$map" >/dev/null || true
+  if [ "$map" = "Survival_1" ]; then
+    sync_survival_usersettings_state
+  fi
   if [ "$map" = "Survival_1" ] && [ "$topology_changed" -eq 1 ]; then
+    wait_for_survival_topology_settle "$target" 90 || true
+    sync_sietch_config_from_db "reconcile-$map-settled" >/dev/null || true
+    sync_survival_usersettings_state
     refresh_survival_control_plane_state
   fi
 }
@@ -996,7 +1332,8 @@ value = sys.argv[6]
 
 db_partitions = os.environ.get("SIETCH_DB_PARTITIONS_JSON")
 partitions = json.loads(db_partitions) if db_partitions else json.loads(partition_path.read_text())
-if not any(str(row.get("id")) == partition_id for row in partitions):
+row = next((item for item in partitions if str(item.get("id")) == partition_id), None)
+if not row:
     print(f"Unknown partition: {partition_id}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -1008,9 +1345,37 @@ else:
     entry[key] = value
 if not entry:
     config.get("partitions", {}).pop(partition_id, None)
+
+# Partition IDs can be recreated when active dimensions change. Keep the stable
+# map/dimension copy in sync too, otherwise a cleared password can be restored
+# from older preserved dimension state during the next sync.
+map_name = str(row.get("map") or "")
+dimension = str(int(row.get("dimension") or 0))
+if map_name:
+    dim_entry = config.setdefault("maps", {}).setdefault(map_name, {}).setdefault("dimensions", {}).setdefault(dimension, {})
+    if value == "":
+        dim_entry.pop(key, None)
+    else:
+        dim_entry[key] = value
 config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
 PY
   set_config_permissions
+  sync_sietch_config_from_db "set-$key" >/dev/null || true
+  if [ "$(partition_map_name "$partition_id")" = "Survival_1" ]; then
+    sync_survival_usersettings_state
+  fi
+}
+
+set_partition_label_if_possible() {
+  local partition_id="$1"
+  local label="$2"
+
+  docker_postgres_running || return 0
+  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+update dune.world_partition
+set label = '${label//\'/\'\'}'
+where partition_id = ${partition_id};
+" >/dev/null
 }
 
 partition_map_name() {
@@ -1072,7 +1437,9 @@ def ini_quote(value):
 
 def default_display_name(partition_row):
     label = str(partition_row.get("label") or "").strip()
-    return f"Sietch {label}" if label else ""
+    if not label:
+        return ""
+    return label if label.lower().startswith("sietch ") else f"Sietch {label}"
 
 args = []
 display_name = entry.get("display_name") or default_display_name(row)
@@ -1085,6 +1452,104 @@ if entry.get("password"):
 
 for arg in args:
     print(arg)
+PY
+}
+
+validate_sietch_state() {
+  ensure_config
+  sync_sietch_config_from_db "validate" >/dev/null || true
+  sync_survival_usersettings_state
+  python_common <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+partition_path = Path(sys.argv[1])
+config_path = Path(sys.argv[3])
+usersettings_path = Path("runtime/generated/usersettings.json")
+db_partitions = os.environ.get("SIETCH_DB_PARTITIONS_JSON")
+partitions = json.loads(db_partitions) if db_partitions else (json.loads(partition_path.read_text()) if partition_path.exists() else [])
+config = json.loads(config_path.read_text()) if config_path.exists() else {"maps": {}, "partitions": {}}
+usersettings = json.loads(usersettings_path.read_text()) if usersettings_path.exists() else {"partitions": {}}
+errors = []
+warnings = []
+
+by_id = {str(row.get("id")): row for row in partitions if row.get("id") is not None}
+partition_cfg = config.get("partitions", {})
+
+for pid, entry in partition_cfg.items():
+    row = by_id.get(str(pid))
+    if not row:
+        errors.append(f"partition config references missing partition id {pid}")
+        continue
+    if entry.get("map") and str(entry.get("map")) != str(row.get("map")):
+        errors.append(f"partition {pid} map drift: config={entry.get('map')} db={row.get('map')}")
+    if entry.get("dimension") is not None and int(entry.get("dimension")) != int(row.get("dimension") or 0):
+        errors.append(f"partition {pid} dimension drift: config={entry.get('dimension')} db={row.get('dimension')}")
+
+survival_rows = sorted(
+    [row for row in partitions if str(row.get("map")) == "Survival_1"],
+    key=lambda row: (int(row.get("dimension") or 0), int(row.get("id") or 0)),
+)
+if not survival_rows:
+    errors.append("no Survival_1 world_partition rows found")
+else:
+    survival_cfg = config.get("maps", {}).get("Survival_1", {})
+    target = int(survival_cfg.get("active_dimensions") or 1)
+    active = survival_rows[:max(1, min(target, len(survival_rows)))]
+    if len(active) < target:
+        errors.append(f"Survival_1 active_dimensions={target} but only {len(active)} partition row(s) exist")
+    for row in active:
+        pid = str(row.get("id"))
+        entry = partition_cfg.get(pid, {})
+        display = entry.get("display_name") or (f"Sietch {row.get('label')}" if row.get("label") else "")
+        if not display:
+            warnings.append(f"Survival_1 partition {pid} has no display name or label")
+        user_entry = usersettings.get("partitions", {}).get(pid, {})
+        engine_entry = user_entry.get("userengine", {})
+        if entry.get("display_name") and engine_entry.get("server_display_name") != entry.get("display_name"):
+            errors.append(f"usersettings drift for Survival_1 partition {pid}: server_display_name does not match sietch-config")
+        if entry.get("password") and engine_entry.get("server_login_password") != entry.get("password"):
+            errors.append(f"usersettings drift for Survival_1 partition {pid}: server_login_password does not match sietch-config")
+        if not row.get("server_id"):
+            errors.append(f"Survival_1 partition {pid} has no live server_id assigned")
+    assigned = [row for row in active if row.get("server_id")]
+    if not assigned:
+        warnings.append("no active Survival_1 partition currently has server_id assigned; this may be normal when stopped")
+
+seen = set()
+for row in partitions:
+    key = (str(row.get("map")), int(row.get("dimension") or 0))
+    if key in seen:
+        warnings.append(f"duplicate map/dimension row present: {key[0]} dimension {key[1]}")
+    seen.add(key)
+
+print("Sietch state validation")
+print("=======================")
+print(f"Partitions seen: {len(partitions)}")
+print(f"Configured partition entries: {len(partition_cfg)}")
+if survival_rows:
+    print()
+    print("Survival_1 configured state:")
+    print(f"  Active dimensions: {int(config.get('maps', {}).get('Survival_1', {}).get('active_dimensions') or 1)}")
+    print(f"  Max dimensions:    {int(config.get('maps', {}).get('Survival_1', {}).get('max_dimensions') or len(survival_rows))}")
+    print()
+    print("Survival_1 live partitions:")
+    for row in survival_rows:
+        pid = str(row.get("id"))
+        entry = partition_cfg.get(pid, {})
+        display = entry.get("display_name") or (f"Sietch {row.get('label')}" if row.get("label") else "(unset)")
+        password_state = "(set)" if entry.get("password") else "(unset)"
+        server_state = row.get("server_id") or "(unassigned)"
+        print(f"  partition={pid} dimension={int(row.get('dimension') or 0)} display={display} password={password_state} server_id={server_state}")
+for warning in warnings:
+    print(f"WARN {warning}")
+for error in errors:
+    print(f"FAIL {error}")
+if errors:
+    raise SystemExit(1)
+print("OK   Sietch generated state matches current partition ids.")
 PY
 }
 
@@ -1125,7 +1590,10 @@ case "$cmd" in
     display_name="$*"
     [ -n "$display_name" ] || { echo "Display name cannot be empty."; exit 1; }
     set_partition_value "$partition_id" display_name "$display_name"
+    set_partition_label_if_possible "$partition_id" "$display_name"
+    sync_sietch_config_from_db "set-display-label" >/dev/null || true
     python3 runtime/scripts/usersettings.py partition-engine-set "$(partition_map_name "$partition_id")" "$partition_id" server_display_name "$display_name" >/dev/null 2>&1 || true
+    python3 runtime/scripts/usersettings.py materialize-current >/dev/null 2>&1 || true
     if [ "$(partition_map_name "$partition_id")" = "Survival_1" ]; then
       refresh_survival_control_plane_state
     fi
@@ -1136,6 +1604,7 @@ case "$cmd" in
     password_value="${3:-${SIETCH_PASSWORD:-}}"
     set_partition_value "$2" password "$password_value"
     python3 runtime/scripts/usersettings.py partition-engine-set "$(partition_map_name "$2")" "$2" server_login_password "$password_value" >/dev/null 2>&1 || true
+    python3 runtime/scripts/usersettings.py materialize-current >/dev/null 2>&1 || true
     if [ "$(partition_map_name "$2")" = "Survival_1" ]; then
       refresh_survival_control_plane_state
     fi
@@ -1144,6 +1613,15 @@ case "$cmd" in
     else
       echo "Password cleared."
     fi
+    ;;
+  sync)
+    summary="$(sync_sietch_config_from_db "manual-sync")"
+    sync_survival_usersettings_state
+    log_sietch_lifecycle "manual_sync" "$summary"
+    printf '%s\n' "$summary"
+    ;;
+  validate|check)
+    validate_sietch_state
     ;;
   runtime-args)
     [ "$#" -eq 3 ] || { usage; exit 2; }

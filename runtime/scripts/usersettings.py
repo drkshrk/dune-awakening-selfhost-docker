@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = ROOT / "runtime" / "generated" / "usersettings.json"
+CONFIG_PATH = Path(os.environ.get("DUNE_USERSETTINGS_CONFIG", str(ROOT / "runtime" / "generated" / "usersettings.json")))
 SIETCH_CONFIG_PATH = ROOT / "runtime" / "generated" / "sietch-config.json"
 
 ENGINE_FIELDS = {
@@ -96,6 +96,16 @@ PARTITION_ENGINE_FIELDS = {
 }
 
 
+def field_spec(field_id: str):
+    if field_id in ENGINE_FIELDS:
+        return ENGINE_FIELDS[field_id]
+    if field_id in MAP_FIELDS:
+        return MAP_FIELDS[field_id]
+    if field_id in PARTITION_FIELDS:
+        return PARTITION_FIELDS[field_id]
+    return None
+
+
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
         return {"engine": {}, "maps": {}, "partitions": {}}
@@ -126,6 +136,153 @@ def atomic_write_text(path: Path, content: str, mode: int = 0o664) -> None:
 
 def save_config(config: dict) -> None:
     atomic_write_text(CONFIG_PATH, json.dumps(config, indent=2, sort_keys=True) + "\n")
+
+
+def read_ini_value(path: Path, section: str | None, key: str | None) -> str | None:
+    if not section or not key or not path.exists():
+        return None
+    current_section = None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith(";") or stripped.startswith("#"):
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped[1:-1]
+            continue
+        if current_section == section and "=" in stripped:
+            left, right = stripped.split("=", 1)
+            if left.strip() == key:
+                return right.strip().strip('"')
+    return None
+
+
+def read_ini_array_contains(path: Path, section: str, key: str, value: str) -> bool:
+    if not path.exists():
+        return False
+    current_section = None
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    wanted_keys = {key, f"+{key}"}
+    for raw in lines:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith(";") or stripped.startswith("#"):
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped[1:-1]
+            continue
+        if current_section == section and "=" in stripped:
+            left, right = stripped.split("=", 1)
+            if left.strip() in wanted_keys and right.strip() == str(value):
+                return True
+    return False
+
+
+def update_ini_key(path: Path, section: str, key: str, value: str, append_prefix: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.touch(exist_ok=True)
+    import fcntl
+
+    with lock_path.open("r+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        if path.exists():
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        else:
+            lines = []
+
+        current_section = None
+        section_start = None
+        section_end = None
+        target_index = None
+        target_key = f"{append_prefix}{key}"
+
+        for index, raw in enumerate(lines):
+            stripped = raw.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                if current_section == section and section_end is None:
+                    section_end = index
+                current_section = stripped[1:-1]
+                if current_section == section:
+                    section_start = index
+                continue
+            if current_section == section and "=" in stripped and not stripped.startswith((";", "#")):
+                left = stripped.split("=", 1)[0].strip()
+                if left == target_key or (not append_prefix and left == key):
+                    target_index = index
+
+        if current_section == section and section_end is None:
+            section_end = len(lines)
+
+        new_line = f"{target_key}={value}"
+        if target_index is not None:
+            lines[target_index] = new_line
+        elif section_start is not None:
+            insert_at = section_end if section_end is not None else len(lines)
+            lines.insert(insert_at, new_line)
+        else:
+            if lines and lines[-1].strip():
+                lines.append("")
+            lines.extend([f"[{section}]", new_line])
+
+        atomic_write_text(path, "\n".join(lines) + "\n")
+
+
+def remove_ini_array_key(path: Path, section: str, key: str) -> None:
+    if not path.exists():
+        return
+    import fcntl
+
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        current_section = None
+        out = []
+        for raw in lines:
+            stripped = raw.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                current_section = stripped[1:-1]
+                out.append(raw)
+                continue
+            if current_section == section and "=" in stripped and not stripped.startswith((";", "#")):
+                left = stripped.split("=", 1)[0].strip()
+                if left in {key, f"+{key}"}:
+                    continue
+            out.append(raw)
+        atomic_write_text(path, "\n".join(out) + "\n")
+
+
+def remove_ini_key(path: Path, section: str, key: str) -> None:
+    if not path.exists():
+        return
+    import fcntl
+
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        current_section = None
+        out = []
+        for raw in lines:
+            stripped = raw.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                current_section = stripped[1:-1]
+                out.append(raw)
+                continue
+            if current_section == section and "=" in stripped and not stripped.startswith((";", "#")):
+                left = stripped.split("=", 1)[0].strip()
+                if left == key:
+                    continue
+            out.append(raw)
+        atomic_write_text(path, "\n".join(out) + "\n")
 
 
 def canonical_map(value: str) -> str:
@@ -177,13 +334,29 @@ def validate_port_ranges(config: dict, field_id: str, value: str) -> None:
 
 def merged_engine_values(config: dict) -> dict[str, str]:
     values = {key: spec[2] for key, spec in ENGINE_FIELDS.items() if spec[2] is not None}
+    values.update({key: spec[2] for key, spec in MAP_FIELDS.items()})
     values.update(config.get("engine", {}))
+    path = live_userengine_path()
+    for key, spec in {**ENGINE_FIELDS, **MAP_FIELDS}.items():
+        if key in PARTITION_ENGINE_FIELDS:
+            continue
+        section, ini_key, _ = spec
+        live_value = read_ini_value(path, section, ini_key)
+        if live_value is not None:
+            values[key] = live_value
     return values
 
 
 def merged_map_values(config: dict, map_name: str) -> dict[str, str]:
     values = {key: spec[2] for key, spec in MAP_FIELDS.items()}
     values.update(config.get("maps", {}).get(map_name, {}))
+    path = live_usergame_path(map_name, "1" if canonical_map(map_name) == "Survival_1" else "2" if canonical_map(map_name) == "Overmap" else "")
+    if path.exists():
+        for key, spec in MAP_FIELDS.items():
+            section, ini_key, _ = spec
+            live_value = read_ini_value(path, section, ini_key)
+            if live_value is not None:
+                values[key] = live_value
     return values
 
 
@@ -192,13 +365,34 @@ def merged_partition_values(config: dict, map_name: str, partition_id: str) -> d
     values.update(config.get("maps", {}).get(map_name, {}))
     partition_entry = config.get("partitions", {}).get(str(partition_id), {})
     values.update(partition_entry.get("usergame", {}))
+    path = live_usergame_path(map_name, partition_id)
+    for key, spec in MAP_FIELDS.items():
+        section, ini_key, _ = spec
+        live_value = read_ini_value(path, section, ini_key)
+        if live_value is not None:
+            values[key] = live_value
+    values["partition_pvp_enabled"] = "True" if read_ini_array_contains(
+        path, "/Script/DuneSandbox.PvpPveSettings", "m_PvpEnabledPartitions", partition_id
+    ) else values.get("partition_pvp_enabled", "False")
+    values["partition_pve_enabled"] = "True" if read_ini_array_contains(
+        path, "/Script/DuneSandbox.PvpPveSettings", "m_PveEnabledPartitions", partition_id
+    ) else values.get("partition_pve_enabled", "False")
     return values
 
 
-def merged_partition_engine_values(config: dict, partition_id: str) -> dict[str, str]:
+def merged_partition_engine_values(config: dict, map_name: str, partition_id: str) -> dict[str, str]:
     values = merged_engine_values(config)
     partition_entry = config.get("partitions", {}).get(str(partition_id), {})
-    values.update(partition_entry.get("userengine", {}))
+    partition_engine = partition_entry.get("userengine", {})
+    values.update(partition_engine)
+    path = live_userengine_path(partition_id, canonical_map(map_name))
+    for key, spec in {**ENGINE_FIELDS, **MAP_FIELDS}.items():
+        if key in PARTITION_ENGINE_FIELDS:
+            continue
+        section, ini_key, _ = spec
+        live_value = read_ini_value(path, section, ini_key)
+        if live_value is not None:
+            values[key] = live_value
     return values
 
 
@@ -211,11 +405,14 @@ def print_rows(rows: dict[str, str], order: dict[str, tuple[str | None, str | No
 def set_field(scope: str, name: str | None, field_id: str, value: str) -> int:
     config = load_config()
     if scope == "engine":
-        if field_id not in ENGINE_FIELDS:
+        spec = field_spec(field_id)
+        if field_id not in ENGINE_FIELDS and field_id not in MAP_FIELDS:
             raise SystemExit(f"Unknown engine field: {field_id}")
         if field_id in {"port", "igw_port"}:
             validate_port_ranges(config, field_id, value)
         config.setdefault("engine", {})[field_id] = value
+        if spec and spec[0] and spec[1]:
+            update_ini_key(live_userengine_path(), spec[0], spec[1], value)
     else:
         if field_id not in MAP_FIELDS:
             raise SystemExit(f"Unknown map field: {field_id}")
@@ -232,6 +429,19 @@ def set_partition_field(map_name: str, partition_id: str, field_id: str, value: 
     entry = config.setdefault("partitions", {}).setdefault(str(partition_id), {})
     entry["map"] = canonical_map(map_name)
     entry.setdefault("usergame", {})[field_id] = value
+    path = live_usergame_path(map_name, partition_id)
+    if field_id == "partition_pvp_enabled":
+        remove_ini_array_key(path, "/Script/DuneSandbox.PvpPveSettings", "m_PvpEnabledPartitions")
+        if truthy(value):
+            update_ini_key(path, "/Script/DuneSandbox.PvpPveSettings", "m_PvpEnabledPartitions", partition_id, "+")
+    elif field_id == "partition_pve_enabled":
+        remove_ini_array_key(path, "/Script/DuneSandbox.PvpPveSettings", "m_PveEnabledPartitions")
+        if truthy(value):
+            update_ini_key(path, "/Script/DuneSandbox.PvpPveSettings", "m_PveEnabledPartitions", partition_id, "+")
+    else:
+        spec = field_spec(field_id)
+        if spec and spec[0] and spec[1]:
+            update_ini_key(path, spec[0], spec[1], value)
     save_config(config)
     return 0
 
@@ -241,8 +451,16 @@ def set_partition_engine_field(map_name: str, partition_id: str, field_id: str, 
         raise SystemExit(f"Unknown partition engine field: {field_id}")
     config = load_config()
     entry = config.setdefault("partitions", {}).setdefault(str(partition_id), {})
-    entry["map"] = canonical_map(map_name)
+    target_map = canonical_map(map_name)
+    entry["map"] = target_map
     entry.setdefault("userengine", {})[field_id] = value
+    spec = field_spec(field_id)
+    if spec and spec[0] and spec[1]:
+        path = live_userengine_path(partition_id, target_map)
+        if value == "":
+            remove_ini_key(path, spec[0], spec[1])
+        else:
+            update_ini_key(path, spec[0], spec[1], value)
     save_config(config)
     return 0
 
@@ -467,6 +685,26 @@ def safe_runtime_dir_name(map_name: str, partition_id: str) -> str:
     return "".join(chars).strip("-")
 
 
+def saved_dir_for(map_name: str, partition_id: str | None = None) -> Path:
+    game_root = Path(os.environ.get("DUNE_USERSETTINGS_GAME_ROOT", str(ROOT / "runtime" / "game")))
+    target_map = canonical_map(map_name)
+    if target_map == "Survival_1" and str(partition_id or "1") == "1":
+        return game_root / "survival-1" / "Saved"
+    if target_map == "Overmap":
+        return game_root / "overmap" / "Saved"
+    if partition_id:
+        return game_root / safe_runtime_dir_name(target_map, str(partition_id)) / "Saved"
+    return game_root / safe_runtime_dir_name(target_map, "global") / "Saved"
+
+
+def live_userengine_path(partition_id: str | None = None, map_name: str = "Survival_1") -> Path:
+    return saved_dir_for(map_name, partition_id or "1") / "UserSettings" / "UserEngine.ini"
+
+
+def live_usergame_path(map_name: str, partition_id: str) -> Path:
+    return saved_dir_for(map_name, partition_id) / "UserSettings" / "UserGame.ini"
+
+
 def materialize_current_runtime_files() -> int:
     config = load_config()
     game_root = ROOT / "runtime" / "game"
@@ -506,17 +744,43 @@ def materialize_current_runtime_files() -> int:
         targets.append((canonical_map(map_name), saved_dir, partition_id))
         seen_paths.add(resolved)
 
+    expected_engine_paths: set[Path] = set()
+
     for map_name, saved_dir, partition_id in targets:
         user_settings_dir = saved_dir / "UserSettings"
         user_settings_dir.mkdir(parents=True, exist_ok=True)
         if partition_id:
-            engine_values = merged_partition_engine_values(config, str(partition_id))
+            engine_values = merged_partition_engine_values(config, canonical_map(map_name), str(partition_id))
             values = merged_partition_values(config, canonical_map(map_name), str(partition_id))
         else:
             engine_values = merged_engine_values(config)
             values = merged_map_values(config, canonical_map(map_name))
-        write_userengine_ini(user_settings_dir / "UserEngine.ini", engine_values)
-        write_usergame_ini(user_settings_dir / "UserGame.ini", values, partition_id)
+        engine_path = user_settings_dir / "UserEngine.ini"
+        game_path = user_settings_dir / "UserGame.ini"
+        expected_engine_paths.add(engine_path.resolve())
+        if not engine_path.exists():
+            write_userengine_ini(engine_path, engine_values)
+        else:
+            for key in PARTITION_ENGINE_FIELDS:
+                spec = ENGINE_FIELDS[key]
+                if not engine_values.get(key):
+                    remove_ini_key(engine_path, spec[0], spec[1])
+            for key, spec in {**ENGINE_FIELDS, **MAP_FIELDS}.items():
+                if key in engine_values and engine_values.get(key) != "" and spec[0] and spec[1]:
+                    update_ini_key(engine_path, spec[0], spec[1], str(engine_values[key]))
+        if not game_path.exists():
+            write_usergame_ini(game_path, values, partition_id)
+        else:
+            for key, spec in MAP_FIELDS.items():
+                if key in values and spec[0] and spec[1]:
+                    update_ini_key(game_path, spec[0], spec[1], str(values[key]))
+
+    for engine_path in game_root.glob("*/Saved/UserSettings/UserEngine.ini"):
+        if engine_path.resolve() in expected_engine_paths:
+            continue
+        for key in PARTITION_ENGINE_FIELDS:
+            spec = ENGINE_FIELDS[key]
+            remove_ini_key(engine_path, spec[0], spec[1])
     return 0
 
 
@@ -526,13 +790,29 @@ def materialize(map_name: str, saved_dir: str, partition_id: str | None = None) 
     user_settings_dir = Path(saved_dir) / "UserSettings"
     user_settings_dir.mkdir(parents=True, exist_ok=True)
     if partition_id:
-        engine_values = merged_partition_engine_values(config, str(partition_id))
+        engine_values = merged_partition_engine_values(config, target_map, str(partition_id))
         values = merged_partition_values(config, target_map, str(partition_id))
     else:
         engine_values = merged_engine_values(config)
         values = merged_map_values(config, target_map)
-    write_userengine_ini(user_settings_dir / "UserEngine.ini", engine_values)
-    write_usergame_ini(user_settings_dir / "UserGame.ini", values, str(partition_id) if partition_id else None)
+    engine_path = user_settings_dir / "UserEngine.ini"
+    game_path = user_settings_dir / "UserGame.ini"
+    if not engine_path.exists():
+        write_userengine_ini(engine_path, engine_values)
+    else:
+        for key in PARTITION_ENGINE_FIELDS:
+            spec = ENGINE_FIELDS[key]
+            if not engine_values.get(key):
+                remove_ini_key(engine_path, spec[0], spec[1])
+        for key, spec in {**ENGINE_FIELDS, **MAP_FIELDS}.items():
+            if key in engine_values and engine_values.get(key) != "" and spec[0] and spec[1]:
+                update_ini_key(engine_path, spec[0], spec[1], str(engine_values[key]))
+    if not game_path.exists():
+        write_usergame_ini(game_path, values, str(partition_id) if partition_id else None)
+    else:
+        for key, spec in MAP_FIELDS.items():
+            if key in values and spec[0] and spec[1]:
+                update_ini_key(game_path, spec[0], spec[1], str(values[key]))
     return 0
 
 
@@ -544,13 +824,13 @@ def main(argv: list[str]) -> int:
     config = load_config()
 
     if command == "engine-values":
-        return print_rows(merged_engine_values(config), ENGINE_FIELDS)
+        return print_rows(merged_engine_values(config), {**ENGINE_FIELDS, **MAP_FIELDS})
     if command == "map-values" and len(argv) == 3:
         return print_rows(merged_map_values(config, canonical_map(argv[2])), MAP_FIELDS)
     if command == "partition-values" and len(argv) == 4:
         return print_rows(merged_partition_values(config, canonical_map(argv[2]), argv[3]), PARTITION_FIELDS)
     if command == "partition-engine-values" and len(argv) == 4:
-        return print_rows(merged_partition_engine_values(config, argv[3]), PARTITION_ENGINE_FIELDS)
+        return print_rows(merged_partition_engine_values(config, canonical_map(argv[2]), argv[3]), PARTITION_ENGINE_FIELDS)
     if command == "engine-set" and len(argv) == 4:
         return set_field("engine", None, argv[2], argv[3])
     if command == "map-set" and len(argv) == 5:

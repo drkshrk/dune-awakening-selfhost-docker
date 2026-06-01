@@ -655,6 +655,11 @@ if live_server_id="$(bind_partition_to_live_server "$PARTITION_ID" "$MAP_NAME" "
   echo "Bound partition $PARTITION_ID to warming server_id: $live_server_id"
 fi
 
+if [ "$MAP_NAME" = "Survival_1" ]; then
+  runtime/scripts/sietches.sh sync >/dev/null 2>&1 || true
+  runtime/scripts/publish-sietch-overrides.sh once >/dev/null 2>&1 || true
+fi
+
 if [ "$MAP_NAME" = "DeepDesert_1" ] && [ -x runtime/scripts/publish-deepdesert-state.sh ]; then
   runtime/scripts/publish-deepdesert-state.sh once >/dev/null 2>&1 || true
 fi

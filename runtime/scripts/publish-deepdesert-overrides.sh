@@ -60,18 +60,28 @@ ensure_text_router_log() {
 
 load_rmq_admin_creds() {
   ensure_text_router_log
-
   python3 - <<'PY'
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 log_path = Path("runtime/text-router/director-current.log")
-if not log_path.exists():
-    sys.exit(1)
-
 pattern = re.compile(r'(bgd\.[^/\s]+\.admin)/([A-Za-z0-9+/=]+) => allow administrator')
-matches = pattern.findall(log_path.read_text(errors="ignore"))
+text = ""
+if log_path.exists():
+    text = log_path.read_text(errors="ignore")
+matches = pattern.findall(text)
+if not matches:
+    try:
+        text = subprocess.check_output(
+            ["docker", "logs", "dune-text-router"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception:
+        text = ""
+    matches = pattern.findall(text)
 if not matches:
     sys.exit(1)
 

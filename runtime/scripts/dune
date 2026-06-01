@@ -58,6 +58,10 @@ case "$cmd" in
     runtime/scripts/ports.sh
     ;;
 
+  ping|ping-diagnostics)
+    runtime/scripts/ping-diagnostics.sh
+    ;;
+
   ready)
     runtime/scripts/ready.sh
     ;;
@@ -137,6 +141,11 @@ case "$cmd" in
     runtime/scripts/db.sh "$@"
     ;;
 
+  db-manage|database)
+    shift || true
+    runtime/scripts/db-manager.sh "$@"
+    ;;
+
   config|server)
     shift || true
     runtime/scripts/config.sh "$@"
@@ -183,6 +192,7 @@ Usage:
   runtime/scripts/dune despawn <map-name|partition-id|container-name>
   runtime/scripts/dune autoscaler [status|start|stop|restart|logs|run]
   runtime/scripts/dune ports
+  runtime/scripts/dune ping
   runtime/scripts/dune ready
   runtime/scripts/dune logs <service> [--raw]
   runtime/scripts/dune restart <service>
@@ -205,6 +215,7 @@ Usage:
   runtime/scripts/dune db transfer [--dry-run] [--yes] [--no-backup] <old-fls-id> <new-fls-id>
   runtime/scripts/dune db transfer --file <plan.tsv> [--dry-run] [--yes]
   runtime/scripts/dune db transfer pending|apply-pending|clear-pending
+  runtime/scripts/dune database [status|schemas|tables|counts|columns|preview|sql|export]
   runtime/scripts/dune maps list
   runtime/scripts/dune maps mode [map]
   runtime/scripts/dune maps set <map> <dynamic|always-on>
@@ -222,14 +233,30 @@ Usage:
   runtime/scripts/dune sietches set-active <map-name> <count>
   runtime/scripts/dune sietches set-display <partition-id> <display-name>
   runtime/scripts/dune sietches set-password <partition-id> [password]
+  runtime/scripts/dune sietches sync
+  runtime/scripts/dune sietches validate
   runtime/scripts/dune admin item-search <query>
   runtime/scripts/dune admin players [--online] [--show-full-ids]
-  runtime/scripts/dune admin kick <player-fls-id> [--dry-run] [--yes] [--force]
+  runtime/scripts/dune admin kick <player-fls-id> [--dry-run] [--yes] [--force] [--label <name>]
   runtime/scripts/dune admin kick --all-online [--yes] [--dry-run]
   runtime/scripts/dune admin item-list [category]
   runtime/scripts/dune admin grant-item <player-id|*> <item-name> [quantity] [durability]
   runtime/scripts/dune admin grant-item-id <player-id|*> <item-id> [quantity] [durability]
   runtime/scripts/dune admin grant-template <player-id|*> scout-ornithopter-mk6
+  runtime/scripts/dune admin player-location <player-id>
+  runtime/scripts/dune admin award-xp <player-id|*> <amount>
+  runtime/scripts/dune admin skill-points <player-id|*> <points>
+  runtime/scripts/dune admin skill-module <player-id|*> <module> <level>
+  runtime/scripts/dune admin skill-modules [query]
+  runtime/scripts/dune admin refill-water <player-id|*> [amount]
+  runtime/scripts/dune admin clean-inventory <player-id|*>
+  runtime/scripts/dune admin reset-progression <player-id|*>
+  runtime/scripts/dune admin teleport <player-id> <x> <y> <z> [yaw]
+  runtime/scripts/dune admin spawn-vehicle <player-id> <vehicle-id> <template-name> [offset-units]
+  runtime/scripts/dune admin spawn-vehicle-at <player-id> <vehicle-id> <template-name> <x> <y> <z> [rotation]
+  runtime/scripts/dune admin vehicle-list
+  runtime/scripts/dune admin unsupported
+  runtime/scripts/dune admin history
 
 Services for logs/restart:
   postgres

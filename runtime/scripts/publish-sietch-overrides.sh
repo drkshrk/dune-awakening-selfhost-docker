@@ -8,6 +8,7 @@ LOG_FILE="runtime/generated/sietch-overrides.log"
 LOG_POINTER_FILE="runtime/generated/sietch-overrides-current.log"
 TEXT_ROUTER_LOG="runtime/text-router/director-current.log"
 CONFIG_FILE="runtime/generated/sietch-config.json"
+TIMESTAMP_LEAD_SECONDS="${DUNE_SIETCH_OVERRIDE_TIMESTAMP_LEAD_SECONDS:-0}"
 
 SOURCE_EXCHANGE="completions"
 SOURCE_ROUTING_KEY="server_state.Survival_1"
@@ -61,18 +62,28 @@ ensure_text_router_log() {
 
 load_rmq_admin_creds() {
   ensure_text_router_log
-
   python3 - <<'PY'
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 log_path = Path("runtime/text-router/director-current.log")
-if not log_path.exists():
-    sys.exit(1)
-
 pattern = re.compile(r'(bgd\.[^/\s]+\.admin)/([A-Za-z0-9+/=]+) => allow administrator')
-matches = pattern.findall(log_path.read_text(errors="ignore"))
+text = ""
+if log_path.exists():
+    text = log_path.read_text(errors="ignore")
+matches = pattern.findall(text)
+if not matches:
+    try:
+        text = subprocess.check_output(
+            ["docker", "logs", "dune-text-router"],
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception:
+        text = ""
+    matches = pattern.findall(text)
 if not matches:
     sys.exit(1)
 
@@ -91,6 +102,19 @@ rmq_admin() {
   docker exec dune-rmq-admin rabbitmqadmin -q -u "$rmq_user" -p "$rmq_password" "$@"
 }
 
+rmq_delete_binding_exact() {
+  local source="$1" destination="$2" routing_key="$3"
+  docker exec dune-rmq-admin rabbitmqctl eval "
+Binding = {binding,
+  {resource, <<\"/\">>, exchange, <<\"${source}\">>},
+  <<\"${routing_key}\">>,
+  {resource, <<\"/\">>, queue, <<\"${destination}\">>},
+  []},
+DeleteCallback = fun(_, _) -> ok end,
+io:format(\"~p~n\", [rabbit_db_binding:delete(Binding, DeleteCallback)]).
+" >/dev/null
+}
+
 ensure_route() {
   rmq_admin declare exchange name="$FILTER_EXCHANGE" type=direct durable=true >/dev/null
   rmq_admin declare queue name="$SOURCE_FILTER_QUEUE" durable=true >/dev/null
@@ -105,11 +129,7 @@ ensure_route() {
     destination="$SINK_QUEUE" \
     destination_type=queue \
     routing_key="$SOURCE_ROUTING_KEY" >/dev/null
-  rmq_admin delete binding \
-    source="$SOURCE_EXCHANGE" \
-    destination_type=queue \
-    destination="$SINK_QUEUE" \
-    properties_key="$SOURCE_ROUTING_KEY" >/dev/null 2>&1 || true
+  rmq_delete_binding_exact "$SOURCE_EXCHANGE" "$SINK_QUEUE" "$SOURCE_ROUTING_KEY" >/dev/null 2>&1 || true
 }
 
 restore_route() {
@@ -118,16 +138,8 @@ restore_route() {
     destination="$SINK_QUEUE" \
     destination_type=queue \
     routing_key="$SOURCE_ROUTING_KEY" >/dev/null || true
-  rmq_admin delete binding \
-    source="$FILTER_EXCHANGE" \
-    destination_type=queue \
-    destination="$SINK_QUEUE" \
-    properties_key="$SOURCE_ROUTING_KEY" >/dev/null 2>&1 || true
-  rmq_admin delete binding \
-    source="$SOURCE_EXCHANGE" \
-    destination_type=queue \
-    destination="$SOURCE_FILTER_QUEUE" \
-    properties_key="$SOURCE_ROUTING_KEY" >/dev/null 2>&1 || true
+  rmq_delete_binding_exact "$FILTER_EXCHANGE" "$SINK_QUEUE" "$SOURCE_ROUTING_KEY" >/dev/null 2>&1 || true
+  rmq_delete_binding_exact "$SOURCE_EXCHANGE" "$SOURCE_FILTER_QUEUE" "$SOURCE_ROUTING_KEY" >/dev/null 2>&1 || true
 }
 
 publish_payload() {
@@ -188,9 +200,20 @@ PY
 
 publish_snapshot_once() {
   local rows
+  local survival_log_ready="false"
+  runtime/scripts/sietches.sh sync >>"$LOG_FILE" 2>&1 || {
+    echo "Sietch sync failed before publish." >&2
+    return 1
+  }
   heal_survival_alive_state
-  rows="$(python3 - <<'PY'
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-server-survival-1; then
+    if docker logs dune-server-survival-1 2>&1 | grep -Eq 'Server farm is READY .*partition 1'; then
+      survival_log_ready="true"
+    fi
+  fi
+  rows="$(TIMESTAMP_LEAD_SECONDS="$TIMESTAMP_LEAD_SECONDS" SURVIVAL_LOG_READY="$survival_log_ready" python3 - <<'PY'
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -198,13 +221,14 @@ from pathlib import Path
 config_path = Path("runtime/generated/sietch-config.json")
 config = json.loads(config_path.read_text()) if config_path.exists() else {"partitions": {}}
 partitions = config.get("partitions", {})
+timestamp_lead = int(os.environ.get("TIMESTAMP_LEAD_SECONDS", "0"))
+survival_log_ready = os.environ.get("SURVIVAL_LOG_READY", "").lower() in ("1", "true", "t", "yes")
 
 query = """
 select wp.partition_id,
        wp.map,
        coalesce(wp.server_id, ''),
        coalesce(fs.ready, false),
-       true as is_starting_map,
        coalesce(wp.label, '')
 from dune.world_partition wp
 left join dune.farm_state fs on fs.server_id = wp.server_id
@@ -246,7 +270,7 @@ defaults = {
     "CombatSettings": {
         "securityZonesForceEnablePvp": "False",
         "areSecurityZonesEnabled": "True",
-        "shouldForceEnablePvpOnAllPartitions": "",
+        "shouldForceEnablePvpOnAllPartitions": "False",
         "itemDeteriorationUpdateRate": "1.0",
         "vehicleDurabilityDamageMultiplier": "1.0",
         "inventoryDecayedMaxDurabilityThreshold": "0.2",
@@ -265,26 +289,28 @@ defaults = {
 for line in result.stdout.splitlines():
     if not line.strip():
         continue
-    partition_id, map_name, server_id, ready, is_starting_map, label = line.split("\t")
+    partition_id, map_name, server_id, ready, label = line.split("\t")
+    effective_ready = ready.lower() in ("t", "true", "1")
+    if partition_id == "1" and survival_log_ready:
+        effective_ready = True
     cfg = partitions.get(partition_id, {})
     display_name = cfg.get("display_name", "")
     if not display_name and label:
-        display_name = f"Sietch {label}"
+        display_name = label if label.lower().startswith("sietch ") else f"Sietch {label}"
     password = cfg.get("password", "")
     payload = {
-        "reportTimestamp": int(time.time()),
+        "reportTimestamp": int(time.time()) + timestamp_lead,
         "partitionId": int(partition_id),
         "serverId": server_id,
-        "ready": ready.lower() in ("t", "true", "1"),
+        "ready": effective_ready,
         "displayName": display_name,
-        "isStartingMap": is_starting_map.lower() in ("t", "true", "1"),
+        "isStartingMap": True,
         "playerHardCapOverride": -1,
         "wauCapCurve": -1,
         "players": [],
         "serverGameplaySettings": json.loads(json.dumps(defaults)),
     }
-    if password:
-        payload["loginPassword"] = password
+    payload["loginPassword"] = password if password else None
     payload["serverGameplaySettings"]["CoreSettings"]["serverDisplayName"] = display_name
     print(json.dumps(payload, separators=(",", ":")))
 PY
@@ -302,7 +328,14 @@ forward_batch_once() {
   messages="$(rmq_admin --format=raw_json get queue="$SOURCE_FILTER_QUEUE" count=20 ackmode=ack_requeue_false)"
   [ "$messages" != "[]" ] || return 1
 
-  FILTER_MESSAGES="$messages" FILTER_CONFIG_PATH="$CONFIG_FILE" python3 - <<'PY'
+  local survival_log_ready="false"
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-server-survival-1; then
+    if docker logs dune-server-survival-1 2>&1 | grep -Eq 'Server farm is READY .*partition 1'; then
+      survival_log_ready="true"
+    fi
+  fi
+
+  FILTER_MESSAGES="$messages" FILTER_CONFIG_PATH="$CONFIG_FILE" SURVIVAL_LOG_READY="$survival_log_ready" python3 - <<'PY'
 import json
 import os
 import subprocess
@@ -313,6 +346,7 @@ messages = json.loads(os.environ["FILTER_MESSAGES"])
 config_path = Path(os.environ["FILTER_CONFIG_PATH"])
 config = json.loads(config_path.read_text()) if config_path.exists() else {"partitions": {}}
 partition_cfg = config.get("partitions", {})
+survival_log_ready = os.environ.get("SURVIVAL_LOG_READY", "").lower() in ("1", "true", "t", "yes")
 label_rows_raw = subprocess.check_output([
     "docker", "exec", "dune-postgres", "psql",
     "-U", "postgres", "-d", "dune", "-At", "-F", "\t",
@@ -328,23 +362,25 @@ for line in label_rows_raw.splitlines():
 for message in messages:
     payload = json.loads(message["payload"])
     partition_id = str(payload.get("partitionId"))
+    if partition_id == "1" and survival_log_ready:
+        payload["ready"] = True
     cfg = partition_cfg.get(partition_id, {})
     display_name = cfg.get("display_name", "")
     if not display_name:
         label = label_by_partition.get(partition_id, "")
         if label:
-            display_name = f"Sietch {label}"
+            display_name = label if label.lower().startswith("sietch ") else f"Sietch {label}"
     password = cfg.get("password", "")
     payload["displayName"] = display_name
-    if password:
-        payload["loginPassword"] = password
+    payload["loginPassword"] = password if password else None
     payload["isStartingMap"] = True
     gameplay = payload.setdefault("serverGameplaySettings", {})
     core = gameplay.setdefault("CoreSettings", {})
     core["serverDisplayName"] = display_name
-    # Director drops "out of order" state updates. Make the overlaid message
-    # strictly newer than the raw Survival_1 state it is replacing.
-    payload["reportTimestamp"] = max(int(time.time()), int(payload.get("reportTimestamp", 0)) + 1)
+    combat = gameplay.setdefault("CombatSettings", {})
+    if combat.get("shouldForceEnablePvpOnAllPartitions") in ("", None):
+        combat["shouldForceEnablePvpOnAllPartitions"] = False
+    payload["reportTimestamp"] = int(time.time())
     print(json.dumps(payload, separators=(",", ":")))
 PY
 }

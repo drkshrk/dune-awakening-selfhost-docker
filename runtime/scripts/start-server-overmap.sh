@@ -43,6 +43,54 @@ fi
 
 MULTIHOME_IP="$(resolve_bind_ip)"
 
+psql_value() {
+  docker exec dune-postgres psql -U postgres -d dune -Atc "$1"
+}
+
+bind_partition_to_live_server() {
+  local partition_id="$1"
+  local map_name="$2"
+  local game_port="$3"
+  local igw_port="$4"
+  local tries="${5:-30}"
+  local sleep_seconds="${6:-2}"
+  local live_server_id="" i
+
+  for i in $(seq 1 "$tries"); do
+    live_server_id="$(psql_value "
+      select coalesce(server_id, '')
+      from dune.farm_state
+      where map = '${map_name//\'/\'\'}'
+        and game_port = $game_port
+        and igw_port = $igw_port
+        and coalesce(alive, false) = true
+      order by ready desc, server_id
+      limit 1;
+    " | tr -d '\r[:space:]')"
+
+    if [ -n "$live_server_id" ]; then
+      docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+begin;
+update dune.world_partition
+set server_id = '$live_server_id'
+where partition_id = $partition_id;
+delete from dune.farm_state
+where map = '${map_name//\'/\'\'}'
+  and server_id <> '$live_server_id'
+  and game_port = $game_port
+  and igw_port = $igw_port;
+commit;
+" >/dev/null
+      printf '%s' "$live_server_id"
+      return 0
+    fi
+
+    sleep "$sleep_seconds"
+  done
+
+  return 1
+}
+
 mkdir -p runtime/game/overmap/Saved
 mkdir -p runtime/game/artifacts
 mkdir -p "$FAKE_K8S_SERVICEACCOUNT_DIR"
@@ -159,6 +207,10 @@ docker run -d \
   "${LOG_RUNTIME_ARGS[@]}"
 
 sleep 20
+
+if live_server_id="$(bind_partition_to_live_server "$PARTITION_ID" Overmap "$GAME_PORT" "$IGW_PORT" 20 2)"; then
+  echo "Bound Overmap partition $PARTITION_ID to server_id: $live_server_id"
+fi
 
 docker ps --filter "name=dune-server-overmap" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 

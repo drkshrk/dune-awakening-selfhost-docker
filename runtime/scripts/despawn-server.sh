@@ -251,6 +251,11 @@ commit;
 "
 fi
 
+if [ "$CONTAINER_MAP" = "Survival_1" ]; then
+  runtime/scripts/sietches.sh sync >/dev/null 2>&1 || true
+  runtime/scripts/publish-sietch-overrides.sh once >/dev/null 2>&1 || true
+fi
+
 echo
 echo "Remaining Dune server containers:"
 docker ps -a --filter "name=dune-server-" --format "table {{.Names}}\t{{.Status}}"

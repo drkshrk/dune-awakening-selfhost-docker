@@ -13,9 +13,40 @@ TIMEOUT_SECONDS="${DUNE_DB_UPDATE_TIMEOUT_SECONDS:-300}"
 SUCCESS_MARKER_REGEX='Database is already up to date|User-data encryption:'
 FAILURE_MARKER_REGEX='Traceback \(most recent call last\)|ERROR|CRITICAL|FATAL'
 QUIESCENT_SUCCESS_AFTER_SECONDS="${DUNE_DB_UPDATE_QUIESCENT_SUCCESS_AFTER_SECONDS:-20}"
+ORPHAN_AUDIT_DIR="runtime/generated/db-orphan-audits"
+ORPHAN_BACKUP_ON_DETECT="${DUNE_DB_BACKUP_ON_ORPHAN_DETECT:-1}"
+
+audit_db_orphans() {
+  local summary detailed ts report_file total
+  mkdir -p "$ORPHAN_AUDIT_DIR"
+
+  summary="$(bash runtime/scripts/db-orphan-audit.sh summary 2>/dev/null || true)"
+  [ -n "$summary" ] || return 0
+
+  total="$(printf '%s\n' "$summary" | awk -F '\t' '{ sum += ($2 + 0) } END { print sum + 0 }')"
+  if [ "${total:-0}" -le 0 ]; then
+    return 0
+  fi
+
+  ts="$(date +%Y%m%d-%H%M%S)"
+  report_file="$ORPHAN_AUDIT_DIR/orphans-$ts.tsv"
+  bash runtime/scripts/db-orphan-audit.sh export "$report_file" >/dev/null 2>&1 || true
+
+  echo "=== Database orphan audit before updater ==="
+  printf '%s\n' "$summary" | awk -F '\t' '{ printf "  %-40s %s\n", $1 ":", $2 }'
+  echo "Detailed report: $report_file"
+
+  if [ "$ORPHAN_BACKUP_ON_DETECT" = "1" ]; then
+    echo "Orphaned player/account rows were detected before the DB updater."
+    echo "Creating a safety backup before running updater cleanup."
+    bash runtime/scripts/db.sh backup runtime/backups/db >/dev/null
+  fi
+}
 
 echo "=== Running Dune DB update/migration ==="
 echo "Image: $IMAGE"
+
+audit_db_orphans
 
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 

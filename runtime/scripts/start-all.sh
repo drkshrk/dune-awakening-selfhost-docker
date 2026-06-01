@@ -22,6 +22,13 @@ echo "=== Ensuring Database Is Up To Date ==="
 runtime/scripts/update-db.sh
 
 echo
+echo "=== Synchronizing Sietch State ==="
+runtime/scripts/sietches.sh sync || {
+  echo "Sietch state sync failed. Refusing to start with stale Sietch state."
+  exit 1
+}
+
+echo
 echo "=== Recycling Stale World Servers ==="
 runtime/scripts/recycle-world-game-servers.sh remove-stale
 
@@ -68,6 +75,12 @@ fi
 echo
 echo "=== Starting ServerGateway ==="
 runtime/scripts/start-server-gateway.sh
+
+echo
+echo "=== Applying Local Public-IP Loopback Optimization ==="
+runtime/scripts/local-loopback-optimize.sh || {
+  echo "Local public-IP loopback optimization could not be applied. Public clients are unaffected; same-host clients may need NAT hairpin support."
+}
 
 echo
 echo "=== Publishing Survival Sietch State ==="
