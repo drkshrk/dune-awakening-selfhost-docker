@@ -46,6 +46,41 @@ const nav: { tab: Tab; icon: React.ReactNode }[] = [
   { tab: "Settings", icon: <Settings size={18} /> }
 ];
 
+const RESTARTABLE_SERVICES = [
+  { value: "gateway", label: "Gateway" },
+  { value: "director", label: "Director" },
+  { value: "text-router", label: "Text Router" },
+  { value: "survival-1", label: "Survival 1" },
+  { value: "overmap", label: "Overmap" },
+  { value: "rmq-admin", label: "RabbitMQ Admin" },
+  { value: "rmq-game", label: "RabbitMQ Game" },
+  { value: "postgres", label: "Postgres" }
+];
+
+const SERVICE_LABELS: Record<string, string> = {
+  postgres: "Postgres",
+  "rmq-admin": "RabbitMQ Admin",
+  "rmq-game": "RabbitMQ Game",
+  "text-router": "Text Router",
+  director: "Dune Director",
+  gateway: "Gateway",
+  survival: "Survival",
+  "survival-1": "Survival 1",
+  overmap: "Overmap",
+  orchestrator: "Orchestrator",
+  autoscaler: "Autoscaler",
+  "dune-postgres": "Postgres",
+  "dune-rmq-admin": "RabbitMQ Admin",
+  "dune-rmq-game": "RabbitMQ Game",
+  "dune-text-router": "Text Router",
+  "dune-director": "Dune Director",
+  "dune-server-gateway": "Gateway",
+  "dune-server-survival-1": "Survival 1",
+  "dune-server-overmap": "Overmap",
+  "dune-orchestrator": "Orchestrator",
+  "dune-autoscaler": "Autoscaler"
+};
+
 export function App() {
   const [auth, setAuth] = useState(false);
   const [password, setPassword] = useState("");
@@ -226,9 +261,9 @@ function HomePanel({ status, readiness, setTask, onLoad }: { status: string; rea
       {readinessWarning && <article className="panel wide warning-panel">
         <h3>Readiness check warning</h3>
         <p>Dune readiness can fail while the stack is still starting or partially unavailable. Server status loaded, so the web admin is still connected.</p>
-        <TechnicalDetails text={readinessWarning} />
+        <TechnicalDetails title="Advanced readiness error" text={readinessWarning} />
       </article>}
-      <TechnicalDetails className="wide" title="Technical details" text={formatTechnicalText([
+      <TechnicalDetails className="wide advanced-debug" title="Advanced diagnostics" text={formatTechnicalText([
         ["dune status", status || "Status has not been loaded."],
         ["dune ready", readiness || readinessWarning || "Readiness has not been loaded."]
       ])} />
@@ -237,7 +272,7 @@ function HomePanel({ status, readiness, setTask, onLoad }: { status: string; rea
 }
 
 function ServerPanel(props: { setTask: (task: Task) => void; setStatus: (text: string) => void; setReadiness: (text: string) => void; setPorts: (text: string) => void; setDoctor: (text: string) => void; ports: string; readiness: string; doctor: string; onError: (text: string) => void }) {
-  const [service, setService] = useState("gateway");
+  const [service, setService] = useState(RESTARTABLE_SERVICES[0].value);
   async function run(action: () => Promise<unknown>) {
     props.onError("");
     try { await action(); } catch (error) { props.onError(error instanceof Error ? error.message : String(error)); }
@@ -257,15 +292,20 @@ function ServerPanel(props: { setTask: (task: Task) => void; setStatus: (text: s
         <button onClick={() => run(async () => props.setTask((await serverApi.start()).task))}><Play size={16} /> Start</button>
         <button onClick={() => run(async () => { if (window.confirm("Stop the Dune server stack?")) props.setTask((await serverApi.stop()).task); })}>Stop</button>
         <button onClick={() => run(async () => { if (window.confirm("Restart the Dune server stack?")) props.setTask((await serverApi.restart()).task); })}>Restart</button>
-        <button onClick={() => run(async () => props.setStatus((await serverApi.services()).stdout))}>Services</button>
         <button onClick={() => run(async () => props.setReadiness((await serverApi.readiness()).stdout))}>Readiness</button>
         <button onClick={() => run(async () => props.setPorts((await serverApi.ports()).stdout))}>Ports</button>
         <button onClick={() => run(async () => props.setDoctor((await serverApi.doctor()).stdout))}>Doctor</button>
       </div>
       <div className="action-row">
-        <input value={service} onChange={(event) => setService(event.target.value)} aria-label="Service name" />
-        <button onClick={() => run(async () => { if (window.confirm(`Restart ${service}?`)) props.setTask((await serverApi.restartService(service)).task); })}>Restart Service</button>
+        <label className="compact-select">Restart service<select value={service} onChange={(event) => setService(event.target.value)}>
+          {RESTARTABLE_SERVICES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+        </select></label>
+        <button onClick={() => run(async () => { if (window.confirm(`Restart ${friendlyServiceName(service)}?`)) props.setTask((await serverApi.restartService(service)).task); })}>Restart Service</button>
       </div>
+      <section className="action-section">
+        <h4>Scheduled Restarts, Server Title, and Redeploy</h4>
+        <p>These controls are planned for Phase 12B. The CLI has server title support and database backup scheduling, but web exposure needs dedicated routes, audit entries, and restart/confirmation design before it is safe to ship.</p>
+      </section>
       <ReadinessTimeline text={props.readiness} />
       <PortChecklist text={props.ports} />
       <DoctorSummary text={props.doctor} />
@@ -293,9 +333,9 @@ function ServicesPanel({ services, setServices, setTask, openLogs, onError }: { 
   return (
     <section className="panel">
       <div className="panel-title"><h2>Services</h2><button onClick={load}>Refresh Services</button></div>
-      {rows.length === 0 ? <pre className="mini-output">{services || "Services are loading or unavailable."}</pre> : <div className="service-table">
+      {rows.length === 0 ? <div className="empty">{services ? "No services parsed from the current Docker output." : "Services are loading or unavailable."}</div> : <div className="service-table">
         {rows.map((row) => <article className="service-card" key={row.name}>
-          <div><strong>{row.name}</strong><span>{row.status}</span><span>{row.ports}</span></div>
+          <div><strong>{friendlyServiceName(row.name)}</strong><span>{row.status}</span><span>{row.ports}</span></div>
           <div className="service-actions">
             {serviceActionName(row.name, "restart") && <button onClick={() => restart(serviceActionName(row.name, "restart") || row.name)}>Restart</button>}
             <button onClick={() => openLogs(serviceActionName(row.name, "logs") || row.name)}>Logs</button>
@@ -308,6 +348,8 @@ function ServicesPanel({ services, setServices, setTask, openLogs, onError }: { 
 
 function AdminToolsPanel({ setTask, onError }: { setTask: (task: Task) => void; onError: (text: string) => void }) {
   const [playerId, setPlayerId] = useState("");
+  const [players, setPlayers] = useState<Record<string, unknown>[]>([]);
+  const [selectedPlayer, setSelectedPlayer] = useState("");
   const [itemName, setItemName] = useState("");
   const [itemId, setItemId] = useState("");
   const [search, setSearch] = useState("");
@@ -326,10 +368,30 @@ function AdminToolsPanel({ setTask, onError }: { setTask: (task: Task) => void; 
     setLiveToolSummary(formatLiveToolResult(result));
     setLiveToolDetails(JSON.stringify(result, null, 2));
   }
+  useEffect(() => {
+    playersApi.list().then((result) => setPlayers(result.rows || [])).catch(() => undefined);
+  }, []);
+  function selectPlayer(value: string) {
+    setSelectedPlayer(value);
+    const row = players.find((player) => String(player.actor_id || player.player_pawn_id || player.action_player_id) === value);
+    setPlayerId(String(row?.action_player_id || row?.funcom_id || row?.fls_id || row?.account_id || ""));
+  }
   return (
     <section className="panel">
       <h2>Admin Tools</h2>
-      <label>Player FLS ID<input value={playerId} onChange={(event) => setPlayerId(event.target.value)} /></label>
+      <div className="action-section">
+        <h4>Quick Player Actions</h4>
+        <p>Select a known player to populate the Admin action ID. Use advanced manual entry only if a player is not listed.</p>
+        <div className="action-line">
+          <label className="wide-field">Player<select value={selectedPlayer} onChange={(event) => selectPlayer(event.target.value)}>
+            <option value="">Select player</option>
+            {players.map((player) => <option key={String(player.actor_id || player.player_pawn_id || player.action_player_id)} value={String(player.actor_id || player.player_pawn_id || player.action_player_id)}>
+              {String(player.character_name || "Unknown")} - {String(player.online_status || "unknown")} - admin {String(player.action_player_id || "missing")}
+            </option>)}
+          </select></label>
+        </div>
+        <details className="technical-details"><summary>Advanced manual player ID</summary><label>Player FLS/Admin ID<input value={playerId} onChange={(event) => setPlayerId(event.target.value)} /></label></details>
+      </div>
       <div className="two-col">
         <label>Item Name<input value={itemName} onChange={(event) => setItemName(event.target.value)} placeholder="Ornithopter part" /></label>
         <button onClick={() => run(async () => window.confirm(`Give 1 x ${itemName} to ${playerId}?`) && setTask((await playersApi.giveItem(playerId, { itemName, quantity: 1, durability: 1 })).task))}>Give Item</button>
@@ -374,7 +436,9 @@ function AdminToolsPanel({ setTask, onError }: { setTask: (task: Task) => void; 
       </div>
       <h3>Command History</h3>
       <button onClick={() => run(async () => setHistory((await adminApi.history()).stdout))}>Refresh Command History</button>
-      <pre className="mini-output">{history || "History comes from runtime/generated/admin-command-history.tsv."}</pre>
+      <DataTable rows={parseHistoryRows(history)} columns={["time", "action", "target", "status", "summary"]} />
+      {!history && <div className="empty">History comes from runtime/generated/admin-command-history.tsv.</div>}
+      {history && <TechnicalDetails title="Advanced history output" text={history} />}
     </section>
   );
 }
@@ -417,7 +481,7 @@ function PlayersPanel({ setTask, onError }: { setTask: (task: Task) => void; onE
         </div>
         <PlayerSummary detail={detail} fallback={selected} dbPlayerId={dbPlayerId} actionPlayerId={actionPlayerId} />
         <PlayerCapabilities capabilities={(detail?.capabilities as Record<string, unknown> | undefined) || {}} />
-        <TechnicalDetails title="Player profile technical details" text={JSON.stringify(detail, null, 2)} />
+        <TechnicalDetails title="Advanced player data" text={JSON.stringify(detail, null, 2)} />
         <div className="action-row">{["inventory", "currency", "factions", "specs", "position", "progression", "events", "stats", "history"].map((name) => <button key={name} className={tab === name ? "active" : ""} onClick={() => setTab(name)}>{name}</button>)}</div>
         <PlayerDetailTab playerId={dbPlayerId} tab={tab} onError={onError} />
         <PlayerActions dbPlayerId={dbPlayerId} actionPlayerId={actionPlayerId} setTask={setTask} onError={onError} onRefresh={() => open(selected)} />
@@ -697,9 +761,8 @@ function LogsPanel({ selectedService, setSelectedService, text, setText, onError
       <h2>Logs</h2>
       <div className="action-row">
         <select value={selectedService} onChange={(event) => setSelectedService(event.target.value)}>
-          {services.map((service) => <option key={service} value={service}>{service}</option>)}
+          {services.map((service) => <option key={service} value={service}>{friendlyServiceName(service)}</option>)}
         </select>
-        <input value={selectedService} onChange={(event) => setSelectedService(event.target.value)} />
         <button onClick={async () => { onError(""); try { setText((await logsApi.get(selectedService)).stdout); } catch (error) { onError(error instanceof Error ? error.message : String(error)); } }}>Refresh Logs</button>
         <button onClick={() => setStreaming(!streaming)}>{streaming ? "Stop Stream" : "Live Stream"}</button>
         <button onClick={() => setPaused(!paused)}>{paused ? "Resume" : "Pause"}</button>
@@ -1084,24 +1147,31 @@ function WorldListPanel({ title, load, exportUrl, exportLabel = "Export", blocke
 
 function BackupsPanel({ setTask, onError }: { setTask: (task: Task) => void; onError: (text: string) => void }) {
   const [text, setText] = useState("");
-  const [backup, setBackup] = useState("");
+  const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   async function run(action: () => Promise<void>) {
     onError("");
     try { await action(); } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
   }
+  async function refresh() {
+    const result = await backupsApi.list();
+    setText(result.stdout || "");
+    setRows(parseBackupRows(result.stdout || ""));
+  }
+  useEffect(() => {
+    run(refresh);
+  }, []);
   return (
     <section className="panel">
-      <h2>Backups</h2>
-      <div className="action-row">
-        <button onClick={() => run(async () => setText((await backupsApi.list()).stdout))}>List Backups</button>
-        <button onClick={() => run(async () => setTask((await backupsApi.create()).task))}>Create Backup</button>
-      </div>
-      <label>Backup file name<input value={backup} onChange={(event) => setBackup(event.target.value)} placeholder="dune-db-....backup" /></label>
-      <div className="action-row">
-        <button className="danger" onClick={() => run(async () => { if (window.confirm(`Restore backup ${backup}? This changes database state.`)) setTask((await backupsApi.restore(backup)).task); })}>Restore Backup</button>
-        <button className="danger" onClick={() => run(async () => { if (window.confirm(`Delete backup ${backup}?`)) setTask((await backupsApi.delete(backup)).task); })}>Delete Backup</button>
-      </div>
-      <pre className="mini-output">{text || "List backups to see available files."}</pre>
+      <div className="panel-title"><h2>Backups</h2><div className="action-row"><button onClick={() => run(refresh)}>Refresh Backups</button><button onClick={() => run(async () => setTask((await backupsApi.create()).task))}>Create Backup</button></div></div>
+      {rows.length ? <DataTable rows={rows} columns={["name", "created", "type", "source"]} action={(row) => <div className="service-actions">
+        <button className="danger" onClick={(event) => { event.stopPropagation(); run(async () => { if (window.confirm(`Restore backup ${String(row.name)}? This changes database state.`)) setTask((await backupsApi.restore(String(row.name))).task); }); }}>Restore</button>
+        <button className="danger" onClick={(event) => { event.stopPropagation(); run(async () => { if (window.confirm(`Delete backup ${String(row.name)}?`)) setTask((await backupsApi.delete(String(row.name))).task); }); }}>Delete</button>
+      </div>} /> : <div className="empty">No database backups found yet.</div>}
+      <section className="action-section">
+        <h4>Automation and Remote Imports</h4>
+        <p>Automatic backups and remote SSH import are planned for Phase 12E. Existing CLI support needs dedicated web routes, secret handling, progress output, and audit coverage before it is exposed here.</p>
+      </section>
+      <TechnicalDetails title="Advanced backup output" text={text || "Backups have not been loaded yet."} />
     </section>
   );
 }
@@ -1133,6 +1203,7 @@ function LiveMapPanel({ onError }: { onError: (text: string) => void }) {
   }, [autoRefresh, map]);
   const visible = markers.filter((marker) => filters[String(marker.type)] !== false);
   const plotted = visible.filter((marker) => Number.isFinite(Number(marker.x)) && Number.isFinite(Number(marker.y)));
+  const displayRows = visible.map((marker) => ({ ...marker, display_name: friendlyMarkerName(marker), raw_name: marker.name || marker.id }));
   const bounds = markerBounds(plotted);
   return <section className="panel">
     <div className="panel-title"><h2>Live Map</h2><div className="action-row"><button onClick={load}>Refresh</button><label><input type="checkbox" checked={autoRefresh} onChange={(event) => setAutoRefresh(event.target.checked)} /> Auto-refresh</label></div></div>
@@ -1142,20 +1213,20 @@ function LiveMapPanel({ onError }: { onError: (text: string) => void }) {
       {plotted.length === 0 && <div className="empty">No plottable markers. Raw marker rows are shown below when available.</div>}
       {plotted.map((marker, index) => {
         const point = markerPoint(marker, bounds);
-        return <button key={`${marker.type}-${marker.id}-${index}`} title={`${marker.type}: ${marker.name || marker.id}`} onClick={() => setSelected(marker)} style={{ position: "absolute", left: `${point.x}%`, top: `${point.y}%`, transform: "translate(-50%, -50%)", width: 12, height: 12, borderRadius: "50%", border: "1px solid white", background: markerColor(String(marker.type)), cursor: "pointer" }} />;
+        return <button key={`${marker.type}-${marker.id}-${index}`} title={`${marker.type}: ${friendlyMarkerName(marker)}`} onClick={() => setSelected(marker)} style={{ position: "absolute", left: `${point.x}%`, top: `${point.y}%`, transform: "translate(-50%, -50%)", width: 12, height: 12, borderRadius: "50%", border: "1px solid white", background: markerColor(String(marker.type)), cursor: "pointer" }} />;
       })}
     </div>
     <p className="danger-note">Coordinates use raw Dune world positions from actor transforms. Exact image/world calibration is not verified, so this plot is for relative position and inspection.</p>
-    {selected && <section className="drawer"><div className="panel-title"><h3>{String(selected.name || selected.id)}</h3><button onClick={() => setSelected(null)}>Close</button></div><KeyValueGrid items={[
+    {selected && <section className="drawer"><div className="panel-title"><h3>{friendlyMarkerName(selected)}</h3><button onClick={() => setSelected(null)}>Close</button></div><KeyValueGrid items={[
       ["Type", selected.type],
-      ["Name", selected.name],
+      ["Name", friendlyMarkerName(selected)],
       ["ID", selected.id],
       ["Map", selected.map],
       ["X", selected.x],
       ["Y", selected.y],
       ["Z", selected.z]
     ]} /><TechnicalDetails title="Marker technical details" text={JSON.stringify(selected, null, 2)} /></section>}
-    <DataTable rows={visible as Record<string, unknown>[]} />
+    <DataTable rows={displayRows as Record<string, unknown>[]} columns={["type", "display_name", "map", "x", "y", "z", "raw_name"]} />
   </section>;
 }
 
@@ -1250,6 +1321,20 @@ function markerColor(type: string) {
   return { player: "#3b82f6", vehicle: "#22c55e", base: "#f59e0b", storage: "#a855f7", service: "#e5e7eb" }[type] || "#e5e7eb";
 }
 
+function friendlyMarkerName(marker: LiveMapMarker) {
+  const raw = String(marker.name || marker.id || marker.type || "Marker");
+  const normalized = raw.toLowerCase();
+  if (/ornithopter.*light|light.*ornithopter/.test(normalized)) return "Light Ornithopter";
+  if (/ornithopter.*medium|medium.*ornithopter/.test(normalized)) return "Medium Ornithopter";
+  if (/ornithopter.*transport|transport.*ornithopter/.test(normalized)) return "Transport Ornithopter";
+  if (/sandbike/.test(normalized)) return "Sandbike";
+  if (/buggy/.test(normalized)) return "Buggy";
+  if (/tank/.test(normalized)) return "Tank";
+  if (/sandcrawler/.test(normalized)) return "Sandcrawler";
+  if (/treadwheel/.test(normalized)) return "Treadwheel";
+  return raw.replace(/^\/Game\/.*\//, "").replace(/^BP_/, "").replace(/_C$/, "").replaceAll("_", " ");
+}
+
 function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
   return <section className="panel"><h2>Updates</h2><div className="action-row"><button onClick={async () => setTask((await updatesApi.checkGame()).task)}>Check Game Update</button><button onClick={async () => window.confirm("Apply the game server update now?") && setTask((await updatesApi.applyGame()).task)}>Apply Game Update</button><button onClick={async () => setTask((await updatesApi.checkStack()).task)}>Check Stack Update</button><button onClick={async () => window.confirm("Apply the latest RedBlink stack update now?") && setTask((await updatesApi.applyStack()).task)}>Apply Stack Update</button></div></section>;
 }
@@ -1265,17 +1350,30 @@ function SettingsPanel() {
   return <section className="panel">
     <div className="panel-title"><h2>Settings</h2><button onClick={refresh}>Refresh Runtime Settings</button></div>
     <RuntimeSettingsSummary settings={settings} />
-    <TechnicalDetails text={settings ? JSON.stringify(settings, null, 2) : "Runtime settings have not loaded yet."} />
   </section>;
 }
 
 function HomeHealthCards({ status, readiness, readinessWarning, loading }: { status: string; readiness: string; readinessWarning: string; loading: boolean }) {
   const summary = summarizeHomeStatus(status, readiness, readinessWarning, loading);
-  return <div className="health-grid wide">
-    {summary.map((item) => <article className="status-card" key={item.label}>
-      <div className="status-card-title"><span>{item.label}</span><StatusPill value={item.status} /></div>
-      <strong>{item.value}</strong>
-    </article>)}
+  return <div className="home-health wide">
+    <section className="dashboard-band">
+      <h3>Server Identity</h3>
+      <div className="health-grid">
+        {summary.identity.map((item) => <article className="status-card" key={item.label}>
+          <div className="status-card-title"><span>{item.label}</span><StatusPill value={item.status} /></div>
+          <strong>{item.value}</strong>
+        </article>)}
+      </div>
+    </section>
+    <section className="dashboard-band">
+      <h3>Readiness and Health</h3>
+      <div className="health-grid health-grid-compact">
+        {summary.health.map((item) => <article className="status-card" key={item.label}>
+          <div className="status-card-title"><span>{item.label}</span><StatusPill value={item.status} /></div>
+          <strong>{item.value}</strong>
+        </article>)}
+      </div>
+    </section>
   </div>;
 }
 
@@ -1286,7 +1384,7 @@ function DoctorSummary({ text }: { text: string }) {
     <div className="panel-title"><h4>Doctor Diagnostics</h4><StatusPill value={text ? status : "Unknown"} /></div>
     {text ? <p>{issues.length ? `${issues.length} warning or failure line${issues.length === 1 ? "" : "s"} detected.` : "No obvious warning lines detected in the latest doctor output."}</p> : <p>Run Doctor to show diagnostics.</p>}
     {issues.length > 0 && <div className="check-grid">{issues.map((issue, index) => <article className="check-card" key={`${issue}-${index}`}><div><strong>Diagnostic warning</strong><p>{issue}</p></div><StatusPill value="Warning" /></article>)}</div>}
-    <TechnicalDetails title="Doctor technical details" text={text || "Run Doctor to show diagnostics."} />
+    <TechnicalDetails title="Advanced doctor output" text={text || "Run Doctor to show diagnostics."} />
   </section>;
 }
 
@@ -1423,28 +1521,37 @@ function formatTechnicalText(sections: [string, string][]) {
 }
 
 function summarizeHomeStatus(status: string, readiness: string, readinessWarning: string, loading: boolean) {
-  const combined = `${status}\n${readiness}`;
-  return [
-    { label: "Overall status", value: readiness ? "Readiness checked" : readinessWarning ? "Status available, readiness warning" : status ? "Status loaded" : loading ? "Checking" : "Unknown", status: readiness ? inferStatus(readiness) : readinessWarning ? "Warning" : status ? inferStatus(status) : loading ? "Running" : "Unknown" },
-    { label: "Server title", value: findLineValue(status, ["server title", "title", "SERVER_TITLE"]) || "Unknown", status: "Info" },
-    { label: "Region", value: findLineValue(status, ["region", "SERVER_REGION"]) || "Unknown", status: "Info" },
-    { label: "Mode", value: findLineValue(status, ["mode", "server mode"]) || "Unknown", status: "Info" },
-    { label: "Server IP", value: findLineValue(status, ["server ip", "ip", "SERVER_IP"]) || "Unknown", status: "Info" },
-    { label: "Battlegroup", value: findLineValue(status, ["battlegroup", "battlegroup id"]) || "Unknown", status: "Info" },
-    { label: "Population", value: findLineValue(status, ["population", "players"]) || "Unknown", status: inferStatus(findLineValue(status, ["population", "players"]) || "") },
-    { label: "Container health", value: summarizeSubsystem(combined, ["container", "docker", "compose"]), status: summarizeSubsystem(combined, ["container", "docker", "compose"]) },
-    { label: "Listener health", value: summarizeSubsystem(combined, ["listener", "port", "listening"]), status: summarizeSubsystem(combined, ["listener", "port", "listening"]) },
-    { label: "Database/world partitions", value: summarizeSubsystem(combined, ["database", "postgres", "partition"]), status: summarizeSubsystem(combined, ["database", "postgres", "partition"]) },
-    { label: "Game server readiness", value: readiness ? summarizeSubsystem(readiness, ["ready", "game", "server"]) : readinessWarning ? "Check failed" : "Unknown", status: readiness ? inferStatus(readiness) : readinessWarning ? "Warning" : "Unknown" },
-    { label: "Automation status", value: summarizeSubsystem(combined, ["autoscaler", "automation"]), status: summarizeSubsystem(combined, ["autoscaler", "automation"]) },
-    { label: "RabbitMQ status", value: summarizeSubsystem(combined, ["rabbit", "rmq"]), status: summarizeSubsystem(combined, ["rabbit", "rmq"]) },
-    { label: "FLS/Funcom status", value: summarizeSubsystem(combined, ["fls", "funcom"]), status: summarizeSubsystem(combined, ["fls", "funcom"]) }
-  ];
+  const overall = findLineValue(status, ["overall"]) || (readiness ? "Readiness checked" : readinessWarning ? "Status loaded, readiness warning" : status ? "Status loaded" : loading ? "Checking" : "Unknown");
+  const containers = summarizeSection(status, "Containers");
+  const listeners = summarizeSection(status, "Listeners");
+  const database = summarizeSection(status, "Database");
+  const games = summarizeSection(status, "Game servers");
+  const rabbit = summarizeSection(status, "RabbitMQ game connections");
+  const fls = summarizeSection(status, "Funcom/FLS summary");
+  return {
+    identity: [
+      { label: "Overall", value: overall, status: inferStatus(overall) },
+      { label: "Title", value: findLineValue(status, ["title", "server title", "SERVER_TITLE"]) || "Unknown", status: "Info" },
+      { label: "Region", value: findLineValue(status, ["region", "SERVER_REGION"]) || "Unknown", status: "Info" },
+      { label: "Mode", value: findLineValue(status, ["mode", "server mode"]) || "Unknown", status: "Info" },
+      { label: "Server IP", value: findLineValue(status, ["server ip", "ip", "SERVER_IP"]) || "Unknown", status: "Info" },
+      { label: "Battlegroup", value: findLineValue(status, ["battlegroup", "battlegroup id"]) || "Unknown", status: "Info" },
+      { label: "Population", value: findLineValue(status, ["population", "players"]) || "Unknown", status: inferStatus(findLineValue(status, ["population", "players"]) || "Unknown") }
+    ],
+    health: [
+      { label: "Containers", value: containers.label, status: containers.status },
+      { label: "Listeners", value: listeners.label, status: listeners.status },
+      { label: "Database", value: database.label, status: database.status },
+      { label: "Game servers", value: readinessWarning ? "Readiness check failed" : games.label, status: readinessWarning ? "Warning" : games.status },
+      { label: "RabbitMQ", value: rabbit.label, status: rabbit.status },
+      { label: "Funcom/FLS", value: fls.label, status: fls.status }
+    ]
+  };
 }
 
 function findLineValue(text: string, keys: string[]) {
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
+  for (const rawLine of stripAnsi(text).split(/\r?\n/)) {
+    const line = stripAnsi(rawLine).trim();
     for (const key of keys) {
       const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       const match = line.match(new RegExp(`^\\s*${escaped}\\s*[:=]\\s*(.+)$`, "i"));
@@ -1452,6 +1559,30 @@ function findLineValue(text: string, keys: string[]) {
     }
   }
   return "";
+}
+
+function summarizeSection(text: string, section: string) {
+  const lines = sectionLines(text, section).filter((line) => !/^service\s+status$/i.test(line) && !/^check\s+port\s+status$/i.test(line));
+  if (!lines.length) return { label: "Unknown", status: "Unknown" };
+  const bad = lines.filter((line) => /missing|stopped|not running|error|fail|wait|warming|0$/i.test(line));
+  if (bad.length) return { label: `${bad.length} attention needed`, status: /error|fail|missing|stopped|not running/i.test(bad.join("\n")) ? "Failed" : "Warning" };
+  return { label: "Ready", status: "Ready" };
+}
+
+function sectionLines(text: string, section: string) {
+  const lines = stripAnsi(text).split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim().toLowerCase() === `=== ${section.toLowerCase()} ===`);
+  if (start < 0) return [];
+  const result: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (/^=== .+ ===$/.test(line.trim())) break;
+    if (line.trim()) result.push(line.trim());
+  }
+  return result;
+}
+
+function stripAnsi(text: string) {
+  return text.replace(/\u001b\[[0-9;]*m/g, "");
 }
 
 function summarizeSubsystem(text: string, keywords: string[]) {
@@ -1577,6 +1708,44 @@ function parseServiceRows(text: string) {
     const [name, ...rest] = line.split(/\s{2,}|\t/).filter(Boolean);
     return { name, status: rest[0] || "", ports: rest.slice(1).join(" ") };
   }).filter((row) => row.name);
+}
+
+function parseBackupRows(text: string) {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const name = line.match(/([A-Za-z0-9_.-]+(?:\.backup|\.dump|\.sql))/)?.[1];
+    if (!name) return null;
+    const created = name.match(/(\d{8}-\d{6})/)?.[1] || "";
+    const type = name.endsWith(".backup") ? "official backup" : name.endsWith(".dump") ? "dump" : "sql";
+    const source = name.includes("__") ? name.split("__")[0].replace(/^dune-db-/, "") : name.split("-")[0];
+    return { name, created, type, source };
+  }).filter(Boolean) as Record<string, unknown>[];
+}
+
+function parseHistoryRows(text: string) {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).filter((line) => !/^time\s+/i.test(line)).map((line) => {
+    const parts = line.split(/\t/);
+    if (parts.length >= 6) {
+      return {
+        time: parts[0],
+        action: parts[1],
+        target: parts[2],
+        status: parts[5],
+        summary: parts.slice(3, 5).concat(parts.slice(6)).filter(Boolean).join(" ")
+      };
+    }
+    const loose = line.split(/\s{2,}/).filter(Boolean);
+    return {
+      time: loose[0] || "",
+      action: loose[1] || "",
+      target: loose[2] || "",
+      status: loose[5] || "",
+      summary: loose.slice(3).join(" ")
+    };
+  }).filter((row) => row.action || row.summary);
+}
+
+function friendlyServiceName(name: string) {
+  return SERVICE_LABELS[name] || SERVICE_LABELS[name.replace(/^dune-/, "")] || name.replace(/^dune-server-/, "").replace(/^dune-/, "").replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function serviceActionName(name: string, action: "logs" | "restart") {

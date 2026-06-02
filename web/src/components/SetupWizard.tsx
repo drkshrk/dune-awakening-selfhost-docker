@@ -61,7 +61,9 @@ export function SetupWizard() {
         </>}
         {step === 4 && <>
           <h2>Server Identity</h2>
-          {Object.entries(config).map(([key, value]) => <label key={key}>{key}<input value={value} onChange={(event) => setConfig({ ...config, [key]: event.target.value })} /></label>)}
+          <div className="setup-form-grid">
+            {Object.entries(config).map(([key, value]) => <label key={key}>{friendlyConfigLabel(key)}<input value={value} onChange={(event) => setConfig({ ...config, [key]: event.target.value })} /></label>)}
+          </div>
         </>}
         {step === 5 && <>
           <h2>Funcom Token</h2>
@@ -74,7 +76,47 @@ export function SetupWizard() {
         </>}
         {step === 7 && <>
           <h2>Review</h2>
-          <pre className="mini-output">{JSON.stringify(config, null, 2)}</pre>
+          <div className="action-sections">
+            <section className="action-section">
+              <h4>Server Identity</h4>
+              <ReviewGrid items={[
+                ["Title", config.SERVER_TITLE],
+                ["Region", config.SERVER_REGION],
+                ["Server IP", config.SERVER_IP],
+                ["Provider", config.SERVER_PROVIDER],
+                ["Steam App ID", config.STEAM_APP_ID]
+              ]} />
+            </section>
+            <section className="action-section">
+              <h4>Network / Ports</h4>
+              <ReviewGrid items={[
+                ["Game UDP", "7777, 7778, 7888, 7889"],
+                ["RabbitMQ Game", "31982/tcp"],
+                ["RabbitMQ Game HTTP", "31983/tcp"],
+                ["Web Admin", "8088/tcp"]
+              ]} />
+            </section>
+            <section className="action-section">
+              <h4>Auth / Token</h4>
+              <ReviewGrid items={[
+                ["Funcom token", token ? "Ready to save" : "Not entered in this session"],
+                ["Admin auth", "Enabled unless ADMIN_AUTH_DISABLED is set"],
+                ["Secret storage", "runtime/secrets with restrictive permissions"]
+              ]} />
+            </section>
+            <section className="action-section warning-panel">
+              <h4>Warnings / Missing Values</h4>
+              <ul className="requirements">
+                {!token && <li>Funcom token was not entered in this wizard session. Existing token file may still be used if present.</li>}
+                {config.SERVER_IP === "auto" && <li>Server IP is set to auto. Confirm Home readiness after setup to verify advertised IP.</li>}
+                <li>Initial setup can initialize or reset local world state. Create backups before destructive setup work.</li>
+              </ul>
+            </section>
+          </div>
+          <details className="technical-details">
+            <summary>Advanced review data</summary>
+            <pre className="mini-output">{JSON.stringify(config, null, 2)}</pre>
+          </details>
           <p className="danger-note">Initial setup can initialize or reset local world state. Review before continuing.</p>
         </>}
         {step === 8 && <>
@@ -93,4 +135,21 @@ export function SetupWizard() {
       </div>
     </section>
   );
+}
+
+function ReviewGrid({ items }: { items: [string, string][] }) {
+  return <div className="key-value-grid">{items.map(([label, value]) => <div className="key-value-item" key={label}>
+    <span>{label}</span>
+    <strong>{value || "Not set"}</strong>
+  </div>)}</div>;
+}
+
+function friendlyConfigLabel(key: string) {
+  return {
+    SERVER_TITLE: "Server title",
+    SERVER_REGION: "Region",
+    SERVER_IP: "Server IP",
+    SERVER_PROVIDER: "Provider",
+    STEAM_APP_ID: "Steam app ID"
+  }[key] || key;
 }
