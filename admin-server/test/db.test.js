@@ -50,14 +50,23 @@ test("players query uses parameterized search input", async () => {
     query: async (text, values) => {
       calls.push({ text, values });
       if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
-      return { rows: [] };
+      return { rows: [{ actor_id: 82, player_pawn_id: 82, account_id: 276, funcom_id: "RedBlink#75570", fls_id: "RedBlink#75570", action_player_id: "RedBlink#75570" }] };
     }
   };
-  await listPlayers(db, { q: "RedBlink'; drop table dune.actors; --" });
+  const result = await listPlayers(db, { q: "RedBlink'; drop table dune.actors; --" });
   const playerQuery = calls.find((call) => call.text.includes("from dune.actors"));
   assert.ok(playerQuery);
+  assert.match(playerQuery.text, /as player_pawn_id/);
+  assert.match(playerQuery.text, /as funcom_id/);
+  assert.match(playerQuery.text, /as action_player_id/);
   assert.match(playerQuery.text, /\$1/);
   assert.deepEqual(playerQuery.values, ["%RedBlink'; drop table dune.actors; --%"]);
+  assert.equal(result.rows[0].actor_id, 82);
+  assert.equal(result.rows[0].player_pawn_id, 82);
+  assert.equal(result.rows[0].account_id, 276);
+  assert.equal(result.rows[0].funcom_id, "RedBlink#75570");
+  assert.equal(result.rows[0].fls_id, "RedBlink#75570");
+  assert.equal(result.rows[0].action_player_id, "RedBlink#75570");
 });
 
 test("live map player markers validate map filter and use parameterized transform query", async () => {

@@ -101,14 +101,21 @@ export async function listPlayers(db, { online = false, q = "" } = {}) {
   if (online) where += " and coalesce(ps.online_status::text, '') = 'Online'";
   if (q) {
     values.push(`%${q}%`);
-    where += ` and (ps.character_name ilike $${values.length} or ac."user" ilike $${values.length} or a.id::text = $${values.length})`;
+    where += ` and (ps.character_name ilike $${values.length} or ac."user" ilike $${values.length} or a.id::text = $${values.length} or a.owner_account_id::text = $${values.length})`;
   }
   const result = await db.query(`
     select a.id as actor_id,
+           a.id as player_pawn_id,
            coalesce(a.owner_account_id, 0) as account_id,
            coalesce(ps.character_name, '') as character_name,
            coalesce(ps.player_controller_id, 0) as player_controller_id,
+           coalesce(ac."user", '') as funcom_id,
            coalesce(ac."user", '') as fls_id,
+           case
+             when nullif(ac."user", '') is not null then ac."user"
+             when a.owner_account_id is not null and a.owner_account_id <> 0 then a.owner_account_id::text
+             else ''
+           end as action_player_id,
            a.class,
            coalesce(a.map, '') as map,
            coalesce(ps.online_status::text, 'Offline') as online_status
@@ -125,10 +132,17 @@ export async function playerProfile(db, id) {
   const actorId = intParam(id, "player id", 1);
   const result = await db.query(`
     select a.id as actor_id,
+           a.id as player_pawn_id,
            coalesce(a.owner_account_id, 0) as account_id,
            coalesce(ps.character_name, '') as character_name,
            coalesce(ps.player_controller_id, 0) as player_controller_id,
+           coalesce(ac."user", '') as funcom_id,
            coalesce(ac."user", '') as fls_id,
+           case
+             when nullif(ac."user", '') is not null then ac."user"
+             when a.owner_account_id is not null and a.owner_account_id <> 0 then a.owner_account_id::text
+             else ''
+           end as action_player_id,
            a.class,
            coalesce(a.map, '') as map,
            coalesce(ps.online_status::text, 'Offline') as online_status

@@ -67,6 +67,10 @@ export function App() {
     }).catch(() => undefined);
   }, []);
 
+  useEffect(() => {
+    if (task && isTerminalTask(task.status)) setTask(null);
+  }, [tab]);
+
   async function login() {
     const result = await post<{ authenticated: boolean; csrfToken: string }>("/api/auth/login", { password });
     setCsrfToken(result.csrfToken);
@@ -128,20 +132,24 @@ export function App() {
         {tab === "Logs" && <LogsPanel selectedService={selectedLogService} setSelectedService={setSelectedLogService} text={logs} setText={setLogs} onError={setError} />}
         {tab === "Updates" && <UpdatesPanel setTask={setTask} />}
         {tab === "Settings" && <SettingsPanel />}
-        <TaskProgress task={task} />
+        <TaskProgress task={task} onDismiss={() => setTask(null)} />
       </main>
     </div>
   );
 }
 
 function HomePanel({ status, readiness, setTask, onLoad }: { status: string; readiness: string; setTask: (task: Task) => void; onLoad: () => void }) {
+  useEffect(() => {
+    onLoad();
+  }, []);
+
   return (
     <section className="grid">
       <article className="hero-panel">
         <h2>Server Overview</h2>
         <p>Use this dashboard for setup, service health, logs, backups, updates, and player admin actions.</p>
         <div className="action-row">
-          <button onClick={onLoad}>Load Status</button>
+          <button onClick={onLoad}>Refresh Status</button>
           <button onClick={async () => setTask((await serverApi.start()).task)}><Play size={16} /> Start</button>
           <button onClick={async () => window.confirm("Stop the Dune server stack?") && setTask((await serverApi.stop()).task)}>Stop</button>
           <button onClick={async () => window.confirm("Restart the Dune server stack?") && setTask((await serverApi.restart()).task)}>Restart</button>
@@ -160,6 +168,14 @@ function ServerPanel(props: { setTask: (task: Task) => void; setStatus: (text: s
     props.onError("");
     try { await action(); } catch (error) { props.onError(error instanceof Error ? error.message : String(error)); }
   }
+  useEffect(() => {
+    run(async () => {
+      props.setStatus((await serverApi.status()).stdout);
+      props.setReadiness((await serverApi.readiness()).stdout);
+      props.setPorts((await serverApi.ports()).stdout);
+      props.setDoctor((await serverApi.doctor()).stdout);
+    });
+  }, []);
   return (
     <section className="panel">
       <h2>Server Controls</h2>
@@ -197,10 +213,13 @@ function ServicesPanel({ services, setServices, setTask, openLogs, onError }: { 
       onError(error instanceof Error ? error.message : String(error));
     }
   }
+  useEffect(() => {
+    load();
+  }, []);
   return (
     <section className="panel">
-      <div className="panel-title"><h2>Services</h2><button onClick={load}>Load Services</button></div>
-      {rows.length === 0 ? <pre className="mini-output">{services || "Load services to show Docker containers."}</pre> : <div className="service-table">
+      <div className="panel-title"><h2>Services</h2><button onClick={load}>Refresh Services</button></div>
+      {rows.length === 0 ? <pre className="mini-output">{services || "Services are loading or unavailable."}</pre> : <div className="service-table">
         {rows.map((row) => <article className="service-card" key={row.name}>
           <div><strong>{row.name}</strong><span>{row.status}</span><span>{row.ports}</span></div>
           <div className="service-actions">
@@ -259,7 +278,7 @@ function AdminToolsPanel({ setTask, onError }: { setTask: (task: Task) => void; 
         <button onClick={() => run(async () => setCatalog(JSON.stringify(await adminApi.whisper(playerId, message), null, 2)))}>Whisper</button>
       </div>
       <h3>Command History</h3>
-      <button onClick={() => run(async () => setHistory((await adminApi.history()).stdout))}>Load Command History</button>
+      <button onClick={() => run(async () => setHistory((await adminApi.history()).stdout))}>Refresh Command History</button>
       <pre className="mini-output">{history || "History comes from runtime/generated/admin-command-history.tsv."}</pre>
     </section>
   );
@@ -281,27 +300,36 @@ function PlayersPanel({ setTask, onError }: { setTask: (task: Task) => void; onE
     }
   }
   async function open(row: Record<string, unknown>) {
-    const id = String(row.actor_id || row.id || "");
+    const id = String(row.actor_id || row.player_pawn_id || row.id || "");
     setSelected(row);
     setDetail(await playersApi.profile(id));
   }
+  useEffect(() => {
+    load(false);
+  }, []);
+  const dbPlayerId = selected ? String(selected.actor_id || selected.player_pawn_id || selected.id || "") : "";
+  const actionPlayerId = selected ? String(selected.action_player_id || selected.funcom_id || selected.fls_id || selected.account_id || "") : "";
   return (
     <section className="panel">
-      <div className="panel-title"><h2>Players</h2><div className="action-row"><button onClick={() => load(false)}>Load Players</button><button onClick={() => load(true)}>Online Only</button></div></div>
-      <div className="action-row"><input value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search character, FLS ID, or actor id" /><button onClick={() => load(false)}>Search</button></div>
-      <DataTable rows={rows} columns={["actor_id", "character_name", "account_id", "online_status", "map", "fls_id"]} onRowClick={open} />
+      <div className="panel-title"><h2>Players</h2><div className="action-row"><button onClick={() => load(false)}>Refresh Players</button><button onClick={() => load(true)}>Online Only</button></div></div>
+      <div className="action-row"><input value={q} onChange={(event) => setQ(event.target.value)} placeholder="Search character, FLS ID, account id, or actor id" /><button onClick={() => load(false)}>Search</button></div>
+      <DataTable rows={rows} columns={["actor_id", "character_name", "account_id", "action_player_id", "online_status", "map", "fls_id"]} onRowClick={open} />
       {selected && <section className="drawer">
         <div className="panel-title"><h3>{String(selected.character_name || selected.actor_id)}</h3><button onClick={() => setSelected(null)}>Close</button></div>
+        <div className="two-col">
+          <p><strong>DB actor/player ID:</strong> {dbPlayerId || "missing"}</p>
+          <p><strong>Admin action ID:</strong> {actionPlayerId || "missing"}</p>
+        </div>
         <pre className="mini-output">{JSON.stringify(detail, null, 2)}</pre>
         <div className="action-row">{["inventory", "currency", "factions", "specs", "position", "progression", "events", "stats", "history"].map((name) => <button key={name} className={tab === name ? "active" : ""} onClick={() => setTab(name)}>{name}</button>)}</div>
-        <PlayerDetailTab playerId={String(selected.actor_id)} tab={tab} onError={onError} />
-        <PlayerActions playerId={String(selected.actor_id)} setTask={setTask} onError={onError} onRefresh={() => open(selected)} />
+        <PlayerDetailTab playerId={dbPlayerId} tab={tab} onError={onError} />
+        <PlayerActions dbPlayerId={dbPlayerId} actionPlayerId={actionPlayerId} setTask={setTask} onError={onError} onRefresh={() => open(selected)} />
       </section>}
     </section>
   );
 }
 
-function PlayerActions({ playerId, setTask, onError, onRefresh }: { playerId: string; setTask: (task: Task) => void; onError: (text: string) => void; onRefresh: () => void }) {
+function PlayerActions({ dbPlayerId, actionPlayerId, setTask, onError, onRefresh }: { dbPlayerId: string; actionPlayerId: string; setTask: (task: Task) => void; onError: (text: string) => void; onRefresh: () => void }) {
   const [itemName, setItemName] = useState("");
   const [itemId, setItemId] = useState("");
   const [quantity, setQuantity] = useState("1");
@@ -340,45 +368,48 @@ function PlayerActions({ playerId, setTask, onError, onRefresh }: { playerId: st
       return { ...item, quantity: Number(qty), durability: Number(durability) };
     });
   }
+  const canRunCliAction = Boolean(actionPlayerId);
+  const cliDisabledReason = "This player row is missing a Funcom/FLS admin action ID. CLI-backed actions are disabled to avoid sending the DB actor ID to dune admin.";
   return <section className="action-panel">
     <h3>Player Actions</h3>
+    {!canRunCliAction && <p className="danger-note">{cliDisabledReason}</p>}
     {result && <p className="danger-note">{result}</p>}
     <div className="actions-grid">
       <label>Item Name<input value={itemName} onChange={(event) => setItemName(event.target.value)} /></label>
       <label>Quantity<input value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Give ${quantity} x ${itemName} to player ${playerId}?`)) await runTask(() => playersApi.giveItem(playerId, { itemName, quantity: Number(quantity), durability: 1 })); })}>Give Item</button>
+      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Give ${quantity} x ${itemName} to player ${actionPlayerId}?`)) await runTask(() => playersApi.giveItem(actionPlayerId, { itemName, quantity: Number(quantity), durability: 1 })); })}>Give Item</button>
       <label>Raw Item ID<input value={itemId} onChange={(event) => setItemId(event.target.value)} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Give raw item id ${itemId} to player ${playerId}?`)) await runTask(() => playersApi.giveItemId(playerId, { itemId, quantity: Number(quantity), durability: 1 })); })}>Give Item by ID</button>
+      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Give raw item id ${itemId} to player ${actionPlayerId}?`)) await runTask(() => playersApi.giveItemId(actionPlayerId, { itemId, quantity: Number(quantity), durability: 1 })); })}>Give Item by ID</button>
       <textarea value={multiItems} onChange={(event) => setMultiItems(event.target.value)} placeholder="One item per line: name or raw id, quantity, durability" rows={4} />
-      <button onClick={() => run(async () => { const items = parsedMultiItems(); if (window.confirm(`Give ${items.length} item entries to player ${playerId}?`)) await runDirect(() => playersApi.giveItems(playerId, items)); })}>Give Multiple Items</button>
+      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { const items = parsedMultiItems(); if (window.confirm(`Give ${items.length} item entries to player ${actionPlayerId}?`)) await runDirect(() => playersApi.giveItems(actionPlayerId, items)); })}>Give Multiple Items</button>
       <label>XP Amount<input value={xp} onChange={(event) => setXp(event.target.value)} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Add ${xp} XP to player ${playerId}?`)) await runTask(() => playersApi.addXp(playerId, Number(xp))); })}>Add XP</button>
+      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Add ${xp} XP to player ${actionPlayerId}?`)) await runTask(() => playersApi.addXp(actionPlayerId, Number(xp))); })}>Add XP</button>
       <label>Skill Points<input value={points} onChange={(event) => setPoints(event.target.value)} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Set player ${playerId} to ${points} unspent skill points?`)) await runTask(() => playersApi.setSkillPoints(playerId, Number(points))); })}>Set Skill Points</button>
+      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Set player ${actionPlayerId} to ${points} unspent skill points?`)) await runTask(() => playersApi.setSkillPoints(actionPlayerId, Number(points))); })}>Set Skill Points</button>
       <label>Skill Module<input value={module} onChange={(event) => setModule(event.target.value)} /></label>
       <label>Level<input value={level} onChange={(event) => setLevel(event.target.value)} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Set ${module} to level ${level} for player ${playerId}?`)) await runTask(() => playersApi.setSkillModule(playerId, { module, level: Number(level) })); })}>Set Skill Module</button>
-      <button onClick={() => run(async () => { if (window.confirm(`Refill water for player ${playerId}?`)) await runTask(() => playersApi.refillWater(playerId)); })}>Refill Water</button>
+      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Set ${module} to level ${level} for player ${actionPlayerId}?`)) await runTask(() => playersApi.setSkillModule(actionPlayerId, { module, level: Number(level) })); })}>Set Skill Module</button>
+      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Refill water for player ${actionPlayerId}?`)) await runTask(() => playersApi.refillWater(actionPlayerId)); })}>Refill Water</button>
       <label>X<input value={coords.x} onChange={(event) => setCoords({ ...coords, x: event.target.value })} /></label>
       <label>Y<input value={coords.y} onChange={(event) => setCoords({ ...coords, y: event.target.value })} /></label>
       <label>Z<input value={coords.z} onChange={(event) => setCoords({ ...coords, z: event.target.value })} /></label>
       <label>Yaw<input value={coords.yaw} onChange={(event) => setCoords({ ...coords, yaw: event.target.value })} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Teleport player ${playerId} to X=${coords.x} Y=${coords.y} Z=${coords.z}?`)) await runTask(() => playersApi.teleport(playerId, { x: Number(coords.x), y: Number(coords.y), z: Number(coords.z), yaw: Number(coords.yaw) })); })}>Teleport</button>
+      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Teleport player ${actionPlayerId} to X=${coords.x} Y=${coords.y} Z=${coords.z}?`)) await runTask(() => playersApi.teleport(actionPlayerId, { x: Number(coords.x), y: Number(coords.y), z: Number(coords.z), yaw: Number(coords.yaw) })); })}>Teleport</button>
       <label>Vehicle ID<input value={vehicleId} onChange={(event) => setVehicleId(event.target.value)} /></label>
       <label>Vehicle Template<input value={vehicleTemplate} onChange={(event) => setVehicleTemplate(event.target.value)} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Spawn ${vehicleId}/${vehicleTemplate} in front of player ${playerId}?`)) await runTask(() => playersApi.spawnVehicle(playerId, { vehicleId, template: vehicleTemplate, offset: 400 })); })}>Spawn Vehicle</button>
-      <button className="danger" onClick={() => run(async () => { if (window.confirm(`Kick player ${playerId}?`)) await runTask(() => playersApi.kick(playerId)); })}>Kick Player</button>
-      <button className="danger" onClick={() => run(async () => { if (window.confirm(`Clean inventory for player ${playerId}? This removes carried items.`)) await runTask(() => playersApi.cleanInventory(playerId, "CLEAN INVENTORY")); })}>Clean Inventory</button>
-      <button className="danger" onClick={() => run(async () => { if (window.confirm(`Reset progression for player ${playerId}?`)) await runTask(() => playersApi.resetProgression(playerId, "RESET PROGRESSION")); })}>Reset Progression</button>
+      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Spawn ${vehicleId}/${vehicleTemplate} in front of player ${actionPlayerId}?`)) await runTask(() => playersApi.spawnVehicle(actionPlayerId, { vehicleId, template: vehicleTemplate, offset: 400 })); })}>Spawn Vehicle</button>
+      <button className="danger" disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Kick player ${actionPlayerId}?`)) await runTask(() => playersApi.kick(actionPlayerId)); })}>Kick Player</button>
+      <button className="danger" disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Clean inventory for player ${actionPlayerId}? This removes carried items.`)) await runTask(() => playersApi.cleanInventory(actionPlayerId, "CLEAN INVENTORY")); })}>Clean Inventory</button>
+      <button className="danger" disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Reset progression for player ${actionPlayerId}?`)) await runTask(() => playersApi.resetProgression(actionPlayerId, "RESET PROGRESSION")); })}>Reset Progression</button>
       <label>Currency ID<input value={currency.currencyId} onChange={(event) => setCurrency({ ...currency, currencyId: event.target.value })} /></label>
       <label>Currency Amount<input value={currency.amount} onChange={(event) => setCurrency({ ...currency, amount: event.target.value })} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Add ${currency.amount} currency ${currency.currencyId || "Solaris"} to player ${playerId}? A backup will be created first.`)) await runDirect(() => playersApi.addCurrency(playerId, { currencyId: Number(currency.currencyId || 0), amount: Number(currency.amount), confirmation: "ADD CURRENCY" })); })}>Add Currency</button>
+      <button onClick={() => run(async () => { if (window.confirm(`Add ${currency.amount} currency ${currency.currencyId || "Solaris"} to DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.addCurrency(dbPlayerId, { currencyId: Number(currency.currencyId || 0), amount: Number(currency.amount), confirmation: "ADD CURRENCY" })); })}>Add Currency</button>
       <label>Faction ID<input value={faction.factionId} onChange={(event) => setFaction({ ...faction, factionId: event.target.value })} /></label>
       <label>Reputation Amount<input value={faction.amount} onChange={(event) => setFaction({ ...faction, amount: event.target.value })} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Add ${faction.amount} reputation for faction ${faction.factionId} to player ${playerId}? A backup will be created first.`)) await runDirect(() => playersApi.addFactionReputation(playerId, { factionId: Number(faction.factionId), amount: Number(faction.amount), confirmation: "ADD FACTION REPUTATION" })); })}>Add Faction Reputation</button>
-      <button onClick={() => run(async () => { if (window.confirm(`Repair gear for offline player ${playerId}? A backup will be created first.`)) await runDirect(() => playersApi.repairGear(playerId, "REPAIR GEAR")); })}>Repair Gear</button>
+      <button onClick={() => run(async () => { if (window.confirm(`Add ${faction.amount} reputation for faction ${faction.factionId} to DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.addFactionReputation(dbPlayerId, { factionId: Number(faction.factionId), amount: Number(faction.amount), confirmation: "ADD FACTION REPUTATION" })); })}>Add Faction Reputation</button>
+      <button onClick={() => run(async () => { if (window.confirm(`Repair gear for offline DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.repairGear(dbPlayerId, "REPAIR GEAR")); })}>Repair Gear</button>
       <label>Refuel Vehicle Actor ID<input value={refuelVehicleId} onChange={(event) => setRefuelVehicleId(event.target.value)} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Refuel vehicle ${refuelVehicleId} owned by player ${playerId}? A backup will be created first.`)) await runDirect(() => playersApi.refuelVehicle(playerId, { vehicleId: refuelVehicleId, confirmation: "REFUEL VEHICLE" })); })}>Refuel Vehicle</button>
+      <button onClick={() => run(async () => { if (window.confirm(`Refuel vehicle ${refuelVehicleId} owned by DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.refuelVehicle(dbPlayerId, { vehicleId: refuelVehicleId, confirmation: "REFUEL VEHICLE" })); })}>Refuel Vehicle</button>
     </div>
   </section>;
 }
@@ -461,7 +492,7 @@ function LogsPanel({ selectedService, setSelectedService, text, setText, onError
           {services.map((service) => <option key={service} value={service}>{service}</option>)}
         </select>
         <input value={selectedService} onChange={(event) => setSelectedService(event.target.value)} />
-        <button onClick={async () => { onError(""); try { setText((await logsApi.get(selectedService)).stdout); } catch (error) { onError(error instanceof Error ? error.message : String(error)); } }}>Load Logs</button>
+        <button onClick={async () => { onError(""); try { setText((await logsApi.get(selectedService)).stdout); } catch (error) { onError(error instanceof Error ? error.message : String(error)); } }}>Refresh Logs</button>
         <button onClick={() => setStreaming(!streaming)}>{streaming ? "Stop Stream" : "Live Stream"}</button>
         <button onClick={() => setPaused(!paused)}>{paused ? "Resume" : "Pause"}</button>
         <a className="button-link" href={logsApi.downloadUrl(selectedService)}>Download</a>
@@ -485,6 +516,9 @@ function DatabasePanel({ setTask }: { setTask: (task: Task) => void }) {
   const [search, setSearch] = useState("");
   const [searchRows, setSearchRows] = useState<Record<string, unknown>[]>([]);
   async function loadTables() { setTables(await databaseApi.tables(schema)); }
+  useEffect(() => {
+    loadTables().catch(() => undefined);
+  }, []);
   async function open(table: string) {
     setSelected(table);
     const [nextPreview, nextColumns, nextCount] = await Promise.all([
@@ -498,7 +532,7 @@ function DatabasePanel({ setTask }: { setTask: (task: Task) => void }) {
   }
   return <section className="panel">
     <h2>Database Browser</h2>
-    <div className="action-row"><input value={schema} onChange={(event) => setSchema(event.target.value)} /><button onClick={loadTables}>Load Tables</button><button onClick={async () => setQueryResult(await databaseApi.status() as never)}>Status</button></div>
+    <div className="action-row"><input value={schema} onChange={(event) => setSchema(event.target.value)} /><button onClick={loadTables}>Refresh Tables</button><button onClick={async () => setQueryResult(await databaseApi.status() as never)}>Status</button></div>
     <DataTable rows={tables} columns={["schema", "name", "estimated_rows"]} onRowClick={(row) => open(String(row.name))} />
     <h3>{selected ? `${schema}.${selected} (${count} rows)` : "Table Preview"}</h3>
     <DataTable rows={columns} />
@@ -575,6 +609,10 @@ function MarketPanel({ onError }: { onError: (text: string) => void }) {
     setInfo(await marketApi.automationStatus());
   }
 
+  useEffect(() => {
+    run(() => load("items"));
+  }, []);
+
   const title = view === "capabilities"
     ? "Market Capabilities"
     : view === "automation"
@@ -584,7 +622,7 @@ function MarketPanel({ onError }: { onError: (text: string) => void }) {
   return <section className="panel">
     <div className="panel-title">
       <h2>Market</h2>
-      <button onClick={() => run(loadCapabilities)}>Load Capabilities</button>
+      <button onClick={() => run(loadCapabilities)}>Refresh Capabilities</button>
     </div>
 
     <div className="action-row">
@@ -632,6 +670,9 @@ function StarterKitPanel({ onError }: { onError: (text: string) => void }) {
     setItemsText(next.items.map((item) => `${item.itemId || item.itemName || ""},${item.quantity},${item.durability}`).join("\n"));
     setHistory((await starterKitApi.history()).rows || []);
   }
+  useEffect(() => {
+    run(load);
+  }, []);
   function nextConfig(): StarterKitConfig {
     return {
       ...config,
@@ -643,7 +684,7 @@ function StarterKitPanel({ onError }: { onError: (text: string) => void }) {
     };
   }
   return <section className="panel">
-    <div className="panel-title"><h2>Starter Kit</h2><button onClick={() => run(load)}>Load Starter Kit</button></div>
+    <div className="panel-title"><h2>Starter Kit</h2><button onClick={() => run(load)}>Refresh Starter Kit</button></div>
     <p className="danger-note">Automatic new-player scanning is disabled in this web implementation. Manual grants use existing RedBlink admin CLI commands and require confirmation.</p>
     <div className="two-col">
       <label>Version<input value={config.version} onChange={(event) => setConfig({ ...config, version: event.target.value })} /></label>
@@ -659,7 +700,7 @@ function StarterKitPanel({ onError }: { onError: (text: string) => void }) {
       <button onClick={() => run(async () => { if (window.confirm(`Grant Starter Kit to ${playerId}?`)) setOutput(JSON.stringify(await starterKitApi.grant(playerId, "GRANT STARTER KIT"), null, 2)); })}>Grant Starter Kit</button>
       <input value={grantId} onChange={(event) => setGrantId(event.target.value)} placeholder="Failed grant id" />
       <button onClick={() => run(async () => { if (window.confirm(`Retry Starter Kit grant ${grantId}?`)) setOutput(JSON.stringify(await starterKitApi.retry(grantId, "RETRY STARTER KIT"), null, 2)); })}>Retry Failed Grant</button>
-      <button onClick={() => run(async () => setHistory((await starterKitApi.history()).rows || []))}>Load History</button>
+      <button onClick={() => run(async () => setHistory((await starterKitApi.history()).rows || []))}>Refresh History</button>
     </div>
     {output && <pre className="mini-output">{output}</pre>}
     <pre className="mini-output">{JSON.stringify(config, null, 2)}</pre>
@@ -701,7 +742,10 @@ function StoragePanel({ onError }: { onError: (text: string) => void }) {
       onError(text);
     }
   }
-  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={load}>Load Storage</button></div><p className="danger-note">{storageResult}</p><DataTable rows={rows} onRowClick={open} />{selected && <section className="drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a><input value={itemName} onChange={(event) => setItemName(event.target.value)} placeholder="Item name" /><button disabled={!canGiveItem} onClick={giveStorageItem}>Give Item to Storage</button></div><DataTable rows={items} /></section>}</section>;
+  useEffect(() => {
+    load();
+  }, []);
+  return <section className="panel"><div className="panel-title"><h2>Storage</h2><button onClick={load}>Refresh Storage</button></div><p className="danger-note">{storageResult}</p><DataTable rows={rows} onRowClick={open} />{selected && <section className="drawer"><h3>Storage {String(selected.id)}</h3><div className="action-row"><a className="button-link" href={worldDataApi.storageExportUrl(String(selected.id))}>Export JSON</a><input value={itemName} onChange={(event) => setItemName(event.target.value)} placeholder="Item name" /><button disabled={!canGiveItem} onClick={giveStorageItem}>Give Item to Storage</button></div><DataTable rows={items} /></section>}</section>;
 }
 
 function WorldListPanel({ title, load, exportUrl, exportLabel = "Export", blockedText = "", onError }: { title: string; load: () => Promise<{ rows: Record<string, unknown>[]; reason?: string }>; exportUrl: (id: string) => string; exportLabel?: string; blockedText?: string; onError: (text: string) => void }) {
@@ -717,7 +761,10 @@ function WorldListPanel({ title, load, exportUrl, exportLabel = "Export", blocke
       onError(error instanceof Error ? error.message : String(error));
     }
   }
-  return <section className="panel"><div className="panel-title"><h2>{title}</h2><button onClick={refresh}>Load {title}</button></div>{reason && <p className="danger-note">{reason}</p>}{blockedText && <p className="danger-note">{blockedText}</p>}<DataTable rows={rows} action={(row) => <a className="button-link" href={exportUrl(String(row.id))}>{exportLabel}</a>} /></section>;
+  useEffect(() => {
+    refresh();
+  }, []);
+  return <section className="panel"><div className="panel-title"><h2>{title}</h2><button onClick={refresh}>Refresh {title}</button></div>{reason && <p className="danger-note">{reason}</p>}{blockedText && <p className="danger-note">{blockedText}</p>}<DataTable rows={rows} action={(row) => <a className="button-link" href={exportUrl(String(row.id))}>{exportLabel}</a>} /></section>;
 }
 
 function BackupsPanel({ setTask, onError }: { setTask: (task: Task) => void; onError: (text: string) => void }) {
@@ -762,6 +809,9 @@ function LiveMapPanel({ onError }: { onError: (text: string) => void }) {
     }
   }
   useEffect(() => {
+    load();
+  }, []);
+  useEffect(() => {
     if (!autoRefresh) return;
     const id = window.setInterval(load, 30000);
     return () => window.clearInterval(id);
@@ -804,6 +854,9 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
     const response = await action();
     setTask(response.task);
   }
+  useEffect(() => {
+    run(async () => setText(JSON.stringify(await mapsApi.status(), null, 2)));
+  }, []);
   return <section className="panel">
     <h2>Maps & Sietches</h2>
     <div className="action-row">
@@ -846,7 +899,7 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
       <button onClick={() => run(async () => { if (window.confirm("Bootstrap Dual Deep Desert?")) await runTask(() => mapsApi.updateDeepdesert({ action: "bootstrap", confirmation: "UPDATE DEEP DESERT" })); })}>Bootstrap Deep Desert</button>
     </div>
     <p className="danger-note">Map mode, spawn/despawn, autoscaler, active Sietch dimensions, passwords, and Deep Desert changes can affect live services and require backend confirmation.</p>
-    <pre className="mini-output">{text || "Load map, autoscaler, memory, Sietch, or Deep Desert state."}</pre>
+    <pre className="mini-output">{text || "Map, autoscaler, memory, Sietch, or Deep Desert state is loading or unavailable."}</pre>
   </section>;
 }
 
@@ -880,7 +933,13 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
 
 function SettingsPanel() {
   const [text, setText] = useState("");
-  return <section className="panel"><h2>Settings</h2><button onClick={async () => setText(JSON.stringify(await api("/api/settings"), null, 2))}>Load Runtime Settings</button><pre className="mini-output">{text}</pre></section>;
+  async function refresh() {
+    setText(JSON.stringify(await api("/api/settings"), null, 2));
+  }
+  useEffect(() => {
+    refresh().catch(() => undefined);
+  }, []);
+  return <section className="panel"><h2>Settings</h2><button onClick={refresh}>Refresh Runtime Settings</button><pre className="mini-output">{text}</pre></section>;
 }
 
 function OutputPanel({ title, text, action, onAction }: { title: string; text: string; action: string; onAction: () => void }) {
@@ -922,4 +981,8 @@ function serviceActionName(name: string, action: "logs" | "restart") {
   const value = normalized[name] || name;
   if (action === "logs") return value;
   return ["text-router", "director", "gateway", "survival", "survival-1", "overmap"].includes(value) ? value : null;
+}
+
+function isTerminalTask(status: string) {
+  return ["succeeded", "failed", "cancelled"].includes(status);
 }
