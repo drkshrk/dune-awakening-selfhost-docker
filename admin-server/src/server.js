@@ -12,13 +12,15 @@ import { audit, recordAdminHistory } from "./audit.js";
 import { redact } from "./redact.js";
 import { listCatalogItems, resolveCatalogItem } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
-import { enableStarterKit, grantStarterKit, retryStarterKitGrant, saveStarterKitConfig, starterKitCapabilities, starterKitConfig, starterKitHistory } from "./starterKit.js";
+import { enableStarterKit, grantEligibleStarterKits, grantStarterKit, retryStarterKitGrant, runStarterKitAutoScan, saveStarterKitConfig, starterKitCapabilities, starterKitConfig, starterKitEligiblePlayers, starterKitHistory } from "./starterKit.js";
 import { readJsonBody, safeStaticTarget } from "./httpSafety.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
 const tasks = new TaskManager(config);
 const db = createDb(config);
+let starterKitAutoRunning = false;
+let starterKitAutoLastRun = 0;
 
 const mime = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -44,6 +46,10 @@ createServer(async (req, res) => {
     console.log("Initial admin password is stored in runtime/secrets/admin-web-password.txt");
   }
 });
+
+setInterval(() => {
+  void starterKitAutoTick();
+}, 10000).unref?.();
 
 async function handleApi(req, res) {
   const url = new URL(req.url, "http://localhost");
@@ -222,7 +228,9 @@ async function handleApi(req, res) {
   if (path === "/api/starter-kit/config" && req.method === "POST") return starterKitConfigRoute(req, res);
   if (path === "/api/starter-kit/config") return json(res, 200, starterKitConfig(config));
   if (path === "/api/starter-kit/grants" || path === "/api/starter-kit/history") return json(res, 200, starterKitHistory(config, url.searchParams.get("limit") || 100));
-  if (path === "/api/starter-kit/run" && req.method === "POST") return unsupportedMutation(req, res, "starter-kit.run", starterKitCapabilities().reason);
+  if (path === "/api/starter-kit/eligible") return starterKitEligibleRoute(req, res);
+  if (path === "/api/starter-kit/grant-eligible" && req.method === "POST") return starterKitGrantEligibleRoute(req, res);
+  if (path === "/api/starter-kit/run" && req.method === "POST") return starterKitRunRoute(req, res);
   if (path.match(/^\/api\/starter-kit\/grant\/[^/]+$/) && req.method === "POST") return starterKitGrantRoute(req, res, path);
   if (path.match(/^\/api\/starter-kit\/retry\/[^/]+$/) && req.method === "POST") return starterKitRetryRoute(req, res, path);
   if (path === "/api/starter-kit/enable" && req.method === "POST") return starterKitEnableRoute(req, res, true);
@@ -524,6 +532,44 @@ async function starterKitGrantRoute(req, res, path) {
   }
 }
 
+async function starterKitEligibleRoute(req, res) {
+  try {
+    const players = await duneDb.listPlayers(db, {});
+    if (players.capabilities?.players === false) return json(res, 501, { supported: false, reason: players.reason || "Player list is unavailable" });
+    return json(res, 200, starterKitEligiblePlayers(config, players.rows || []));
+  } catch (error) {
+    return json(res, 500, { supported: false, error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
+async function starterKitGrantEligibleRoute(req, res) {
+  try {
+    const players = await duneDb.listPlayers(db, {});
+    if (players.capabilities?.players === false) return json(res, 501, { supported: false, reason: players.reason || "Player list is unavailable" });
+    const result = await grantEligibleStarterKits(config, players.rows || [], await readJson(req));
+    audit(config, req, "starter-kit.grant-eligible", { supported: true, granted: result.granted, skipped: result.skipped, failed: result.failed });
+    return json(res, result.failed ? 207 : 200, result);
+  } catch (error) {
+    audit(config, req, "starter-kit.grant-eligible", { supported: false, error: redact(error.message || error) });
+    return json(res, 400, { error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
+async function starterKitRunRoute(req, res) {
+  const body = await readJson(req);
+  if (body.confirmation !== "RUN STARTER KIT SCAN") return json(res, 400, { error: "Confirmation phrase required: RUN STARTER KIT SCAN" });
+  try {
+    const players = await duneDb.listPlayers(db, {});
+    if (players.capabilities?.players === false) return json(res, 501, { supported: false, reason: players.reason || "Player list is unavailable" });
+    const result = await runStarterKitAutoScan(config, players.rows || [], "manual-scan");
+    audit(config, req, "starter-kit.run", { supported: true, ...result, results: undefined });
+    return json(res, result.failed ? 207 : 200, result);
+  } catch (error) {
+    audit(config, req, "starter-kit.run", { supported: false, error: redact(error.message || error) });
+    return json(res, 400, { error: redact(error.message || error), reason: redact(error.message || error) });
+  }
+}
+
 async function starterKitRetryRoute(req, res, path) {
   const grantId = decodeURIComponent(path.split("/")[4]);
   try {
@@ -746,6 +792,37 @@ async function setupState() {
       duneScript: existsSync(config.duneScript)
     }
   };
+}
+
+async function starterKitAutoTick() {
+  if (starterKitAutoRunning) return;
+  let kit;
+  try {
+    kit = starterKitConfig(config);
+  } catch (error) {
+    console.error(`Starter Kit auto-grant config read failed: ${redact(error.message || error)}`);
+    return;
+  }
+  if (!kit.enabled || !kit.autoGrantEnabled) return;
+  const intervalMs = Math.max(60, Number(kit.autoGrantIntervalSeconds) || 60) * 1000;
+  if (Date.now() - starterKitAutoLastRun < intervalMs) return;
+  starterKitAutoRunning = true;
+  starterKitAutoLastRun = Date.now();
+  try {
+    const players = await duneDb.listPlayers(db, {});
+    if (players.capabilities?.players === false) return;
+    const result = await runStarterKitAutoScan(config, players.rows || [], "auto");
+    if (result.granted || result.failed) {
+      console.log(`Starter Kit auto-grant scan: granted=${result.granted || 0} skipped=${result.skipped || 0} failed=${result.failed || 0}`);
+    }
+    if (result.granted || result.skipped || result.failed) {
+      audit(config, null, "starter-kit.auto-scan", { supported: true, granted: result.granted || 0, skipped: result.skipped || 0, failed: result.failed || 0 });
+    }
+  } catch (error) {
+    console.error(`Starter Kit auto-grant scan failed: ${redact(error.message || error)}`);
+  } finally {
+    starterKitAutoRunning = false;
+  }
 }
 
 async function writeConfig(req, res) {

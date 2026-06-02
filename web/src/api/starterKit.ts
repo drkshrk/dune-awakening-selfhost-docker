@@ -6,6 +6,9 @@ export type StarterKitConfig = {
   items: { itemName?: string; itemId?: string; quantity: number; durability: number }[];
   xp: number;
   allowRepeatGrants: boolean;
+  autoGrantEnabled: boolean;
+  autoGrantIntervalSeconds: number;
+  grantWhen: "first_seen" | "first_online";
 };
 
 export const starterKitApi = {
@@ -14,7 +17,9 @@ export const starterKitApi = {
   saveConfig: (config: StarterKitConfig, confirmation: string) => post<StarterKitConfig>("/api/starter-kit/config", { ...config, confirmation }),
   grants: () => api<{ rows: Record<string, unknown>[] }>("/api/starter-kit/grants"),
   history: () => api<{ rows: Record<string, unknown>[] }>("/api/starter-kit/history"),
-  run: () => post<Record<string, unknown>>("/api/starter-kit/run"),
+  eligible: () => api<{ config: StarterKitConfig; rows: Record<string, unknown>[] }>("/api/starter-kit/eligible"),
+  grantEligible: (confirmation: string) => post<Record<string, unknown>>("/api/starter-kit/grant-eligible", { confirmation }),
+  run: (confirmation = "RUN STARTER KIT SCAN") => post<Record<string, unknown>>("/api/starter-kit/run", { confirmation }),
   grant: (playerId: string, confirmation: string) => post<Record<string, unknown>>(`/api/starter-kit/grant/${encodeURIComponent(playerId)}`, { confirmation }),
   retry: (grantId: string, confirmation: string) => post<Record<string, unknown>>(`/api/starter-kit/retry/${encodeURIComponent(grantId)}`, { confirmation }),
   enable: (confirmation: string) => post<StarterKitConfig>("/api/starter-kit/enable", { confirmation }),

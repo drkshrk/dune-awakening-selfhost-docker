@@ -75,10 +75,12 @@ Destructive live actions require backend confirmation phrases in addition to fro
 - Starter Kit config: `SAVE STARTER KIT`
 - Starter Kit enable/disable: `ENABLE STARTER KIT` / `DISABLE STARTER KIT`
 - Starter Kit manual grant/retry: `GRANT STARTER KIT` / `RETRY STARTER KIT`
+- Starter Kit bulk grant: `GRANT STARTER KIT TO ELIGIBLE PLAYERS`
+- Starter Kit one-shot scan: `RUN STARTER KIT SCAN`
 - blueprint import/clone/delete blocked paths: `IMPORT BLUEPRINT` / `CLONE BLUEPRINT` / `DELETE BLUEPRINT`
 - base import/delete blocked paths: `IMPORT BASE` / `DELETE BASE`
 
-Market automation, blueprint/base graph writes, Starter Kit automatic scanner, and whisper are not exposed as generic command or message publishers. They return explicit unsupported responses until a verified RedBlink-compatible runtime or schema/RMQ mutation path exists.
+Market automation, blueprint/base graph writes, and whisper are not exposed as generic command or message publishers. They return explicit unsupported responses until a verified RedBlink-compatible runtime or schema/RMQ mutation path exists. Starter Kit auto-grant is not a generic command runner: it is disabled by default, requires Starter Kit enabled plus `autoGrantEnabled`, uses the current player list `action_player_id`, skips players without admin action IDs, respects current-version idempotency unless repeat grants are enabled, and avoids overlapping scans.
 
 ## Live Map Safety
 
@@ -112,7 +114,7 @@ Audit logging is required for:
 - SQL execution
 - file upload/download/restore
 - RabbitMQ live commands
-- Starter Kit config changes/manual grants/retries
+- Starter Kit config changes/manual grants/bulk grants/auto scans/retries
 - map/Sietch/Deep Desert changes
 - blueprint/base export and blocked import/delete/clone attempts
 

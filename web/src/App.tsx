@@ -845,10 +845,13 @@ function MarketPanel({ onError }: { onError: (text: string) => void }) {
 }
 
 function StarterKitPanel({ onError }: { onError: (text: string) => void }) {
-  const [config, setConfig] = useState<StarterKitConfig>({ enabled: false, version: "starter-kit-v1", items: [], xp: 0, allowRepeatGrants: false });
+  const [config, setConfig] = useState<StarterKitConfig>({ enabled: false, version: "starter-kit-v1", items: [], xp: 0, allowRepeatGrants: false, autoGrantEnabled: false, autoGrantIntervalSeconds: 60, grantWhen: "first_seen" });
   const [itemsText, setItemsText] = useState("");
-  const [playerId, setPlayerId] = useState("");
+  const [players, setPlayers] = useState<Record<string, unknown>[]>([]);
+  const [selectedPlayer, setSelectedPlayer] = useState("");
+  const [manualPlayerId, setManualPlayerId] = useState("");
   const [grantId, setGrantId] = useState("");
+  const [eligible, setEligible] = useState<Record<string, unknown>[]>([]);
   const [history, setHistory] = useState<Record<string, unknown>[]>([]);
   const [output, setOutput] = useState("");
   async function run(action: () => Promise<void>) {
@@ -861,6 +864,7 @@ function StarterKitPanel({ onError }: { onError: (text: string) => void }) {
     setConfig(next);
     setItemsText(next.items.map((item) => `${item.itemId || item.itemName || ""},${item.quantity},${item.durability}`).join("\n"));
     setHistory((await starterKitApi.history()).rows || []);
+    setPlayers((await playersApi.list()).rows || []);
   }
   useEffect(() => {
     run(load);
@@ -876,37 +880,89 @@ function StarterKitPanel({ onError }: { onError: (text: string) => void }) {
     };
   }
   const starterItemCount = config.items?.length || 0;
+  const selected = players.find((player) => String(player.actor_id || player.player_pawn_id || "") === selectedPlayer) || null;
+  const grantPlayerId = manualPlayerId.trim() || String(selected?.action_player_id || "");
+  const selectedLabel = selected ? `${selected.character_name || "Unknown"} (${selected.online_status || "unknown"}) - actor ${selected.actor_id || "-"} - admin ${selected.action_player_id || "-"}` : "";
+  const eligibleCount = eligible.filter((row) => row.eligible).length;
   return <section className="panel">
     <div className="panel-title"><h2>Starter Kit</h2><button onClick={() => run(load)}>Refresh Starter Kit</button></div>
-    <p className="danger-note">Automatic new-player scanning is disabled in this web implementation. Manual grants use existing RedBlink admin CLI commands and require confirmation.</p>
-    <section className="action-section">
-      <h4>Starter Kit Summary</h4>
-      <p>{config.enabled ? "Starter Kit is enabled for manual/configured use." : "Starter Kit is disabled."}</p>
-      <p>{starterItemCount ? `${starterItemCount} starter item${starterItemCount === 1 ? "" : "s"} configured.` : "No starter items configured."}</p>
-      <p>{starterItemCount ? "Manual grants are available with confirmation." : "Manual grants are available after configuration."}</p>
-    </section>
-    <div className="two-col">
-      <label>Version<input value={config.version} onChange={(event) => setConfig({ ...config, version: event.target.value })} /></label>
-      <label>XP<input value={String(config.xp)} onChange={(event) => setConfig({ ...config, xp: Number(event.target.value) })} /></label>
-      <label><input type="checkbox" checked={config.allowRepeatGrants} onChange={(event) => setConfig({ ...config, allowRepeatGrants: event.target.checked })} /> Allow repeat manual grants</label>
-      <button onClick={() => run(async () => { if (window.confirm("Save Starter Kit config?")) setConfig(await starterKitApi.saveConfig(nextConfig(), "SAVE STARTER KIT")); })}>Save Config</button>
-      <button onClick={() => run(async () => { if (window.confirm("Enable Starter Kit config? Manual grants remain confirmation-gated.")) setConfig(await starterKitApi.enable("ENABLE STARTER KIT")); })}>Enable</button>
-      <button className="danger" onClick={() => run(async () => { if (window.confirm("Disable Starter Kit?")) setConfig(await starterKitApi.disable("DISABLE STARTER KIT")); })}>Disable</button>
-    </div>
-    <label>Items<textarea value={itemsText} onChange={(event) => setItemsText(event.target.value)} placeholder="One per line: item name or raw id, quantity, durability" /></label>
-    <div className="action-row">
-      <input value={playerId} onChange={(event) => setPlayerId(event.target.value)} placeholder="Player FLS ID or actor id" />
-      <button onClick={() => run(async () => { if (window.confirm(`Grant Starter Kit to ${playerId}?`)) setOutput(JSON.stringify(await starterKitApi.grant(playerId, "GRANT STARTER KIT"), null, 2)); })}>Grant Starter Kit</button>
-      <input value={grantId} onChange={(event) => setGrantId(event.target.value)} placeholder="Failed grant id" />
-      <button onClick={() => run(async () => { if (window.confirm(`Retry Starter Kit grant ${grantId}?`)) setOutput(JSON.stringify(await starterKitApi.retry(grantId, "RETRY STARTER KIT"), null, 2)); })}>Retry Failed Grant</button>
-      <button onClick={() => run(async () => setHistory((await starterKitApi.history()).rows || []))}>Refresh History</button>
+    <div className="action-sections">
+      <section className="action-section">
+        <h4>Starter Kit Status</h4>
+        <p>{config.enabled ? "Starter Kit is enabled." : "Starter Kit is disabled."}</p>
+        <p>{starterItemCount ? `${starterItemCount} starter item${starterItemCount === 1 ? "" : "s"} configured.` : "No starter items configured."}</p>
+        <p>{config.autoGrantEnabled ? `Auto-grant scans every ${config.autoGrantIntervalSeconds} seconds when enabled.` : "Auto-grant is off by default."}</p>
+        <div className="action-line">
+          <button onClick={() => run(async () => { if (window.confirm("Enable Starter Kit config? Manual grants remain confirmation-gated.")) setConfig(await starterKitApi.enable("ENABLE STARTER KIT")); })}>Enable</button>
+          <button className="danger" onClick={() => run(async () => { if (window.confirm("Disable Starter Kit?")) setConfig(await starterKitApi.disable("DISABLE STARTER KIT")); })}>Disable</button>
+        </div>
+      </section>
+
+      <section className="action-section">
+        <h4>Starter Kit Configuration</h4>
+        <div className="action-line">
+          <label>Version<input value={config.version} onChange={(event) => setConfig({ ...config, version: event.target.value })} /></label>
+          <label>XP<input type="number" min="0" value={String(config.xp)} onChange={(event) => setConfig({ ...config, xp: Number(event.target.value) })} /></label>
+          <label className="checkbox-line"><input type="checkbox" checked={config.allowRepeatGrants} onChange={(event) => setConfig({ ...config, allowRepeatGrants: event.target.checked })} /> <span>Allow repeat manual grants</span></label>
+          <button onClick={() => run(async () => { if (window.confirm("Save Starter Kit config?")) setConfig(await starterKitApi.saveConfig(nextConfig(), "SAVE STARTER KIT")); })}>Save Config</button>
+        </div>
+      </section>
+
+      <section className="action-section">
+        <h4>Starter Items</h4>
+        <p>One item per line: item name or raw item ID, quantity, durability.</p>
+        <pre className="command-preview">fiber,10,1{"\n"}cup of water,1,1</pre>
+        <label>Items<textarea value={itemsText} onChange={(event) => setItemsText(event.target.value)} placeholder="fiber,10,1&#10;cup of water,1,1" /></label>
+      </section>
+
+      <section className="action-section">
+        <h4>Manual Grant</h4>
+        <p>Select a player from the current player list. Grants use the Admin action ID, not the DB actor ID.</p>
+        <div className="action-line">
+          <label className="wide-field">Player<select value={selectedPlayer} onChange={(event) => setSelectedPlayer(event.target.value)}>
+            <option value="">Select player</option>
+            {players.map((player) => <option key={String(player.actor_id || player.player_pawn_id || player.action_player_id)} value={String(player.actor_id || player.player_pawn_id || "")}>
+              {String(player.character_name || "Unknown")} - {String(player.online_status || "unknown")} - actor {String(player.actor_id || "-")} - admin {String(player.action_player_id || "missing")}
+            </option>)}
+          </select></label>
+          <button disabled={!grantPlayerId} onClick={() => run(async () => { if (window.confirm(`Grant Starter Kit to ${selectedLabel || grantPlayerId}?`)) setOutput(JSON.stringify(await starterKitApi.grant(grantPlayerId, "GRANT STARTER KIT"), null, 2)); })}>Grant Starter Kit</button>
+        </div>
+        {selected && !selected.action_player_id && <p className="danger-note">Selected player has no Admin action ID, so CLI-backed grants are disabled.</p>}
+        <details>
+          <summary>Advanced manual player ID override</summary>
+          <label>Admin action ID<input value={manualPlayerId} onChange={(event) => setManualPlayerId(event.target.value)} placeholder="RedBlink#75570" /></label>
+        </details>
+      </section>
+
+      <section className="action-section">
+        <h4>Auto Grant</h4>
+        <p>Auto-grant is disabled by default. It only runs when Starter Kit is enabled and Auto Grant is enabled.</p>
+        <div className="action-line">
+          <label className="checkbox-line"><input type="checkbox" checked={config.autoGrantEnabled} onChange={(event) => setConfig({ ...config, autoGrantEnabled: event.target.checked })} /> <span>Enable auto-grant for future players</span></label>
+          <label>Interval seconds<input type="number" min="60" max="3600" value={String(config.autoGrantIntervalSeconds)} onChange={(event) => setConfig({ ...config, autoGrantIntervalSeconds: Number(event.target.value) })} /></label>
+          <label>Grant when<select value={config.grantWhen} onChange={(event) => setConfig({ ...config, grantWhen: event.target.value as StarterKitConfig["grantWhen"] })}><option value="first_seen">First seen</option><option value="first_online">First online</option></select></label>
+          <button onClick={() => run(async () => { const result = await starterKitApi.eligible(); setEligible(result.rows || []); })}>Preview Eligible Players</button>
+          <button className="danger" disabled={!eligibleCount} onClick={() => run(async () => { const phrase = window.prompt("Type GRANT STARTER KIT TO ELIGIBLE PLAYERS to bulk grant."); if (phrase) setOutput(JSON.stringify(await starterKitApi.grantEligible(phrase), null, 2)); setHistory((await starterKitApi.history()).rows || []); })}>Grant to Eligible Players</button>
+          <button onClick={() => run(async () => setOutput(JSON.stringify(await starterKitApi.run("RUN STARTER KIT SCAN"), null, 2)))}>Run Auto Scan Now</button>
+        </div>
+        {eligible.length > 0 && <DataTable rows={eligible} />}
+      </section>
+
+      <section className="action-section">
+        <h4>Grant History</h4>
+        <div className="action-line">
+          <input value={grantId} onChange={(event) => setGrantId(event.target.value)} placeholder="Failed grant id" />
+          <button onClick={() => run(async () => { if (window.confirm(`Retry Starter Kit grant ${grantId}?`)) setOutput(JSON.stringify(await starterKitApi.retry(grantId, "RETRY STARTER KIT"), null, 2)); })}>Retry Failed Grant</button>
+          <button onClick={() => run(async () => setHistory((await starterKitApi.history()).rows || []))}>Refresh History</button>
+        </div>
+        <DataTable rows={history} />
+      </section>
     </div>
     {output && <pre className="mini-output">{output}</pre>}
     <details>
       <summary>Raw Starter Kit JSON</summary>
       <pre className="mini-output">{JSON.stringify(config, null, 2)}</pre>
     </details>
-    <DataTable rows={history} />
   </section>;
 }
 

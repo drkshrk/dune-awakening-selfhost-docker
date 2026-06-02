@@ -74,7 +74,7 @@ This file is the working status ledger for the RedBlink web admin interface. A f
 | Feature | Status | Implementation path |
 |---|---|---|
 | Market catalog/categories/search | Done | `GET /api/market/catalog`, `/categories`, and `/search` use RedBlink `runtime/data/admin-items.json` plus the market item query. |
-| Starter Kit config/manual grant/history | Partial | Config, enable/disable, grants/history, retry, and manual player grant endpoints exist. Manual grants call `dune admin grant-item`, `dune admin grant-item-id`, and `dune admin award-xp`. |
+| Starter Kit config/manual/bulk grant/history | Done for current scope | Config, enable/disable, selected-player grants, eligible-player preview, confirmed bulk grant, grants/history, retry, and one-shot scan endpoints exist. Grants call `dune admin grant-item`, `dune admin grant-item-id`, and `dune admin award-xp` using `action_player_id`. |
 | Blueprint import/clone/delete | Blocked | Requires verified offline-player backpack ownership, item creation/stat wiring, and blueprint ID remapping; no safe RedBlink CLI exists yet. |
 | Base export-to-blueprint | Partial | `GET /api/bases/:id/export` and `POST /api/bases/:id/export-blueprint` export a read-only blueprint-shaped object graph from building instances and placeables. Coordinate normalization matches the detected DB shape but import placement/remapping is still blocked. |
 | Base import/delete | Blocked | Requires verified building/placeable/inventory object graph remapping/deletion, ownership assignment, and live-service collision rules. |
@@ -82,7 +82,7 @@ This file is the working status ledger for the RedBlink web admin interface. A f
 
 ## Blocked Items
 
-Blocked features now have explicit technical blockers: Whisper, market automation, Starter Kit automatic scanning, blueprint import/clone/delete, and base import/delete. They must not be promoted to Done until RedBlink exposes a safe CLI/runtime path or the exact DB/RMQ identity and graph mutation rules are verified.
+Blocked features now have explicit technical blockers: Whisper, market automation, blueprint import/clone/delete, and base import/delete. They must not be promoted to Done until RedBlink exposes a safe CLI/runtime path or the exact DB/RMQ identity and graph mutation rules are verified.
 
 ## Phase 4 Action Status
 

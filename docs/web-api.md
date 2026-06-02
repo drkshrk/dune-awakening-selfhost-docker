@@ -139,16 +139,18 @@ Base path for the native RedBlink API: `/api`.
 | `/api/market/automation/run-once` | POST | Market automation unsupported response | Returns unsupported and audit logs the attempt |
 | `/api/market/automation/cleanup` | POST | Market automation unsupported response | Returns unsupported and audit logs the attempt |
 | `/api/market/automation/history` | GET | Market automation history capability response | Returns unsupported with empty rows |
-| `/api/starter-kit/capabilities` | GET | Starter Kit capability response | Reports manual grant support and automatic scanner blocker |
+| `/api/starter-kit/capabilities` | GET | Starter Kit capability response | Reports config, manual grant, bulk grant, retry, and controlled auto-grant scanner support |
 | `/api/starter-kit/config` | GET | Starter Kit config | File-backed config from `runtime/generated/starter-kit.json`, default disabled |
-| `/api/starter-kit/config` | POST | Save Starter Kit config | Validates items/XP/version and requires `SAVE STARTER KIT` |
+| `/api/starter-kit/config` | POST | Save Starter Kit config | Validates items/XP/version/repeat behavior/auto-grant settings and requires `SAVE STARTER KIT` |
 | `/api/starter-kit/grants` | GET | Starter Kit grants | File-backed grant history from `runtime/generated/starter-kit-grants.jsonl` |
 | `/api/starter-kit/history` | GET | Starter Kit history | Same file-backed grant history |
 | `/api/starter-kit/grant/:playerId` | POST | Manual Starter Kit grant | Requires `GRANT STARTER KIT`; executes `dune admin grant-item`, `grant-item-id`, and `award-xp` according to config |
+| `/api/starter-kit/eligible` | GET | Preview Starter Kit eligible players | Uses current player list `action_player_id`; skips missing admin IDs and already granted kit versions unless repeat grants are enabled |
+| `/api/starter-kit/grant-eligible` | POST | Bulk grant Starter Kit to eligible players | Requires `GRANT STARTER KIT TO ELIGIBLE PLAYERS`; grants one player at a time and returns per-player granted/skipped/failed rows |
 | `/api/starter-kit/retry/:grantId` | POST | Retry failed Starter Kit grant | Requires `RETRY STARTER KIT`; reruns the manual grant for failed history rows |
-| `/api/starter-kit/enable` | POST | Enable Starter Kit config | Requires `ENABLE STARTER KIT`; enables config only, does not start an automatic scanner |
+| `/api/starter-kit/enable` | POST | Enable Starter Kit config | Requires `ENABLE STARTER KIT`; auto-grant still requires `autoGrantEnabled: true` in config |
 | `/api/starter-kit/disable` | POST | Disable Starter Kit config | Requires `DISABLE STARTER KIT` |
-| `/api/starter-kit/run` | POST | Starter Kit scanner capability response | Returns unsupported; automatic welcome scanner runtime is not ported |
+| `/api/starter-kit/run` | POST | Run one Starter Kit auto-grant scan | Requires `RUN STARTER KIT SCAN`; only grants when Starter Kit and auto-grant are both enabled |
 
 ## Not Done Yet
 
