@@ -77,7 +77,7 @@ Do not run destructive checks by default. On a live admin host, verify Phase 5B2
 - Starter Kit dry/manual review: load Starter Kit config/history; do not click Grant unless intentionally testing a live player grant
 - blueprint export: load Blueprints and download one full JSON export where schema supports it
 - base export: load Bases and download one base-as-blueprint JSON export where schema supports it
-- broadcast: use Admin Tools broadcast only with a safe test message and only on a test server
+- broadcast: use Admin Tools broadcast only with a safe test message and only on a test server; record RabbitMQ publish separately from actual in-game visibility because Phase 8 live testing saw publish success without visible delivery
 - whisper: confirm `/api/admin/whisper` returns unsupported until GM courier identity/routing is configured
 
 For the full checklist, use `docs/web-smoke-checklist.md`.

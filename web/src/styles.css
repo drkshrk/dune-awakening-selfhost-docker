@@ -55,6 +55,11 @@ main { padding: 22px; min-width: 0; }
 .action-row { justify-content: flex-start; margin: 12px 0; }
 .two-col { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: end; max-width: 760px; }
 .action-panel { margin-top: 16px; border-top: 1px solid #302b25; padding-top: 14px; }
+.action-sections { display: grid; gap: 14px; }
+.action-section { background: #14171a; border: 1px solid #302b25; border-radius: 8px; padding: 14px; display: grid; gap: 10px; }
+.action-section h4 { margin: 0; color: #ffd08a; }
+.action-section p { margin: 0; color: #ad9f89; }
+.danger-section { border-color: #6f3030; background: #1b1414; }
 .actions-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end; }
 .service-card, .check-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: #171a1d; border: 1px solid #302b25; border-radius: 8px; padding: 14px; }
 .service-card div, .check-card div { display: grid; gap: 4px; }

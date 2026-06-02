@@ -238,6 +238,7 @@ function AdminToolsPanel({ setTask, onError }: { setTask: (task: Task) => void; 
   const [itemId, setItemId] = useState("");
   const [search, setSearch] = useState("");
   const [catalog, setCatalog] = useState("");
+  const [liveToolResult, setLiveToolResult] = useState("");
   const [xp, setXp] = useState("1000");
   const [message, setMessage] = useState("");
   const [history, setHistory] = useState("");
@@ -270,13 +271,15 @@ function AdminToolsPanel({ setTask, onError }: { setTask: (task: Task) => void; 
       </div>
       <pre className="mini-output">{catalog || "Use the catalog tools to find item names, raw item IDs, vehicles, and skill modules."}</pre>
       <h3>Global Live Tools</h3>
+      <p className="danger-note">Broadcast is publish-verified only. The web API can publish to RabbitMQ, but in-game visibility was not confirmed on the live server.</p>
       <div className="action-row">
         <button className="danger" onClick={() => run(async () => window.confirm("Kick every online player? This publishes PlayerId='*'.") && setTask((await adminApi.kickAllOnline("KICK ALL ONLINE PLAYERS")).task))}>Kick All Online Players</button>
         <input value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Broadcast or whisper message" />
-        <button onClick={() => run(async () => setCatalog(JSON.stringify(await adminApi.broadcast(message, 30), null, 2)))}>Broadcast</button>
-        <button className="danger" onClick={() => run(async () => window.confirm("Send shutdown broadcast?") && setCatalog(JSON.stringify(await adminApi.shutdownBroadcast({ confirmation: "SHUTDOWN BROADCAST", delayMinutes: 15, shutdownType: "Restart" }), null, 2)))}>Shutdown Broadcast</button>
-        <button onClick={() => run(async () => setCatalog(JSON.stringify(await adminApi.whisper(playerId, message), null, 2)))}>Whisper</button>
+        <button onClick={() => run(async () => setLiveToolResult(JSON.stringify(await adminApi.broadcast(message, 30), null, 2)))}>Broadcast Publish Test</button>
+        <button className="danger" onClick={() => run(async () => window.confirm("Send shutdown broadcast publish test? In-game visibility is unverified.") && setLiveToolResult(JSON.stringify(await adminApi.shutdownBroadcast({ confirmation: "SHUTDOWN BROADCAST", delayMinutes: 15, shutdownType: "Restart" }), null, 2)))}>Shutdown Broadcast Publish Test</button>
+        <button onClick={() => run(async () => setLiveToolResult(JSON.stringify(await adminApi.whisper(playerId, message), null, 2)))}>Whisper</button>
       </div>
+      <pre className="mini-output">{liveToolResult || "Broadcast, shutdown broadcast, and whisper results appear here. Broadcast publish success does not prove in-game delivery."}</pre>
       <h3>Command History</h3>
       <button onClick={() => run(async () => setHistory((await adminApi.history()).stdout))}>Refresh Command History</button>
       <pre className="mini-output">{history || "History comes from runtime/generated/admin-command-history.tsv."}</pre>
@@ -341,6 +344,7 @@ function PlayerActions({ dbPlayerId, actionPlayerId, setTask, onError, onRefresh
   const [coords, setCoords] = useState({ x: "", y: "", z: "", yaw: "0" });
   const [vehicleId, setVehicleId] = useState("");
   const [vehicleTemplate, setVehicleTemplate] = useState("");
+  const [vehicleCatalog, setVehicleCatalog] = useState<Record<string, string[]>>({});
   const [currency, setCurrency] = useState({ currencyId: "0", amount: "1" });
   const [faction, setFaction] = useState({ factionId: "1", amount: "1" });
   const [refuelVehicleId, setRefuelVehicleId] = useState("");
@@ -368,48 +372,130 @@ function PlayerActions({ dbPlayerId, actionPlayerId, setTask, onError, onRefresh
       return { ...item, quantity: Number(qty), durability: Number(durability) };
     });
   }
+  async function useCurrentPosition() {
+    const data = await playersApi.position(dbPlayerId);
+    const position = (data.position || data) as Record<string, unknown>;
+    const x = firstDefined(position.x, position.X, position.location_x, position.pos_x);
+    const y = firstDefined(position.y, position.Y, position.location_y, position.pos_y);
+    const z = firstDefined(position.z, position.Z, position.location_z, position.pos_z);
+    const yaw = firstDefined(position.yaw, position.Yaw, position.rotation_yaw, position.rot_yaw, 0);
+    if (x === undefined || y === undefined || z === undefined) throw new Error("Current position is not available from the detected player position schema.");
+    setCoords({ x: String(x), y: String(y), z: String(z), yaw: String(yaw ?? 0) });
+    setResult("Teleport coordinates filled from the selected player's current DB position. Yaw defaults to 0 when unavailable.");
+  }
+  useEffect(() => {
+    adminApi.vehicles("").then((response) => {
+      const parsed = parseVehicleCatalog(response.stdout || "");
+      setVehicleCatalog(parsed);
+      const firstVehicle = Object.keys(parsed)[0] || "";
+      if (firstVehicle && !vehicleId) {
+        setVehicleId(firstVehicle);
+        setVehicleTemplate(parsed[firstVehicle]?.[0] || "");
+      }
+    }).catch(() => undefined);
+  }, []);
+  const vehicleIds = Object.keys(vehicleCatalog);
+  const selectedTemplates = vehicleCatalog[vehicleId] || [];
   const canRunCliAction = Boolean(actionPlayerId);
   const cliDisabledReason = "This player row is missing a Funcom/FLS admin action ID. CLI-backed actions are disabled to avoid sending the DB actor ID to dune admin.";
   return <section className="action-panel">
     <h3>Player Actions</h3>
     {!canRunCliAction && <p className="danger-note">{cliDisabledReason}</p>}
     {result && <p className="danger-note">{result}</p>}
-    <div className="actions-grid">
-      <label>Item Name<input value={itemName} onChange={(event) => setItemName(event.target.value)} /></label>
-      <label>Quantity<input value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
-      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Give ${quantity} x ${itemName} to player ${actionPlayerId}?`)) await runTask(() => playersApi.giveItem(actionPlayerId, { itemName, quantity: Number(quantity), durability: 1 })); })}>Give Item</button>
-      <label>Raw Item ID<input value={itemId} onChange={(event) => setItemId(event.target.value)} /></label>
-      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Give raw item id ${itemId} to player ${actionPlayerId}?`)) await runTask(() => playersApi.giveItemId(actionPlayerId, { itemId, quantity: Number(quantity), durability: 1 })); })}>Give Item by ID</button>
-      <textarea value={multiItems} onChange={(event) => setMultiItems(event.target.value)} placeholder="One item per line: name or raw id, quantity, durability" rows={4} />
-      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { const items = parsedMultiItems(); if (window.confirm(`Give ${items.length} item entries to player ${actionPlayerId}?`)) await runDirect(() => playersApi.giveItems(actionPlayerId, items)); })}>Give Multiple Items</button>
-      <label>XP Amount<input value={xp} onChange={(event) => setXp(event.target.value)} /></label>
-      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Add ${xp} XP to player ${actionPlayerId}?`)) await runTask(() => playersApi.addXp(actionPlayerId, Number(xp))); })}>Add XP</button>
-      <label>Skill Points<input value={points} onChange={(event) => setPoints(event.target.value)} /></label>
-      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Set player ${actionPlayerId} to ${points} unspent skill points?`)) await runTask(() => playersApi.setSkillPoints(actionPlayerId, Number(points))); })}>Set Skill Points</button>
-      <label>Skill Module<input value={module} onChange={(event) => setModule(event.target.value)} /></label>
-      <label>Level<input value={level} onChange={(event) => setLevel(event.target.value)} /></label>
-      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Set ${module} to level ${level} for player ${actionPlayerId}?`)) await runTask(() => playersApi.setSkillModule(actionPlayerId, { module, level: Number(level) })); })}>Set Skill Module</button>
-      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Refill water for player ${actionPlayerId}?`)) await runTask(() => playersApi.refillWater(actionPlayerId)); })}>Refill Water</button>
-      <label>X<input value={coords.x} onChange={(event) => setCoords({ ...coords, x: event.target.value })} /></label>
-      <label>Y<input value={coords.y} onChange={(event) => setCoords({ ...coords, y: event.target.value })} /></label>
-      <label>Z<input value={coords.z} onChange={(event) => setCoords({ ...coords, z: event.target.value })} /></label>
-      <label>Yaw<input value={coords.yaw} onChange={(event) => setCoords({ ...coords, yaw: event.target.value })} /></label>
-      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Teleport player ${actionPlayerId} to X=${coords.x} Y=${coords.y} Z=${coords.z}?`)) await runTask(() => playersApi.teleport(actionPlayerId, { x: Number(coords.x), y: Number(coords.y), z: Number(coords.z), yaw: Number(coords.yaw) })); })}>Teleport</button>
-      <label>Vehicle ID<input value={vehicleId} onChange={(event) => setVehicleId(event.target.value)} /></label>
-      <label>Vehicle Template<input value={vehicleTemplate} onChange={(event) => setVehicleTemplate(event.target.value)} /></label>
-      <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Spawn ${vehicleId}/${vehicleTemplate} in front of player ${actionPlayerId}?`)) await runTask(() => playersApi.spawnVehicle(actionPlayerId, { vehicleId, template: vehicleTemplate, offset: 400 })); })}>Spawn Vehicle</button>
-      <button className="danger" disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Kick player ${actionPlayerId}?`)) await runTask(() => playersApi.kick(actionPlayerId)); })}>Kick Player</button>
-      <button className="danger" disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Clean inventory for player ${actionPlayerId}? This removes carried items.`)) await runTask(() => playersApi.cleanInventory(actionPlayerId, "CLEAN INVENTORY")); })}>Clean Inventory</button>
-      <button className="danger" disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Reset progression for player ${actionPlayerId}?`)) await runTask(() => playersApi.resetProgression(actionPlayerId, "RESET PROGRESSION")); })}>Reset Progression</button>
-      <label>Currency ID<input value={currency.currencyId} onChange={(event) => setCurrency({ ...currency, currencyId: event.target.value })} /></label>
-      <label>Currency Amount<input value={currency.amount} onChange={(event) => setCurrency({ ...currency, amount: event.target.value })} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Add ${currency.amount} currency ${currency.currencyId || "Solaris"} to DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.addCurrency(dbPlayerId, { currencyId: Number(currency.currencyId || 0), amount: Number(currency.amount), confirmation: "ADD CURRENCY" })); })}>Add Currency</button>
-      <label>Faction ID<input value={faction.factionId} onChange={(event) => setFaction({ ...faction, factionId: event.target.value })} /></label>
-      <label>Reputation Amount<input value={faction.amount} onChange={(event) => setFaction({ ...faction, amount: event.target.value })} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Add ${faction.amount} reputation for faction ${faction.factionId} to DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.addFactionReputation(dbPlayerId, { factionId: Number(faction.factionId), amount: Number(faction.amount), confirmation: "ADD FACTION REPUTATION" })); })}>Add Faction Reputation</button>
-      <button onClick={() => run(async () => { if (window.confirm(`Repair gear for offline DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.repairGear(dbPlayerId, "REPAIR GEAR")); })}>Repair Gear</button>
-      <label>Refuel Vehicle Actor ID<input value={refuelVehicleId} onChange={(event) => setRefuelVehicleId(event.target.value)} /></label>
-      <button onClick={() => run(async () => { if (window.confirm(`Refuel vehicle ${refuelVehicleId} owned by DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.refuelVehicle(dbPlayerId, { vehicleId: refuelVehicleId, confirmation: "REFUEL VEHICLE" })); })}>Refuel Vehicle</button>
+    <div className="action-sections">
+      <section className="action-section">
+        <h4>Give Items</h4>
+        <p>Use item names for common grants, or raw item IDs from the catalog.</p>
+        <div className="actions-grid">
+          <label>Item Name<input value={itemName} onChange={(event) => setItemName(event.target.value)} /></label>
+          <label>Quantity<input value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
+          <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Give ${quantity} x ${itemName} to player ${actionPlayerId}?`)) await runTask(() => playersApi.giveItem(actionPlayerId, { itemName, quantity: Number(quantity), durability: 1 })); })}>Give Item</button>
+          <label>Raw Item ID<input value={itemId} onChange={(event) => setItemId(event.target.value)} /></label>
+          <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Give raw item id ${itemId} to player ${actionPlayerId}?`)) await runTask(() => playersApi.giveItemId(actionPlayerId, { itemId, quantity: Number(quantity), durability: 1 })); })}>Give Item by ID</button>
+        </div>
+        <label>Multiple Items<textarea value={multiItems} onChange={(event) => setMultiItems(event.target.value)} placeholder="One item per line: name or raw id, quantity, durability" rows={4} /></label>
+        <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { const items = parsedMultiItems(); if (window.confirm(`Give ${items.length} item entries to player ${actionPlayerId}?`)) await runDirect(() => playersApi.giveItems(actionPlayerId, items)); })}>Give Multiple Items</button>
+      </section>
+
+      <section className="action-section">
+        <h4>XP / Skills</h4>
+        <div className="actions-grid">
+          <label>XP Amount<input value={xp} onChange={(event) => setXp(event.target.value)} /></label>
+          <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Add ${xp} XP to player ${actionPlayerId}?`)) await runTask(() => playersApi.addXp(actionPlayerId, Number(xp))); })}>Add XP</button>
+          <label>Skill Points<input value={points} onChange={(event) => setPoints(event.target.value)} /></label>
+          <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Set player ${actionPlayerId} to ${points} unspent skill points?`)) await runTask(() => playersApi.setSkillPoints(actionPlayerId, Number(points))); })}>Set Skill Points</button>
+          <label>Skill Module<input value={module} onChange={(event) => setModule(event.target.value)} /></label>
+          <label>Level<input value={level} onChange={(event) => setLevel(event.target.value)} /></label>
+          <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Set ${module} to level ${level} for player ${actionPlayerId}?`)) await runTask(() => playersApi.setSkillModule(actionPlayerId, { module, level: Number(level) })); })}>Set Skill Module</button>
+        </div>
+      </section>
+
+      <section className="action-section">
+        <h4>Survival</h4>
+        <p>Refill Water uses the live admin CLI and was verified in-game.</p>
+        <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Refill water for player ${actionPlayerId}?`)) await runTask(() => playersApi.refillWater(actionPlayerId)); })}>Refill Water</button>
+      </section>
+
+      <section className="action-section">
+        <h4>Movement / Vehicles</h4>
+        <p>Use current position only to copy known coordinates; edit X/Y/Z before teleporting if needed. Yaw defaults to 0 when unavailable.</p>
+        <div className="actions-grid">
+          <label>X<input value={coords.x} onChange={(event) => setCoords({ ...coords, x: event.target.value })} /></label>
+          <label>Y<input value={coords.y} onChange={(event) => setCoords({ ...coords, y: event.target.value })} /></label>
+          <label>Z<input value={coords.z} onChange={(event) => setCoords({ ...coords, z: event.target.value })} /></label>
+          <label>Yaw<input value={coords.yaw} onChange={(event) => setCoords({ ...coords, yaw: event.target.value })} /></label>
+          <button onClick={() => run(useCurrentPosition)}>Use Current Position</button>
+          <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Teleport player ${actionPlayerId} to X=${coords.x} Y=${coords.y} Z=${coords.z}?`)) await runTask(() => playersApi.teleport(actionPlayerId, { x: Number(coords.x), y: Number(coords.y), z: Number(coords.z), yaw: Number(coords.yaw) })); })}>Teleport</button>
+          <label>Vehicle<select value={vehicleId} onChange={(event) => { const nextVehicle = event.target.value; setVehicleId(nextVehicle); setVehicleTemplate(vehicleCatalog[nextVehicle]?.[0] || ""); }}>
+            {vehicleIds.length === 0 && <option value="">Manual vehicle ID</option>}
+            {vehicleIds.map((id) => <option key={id} value={id}>{id}</option>)}
+          </select></label>
+          <label>Template<select value={vehicleTemplate} onChange={(event) => setVehicleTemplate(event.target.value)}>
+            {selectedTemplates.length === 0 && <option value="">Manual template</option>}
+            {selectedTemplates.map((template) => <option key={template} value={template}>{template}</option>)}
+          </select></label>
+          <label>Manual Vehicle ID<input value={vehicleId} onChange={(event) => setVehicleId(event.target.value)} placeholder="Sandbike" /></label>
+          <label>Manual Template<input value={vehicleTemplate} onChange={(event) => setVehicleTemplate(event.target.value)} placeholder="T1_ExtraSeat" /></label>
+          <button disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => {
+            const knownTemplates = Object.values(vehicleCatalog).flat();
+            if (knownTemplates.includes(vehicleId) && !vehicleCatalog[vehicleId]) throw new Error(`${vehicleId} is a vehicle template, not a vehicle ID. Choose a vehicle such as Sandbike, then choose ${vehicleId} as the template.`);
+            if (window.confirm(`Spawn ${vehicleId}/${vehicleTemplate} in front of player ${actionPlayerId}?`)) await runTask(() => playersApi.spawnVehicle(actionPlayerId, { vehicleId, template: vehicleTemplate, offset: 400 }));
+          })}>Spawn Vehicle</button>
+        </div>
+      </section>
+
+      <section className="action-section">
+        <h4>Currency / Factions</h4>
+        <p>These direct DB mutations create a backup first and use the DB player ID.</p>
+        <div className="actions-grid">
+          <label>Currency ID<input value={currency.currencyId} onChange={(event) => setCurrency({ ...currency, currencyId: event.target.value })} /></label>
+          <label>Currency Amount<input value={currency.amount} onChange={(event) => setCurrency({ ...currency, amount: event.target.value })} /></label>
+          <button onClick={() => run(async () => { if (window.confirm(`Add ${currency.amount} currency ${currency.currencyId || "Solaris"} to DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.addCurrency(dbPlayerId, { currencyId: Number(currency.currencyId || 0), amount: Number(currency.amount), confirmation: "ADD CURRENCY" })); })}>Add Currency</button>
+          <label>Faction ID<input value={faction.factionId} onChange={(event) => setFaction({ ...faction, factionId: event.target.value })} /></label>
+          <label>Reputation Amount<input value={faction.amount} onChange={(event) => setFaction({ ...faction, amount: event.target.value })} /></label>
+          <button onClick={() => run(async () => { if (window.confirm(`Add ${faction.amount} reputation for faction ${faction.factionId} to DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.addFactionReputation(dbPlayerId, { factionId: Number(faction.factionId), amount: Number(faction.amount), confirmation: "ADD FACTION REPUTATION" })); })}>Add Faction Reputation</button>
+        </div>
+      </section>
+
+      <section className="action-section">
+        <h4>Repair / Refuel</h4>
+        <p>Offline DB-backed repair/refuel actions create a backup first.</p>
+        <div className="actions-grid">
+          <button onClick={() => run(async () => { if (window.confirm(`Repair gear for offline DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.repairGear(dbPlayerId, "REPAIR GEAR")); })}>Repair Gear</button>
+          <label>Refuel Vehicle Actor ID<input value={refuelVehicleId} onChange={(event) => setRefuelVehicleId(event.target.value)} /></label>
+          <button onClick={() => run(async () => { if (window.confirm(`Refuel vehicle ${refuelVehicleId} owned by DB player ${dbPlayerId}? A backup will be created first.`)) await runDirect(() => playersApi.refuelVehicle(dbPlayerId, { vehicleId: refuelVehicleId, confirmation: "REFUEL VEHICLE" })); })}>Refuel Vehicle</button>
+        </div>
+      </section>
+
+      <section className="action-section danger-section">
+        <h4>Dangerous Actions</h4>
+        <p>These live CLI actions are destructive or disruptive and still require backend confirmation phrases.</p>
+        <div className="action-row">
+          <button className="danger" disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Kick player ${actionPlayerId}?`)) await runTask(() => playersApi.kick(actionPlayerId)); })}>Kick Player</button>
+          <button className="danger" disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Clean inventory for player ${actionPlayerId}? This removes carried items.`)) await runTask(() => playersApi.cleanInventory(actionPlayerId, "CLEAN INVENTORY")); })}>Clean Inventory</button>
+          <button className="danger" disabled={!canRunCliAction} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => { if (window.confirm(`Reset progression for player ${actionPlayerId}?`)) await runTask(() => playersApi.resetProgression(actionPlayerId, "RESET PROGRESSION")); })}>Reset Progression</button>
+        </div>
+      </section>
     </div>
   </section>;
 }
@@ -618,6 +704,9 @@ function MarketPanel({ onError }: { onError: (text: string) => void }) {
     : view === "automation"
       ? "Market Automation Status"
       : `Market ${view.charAt(0).toUpperCase()}${view.slice(1)}`;
+  const marketEmptyText = view === "items" || view === "listings" || view === "sales"
+    ? "No market item rows found. This can be normal if no exchange listings or sales exist yet. Use Catalog for item definitions; Market Items/Listings/Sales are live exchange data."
+    : "No rows.";
 
   return <section className="panel">
     <div className="panel-title">
@@ -642,13 +731,14 @@ function MarketPanel({ onError }: { onError: (text: string) => void }) {
       <button disabled onClick={() => undefined}>Run Once</button>
       <button disabled onClick={() => undefined}>Cleanup</button>
     </div>
+    <p className="danger-note">Market automation remains blocked: no RedBlink-compatible market-bot runtime or CLI wrapper is available. Catalog and categories are definitions; Items/Listings/Sales are live exchange data.</p>
 
     {message && <p className="danger-note">{message}</p>}
 
     <h3>{title}</h3>
     {info && <pre className="mini-output">{JSON.stringify(info, null, 2)}</pre>}
     {stats && <pre className="mini-output">{JSON.stringify(stats, null, 2)}</pre>}
-    {!info && !stats && <DataTable rows={rows} />}
+    {!info && !stats && (rows.length ? <DataTable rows={rows} /> : <div className="empty">{marketEmptyText}</div>)}
   </section>;
 }
 
@@ -683,9 +773,16 @@ function StarterKitPanel({ onError }: { onError: (text: string) => void }) {
       })
     };
   }
+  const starterItemCount = config.items?.length || 0;
   return <section className="panel">
     <div className="panel-title"><h2>Starter Kit</h2><button onClick={() => run(load)}>Refresh Starter Kit</button></div>
     <p className="danger-note">Automatic new-player scanning is disabled in this web implementation. Manual grants use existing RedBlink admin CLI commands and require confirmation.</p>
+    <section className="action-section">
+      <h4>Starter Kit Summary</h4>
+      <p>{config.enabled ? "Starter Kit is enabled for manual/configured use." : "Starter Kit is disabled."}</p>
+      <p>{starterItemCount ? `${starterItemCount} starter item${starterItemCount === 1 ? "" : "s"} configured.` : "No starter items configured."}</p>
+      <p>{starterItemCount ? "Manual grants are available with confirmation." : "Manual grants are available after configuration."}</p>
+    </section>
     <div className="two-col">
       <label>Version<input value={config.version} onChange={(event) => setConfig({ ...config, version: event.target.value })} /></label>
       <label>XP<input value={String(config.xp)} onChange={(event) => setConfig({ ...config, xp: Number(event.target.value) })} /></label>
@@ -703,7 +800,10 @@ function StarterKitPanel({ onError }: { onError: (text: string) => void }) {
       <button onClick={() => run(async () => setHistory((await starterKitApi.history()).rows || []))}>Refresh History</button>
     </div>
     {output && <pre className="mini-output">{output}</pre>}
-    <pre className="mini-output">{JSON.stringify(config, null, 2)}</pre>
+    <details>
+      <summary>Raw Starter Kit JSON</summary>
+      <pre className="mini-output">{JSON.stringify(config, null, 2)}</pre>
+    </details>
     <DataTable rows={history} />
   </section>;
 }
@@ -956,6 +1056,51 @@ function formatCell(value: unknown) {
   if (value === null || value === undefined) return "";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+function firstDefined(...values: unknown[]) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function parseVehicleCatalog(text: string) {
+  const catalog: Record<string, string[]> = {};
+  let currentVehicle = "";
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || /^vehicle/i.test(line) || /^templates?$/i.test(line)) continue;
+    const colon = line.match(/^([A-Za-z][A-Za-z0-9_-]+)\s*:\s*(.+)$/);
+    if (colon) {
+      currentVehicle = colon[1];
+      catalog[currentVehicle] = uniqueValues((catalog[currentVehicle] || []).concat(splitTemplateList(colon[2])));
+      continue;
+    }
+    const bullet = line.match(/^[-*]\s*(.+)$/);
+    if (bullet && currentVehicle) {
+      catalog[currentVehicle] = uniqueValues((catalog[currentVehicle] || []).concat(splitTemplateList(bullet[1])));
+      continue;
+    }
+    if (/^templates?\b/i.test(line) && currentVehicle) {
+      catalog[currentVehicle] = uniqueValues((catalog[currentVehicle] || []).concat(splitTemplateList(line.replace(/^templates?\s*:?/i, ""))));
+      continue;
+    }
+    if (/^[A-Za-z][A-Za-z0-9_-]+$/.test(line)) {
+      if (!currentVehicle || /^[A-Z][a-z]/.test(line)) {
+        currentVehicle = line;
+        catalog[currentVehicle] ||= [];
+      } else if (currentVehicle) {
+        catalog[currentVehicle] = uniqueValues((catalog[currentVehicle] || []).concat(line));
+      }
+    }
+  }
+  return Object.fromEntries(Object.entries(catalog).filter(([vehicle]) => vehicle));
+}
+
+function splitTemplateList(text: string) {
+  return text.split(/[,\s]+/).map((part) => part.trim()).filter((part) => /^[A-Za-z0-9_.:-]+$/.test(part));
+}
+
+function uniqueValues(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 function parseServiceRows(text: string) {
