@@ -338,7 +338,7 @@ async function handleApi(req, res) {
   if (path === "/api/maps/user-settings/materialize" && req.method === "POST") return confirmedTask(req, res, "maps", "userSettingsMaterializeCurrent", {}, "REFRESH MAP SETTINGS");
   if (path === "/api/maps/user-settings/restore-defaults" && req.method === "POST") return userSettingsRestoreDefaultsRoute(req, res);
   if (path === "/api/sietches") return commandJson(res, "sietchesList");
-  if (path === "/api/sietches/dimensions") return commandJson(res, "sietchesDimensions", { map: url.searchParams.get("map") || "Survival_1" });
+  if (path === "/api/sietches/dimensions") return commandJson(res, url.searchParams.get("ids") === "1" ? "sietchesDimensionIds" : "sietchesDimensions", { map: url.searchParams.get("map") || "Survival_1" });
   if (path === "/api/sietches/update" && req.method === "POST") return sietchesUpdateRoute(req, res);
   if (path === "/api/deepdesert") return commandJson(res, "deepdesertStatus");
   if (path === "/api/deepdesert/update" && req.method === "POST") return deepDesertUpdateRoute(req, res);
@@ -477,6 +477,7 @@ function enrichBackupRows(rows) {
     if (/^(automatic|scheduled)$/.test(origin)) return { ...enriched, type: "Automatic Backup" };
     if (/^(restore-safety|restore_safety|restore safety)$/.test(origin)) return { ...enriched, type: "Restore Safety Backup" };
     if (/^(pre-update|pre_update|preupdate)$/.test(origin)) return { ...enriched, type: "Pre-update Backup" };
+    if (/^(destructive-sql|destructive_sql|destructive sql|sql-safety|sql_safety)$/.test(origin)) return { ...enriched, type: "SQL Safety Backup" };
     if (/^(external|imported)$/.test(origin)) return { ...enriched, type: "Imported Backup", source: "External" };
     return enriched;
   });
@@ -718,21 +719,21 @@ async function databaseQuery(req, res) {
   const body = await readJson(req);
   const query = String(body.query || "");
   const readOnly = isReadOnlySql(query);
-  const allowDestructive = Boolean(body.confirmDestructive && body.confirmation === "RUN DESTRUCTIVE SQL");
-  if (!readOnly && !allowDestructive) {
-    return json(res, 400, { error: "Destructive SQL requires confirmation phrase RUN DESTRUCTIVE SQL and creates a backup first." });
-  }
   if (!config.mockMode && !readOnly) {
-    await runDune(config, buildDuneArgs("backupCreate"));
+    await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: "destructive-sql" } });
   }
   audit(config, req, "database.query", { readOnly, destructive: !readOnly });
-  return dbJson(res, () => duneDb.runSql(db, query, allowDestructive));
+  return dbJson(res, () => duneDb.runSql(db, query, true));
 }
 
 async function databaseExport(req, res) {
   const body = await readJson(req);
+  const query = String(body.query || "");
+  if (!isReadOnlySql(query)) {
+    return json(res, 400, { error: "Export Query JSON supports read-only SELECT, WITH, SHOW, and EXPLAIN queries. Use Run Query for database writes." });
+  }
   audit(config, req, "database.export", {});
-  const content = await duneDb.exportRows(db, body.query);
+  const content = await duneDb.exportRows(db, query);
   res.writeHead(200, {
     "content-type": "application/json; charset=utf-8",
     "content-disposition": "attachment; filename=\"query-export.json\""
@@ -1278,14 +1279,9 @@ async function directDbMutation(req, res, action, phrase, fn, meta = {}) {
     return json(res, 400, { error: `Confirmation phrase required: ${phrase}` });
   }
   try {
-    let backup = null;
-    if (!config.mockMode) {
-      const backupResult = await runDune(config, buildDuneArgs("backupCreate"));
-      backup = { exitCode: backupResult.code, stdout: backupResult.stdout };
-    }
     const result = config.mockMode ? { ok: true, mock: true } : await fn(body);
-    audit(config, req, action, { ...meta, supported: true, backup, result });
-    return json(res, 200, { supported: true, backupCreated: !config.mockMode, result });
+    audit(config, req, action, { ...meta, supported: true, result });
+    return json(res, 200, { supported: true, backupCreated: false, result });
   } catch (error) {
     const status = error.unsupported ? 501 : 400;
     audit(config, req, action, { ...meta, supported: false, error: redact(error.message || error) });
@@ -1625,7 +1621,7 @@ function quoteEnv(value) {
 }
 
 function knownServices() {
-  return ["postgres", "rmq-admin", "rmq-game", "text-router", "director", "gateway", "survival", "survival-1", "overmap", "orchestrator", "autoscaler"];
+  return ["postgres", "rmq-admin", "rmq-game", "text-router", "director", "gateway", "survival-1", "overmap", "orchestrator", "autoscaler"];
 }
 
 function mockCommand(operation) {

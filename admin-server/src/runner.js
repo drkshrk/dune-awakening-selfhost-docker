@@ -177,6 +177,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["sietches", "show", validateMapName(payload.map)];
     case "sietchesDimensions":
       return ["sietches", "dimensions", validateMapName(payload.map)];
+    case "sietchesDimensionIds":
+      return ["sietches", "dimensions", validateMapName(payload.map), "--ids"];
     case "sietchesSetMax":
       return ["sietches", "set-max", validateMapName(payload.map), String(validateInteger(payload.count, 1, 64))];
     case "sietchesSetActive":
@@ -506,7 +508,7 @@ function validatePartitionId(value) {
 
 function validateDisplayName(value) {
   const raw = String(value || "").trim();
-  if (raw.length >= 1 && raw.length <= 80 && !/[\r\n]/.test(raw)) return raw;
+  if (raw.length <= 80 && !/[\r\n]/.test(raw)) return raw;
   throw new Error("Invalid display name");
 }
 

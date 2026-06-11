@@ -8,7 +8,5 @@ export const updatesApi = {
   checkStack: () => post<{ task: Task }>("/api/updates/check-stack"),
   applyStack: () => post<{ task: Task }>("/api/updates/apply-stack"),
   autoGameStatus: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/updates/auto-game"),
-  saveAutoGame: (body: { enabled: boolean; time: string; confirmation: string }) => post<{ task: Task }>("/api/updates/auto-game", body),
-  previousStack: () => api<{ stdout: string; stderr?: string; exitCode?: number }>("/api/updates/previous-stack"),
-  restorePreviousStack: (confirmation: string) => post<{ task: Task }>("/api/updates/restore-previous-stack", { confirmation })
+  saveAutoGame: (body: { enabled: boolean; time: string; confirmation: string }) => post<{ task: Task }>("/api/updates/auto-game", body)
 };

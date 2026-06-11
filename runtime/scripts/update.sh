@@ -316,6 +316,20 @@ fi
   exit $?
 fi
 
+fix_steamcmd_manifest() {
+  docker compose exec -T -e APP_ID="$APP_ID" orchestrator bash -lc '
+set -euo pipefail
+APP_ID="${APP_ID:-4754530}"
+MANIFEST="/srv/dune/server/steamapps/appmanifest_${APP_ID}.acf"
+if [ -f "$MANIFEST" ]; then
+  rm -f "$MANIFEST"
+  echo "SteamCMD app manifest removed. It will be regenerated on the next game update attempt."
+else
+  echo "SteamCMD app manifest was already absent. The next game update attempt will generate it."
+fi
+'
+}
+
 if [ "$cmd" = "check" ] || [ "$cmd" = "status" ]; then
   echo
   echo "=== Check Steam for available update ==="
@@ -503,28 +517,39 @@ steam_attempt=1
 steam_max_attempts="${DUNE_STEAMCMD_MAX_ATTEMPTS:-3}"
 steam_retry_sleep="${DUNE_STEAMCMD_RETRY_SLEEP:-20}"
 steam_ok=0
+steam_manifest_fix_applied=0
 
 while [ "$steam_attempt" -le "$steam_max_attempts" ]; do
   echo
   echo "SteamCMD install attempt $steam_attempt/$steam_max_attempts..."
 
+  steam_log="$(mktemp)"
   set +e
-  docker compose exec -T -e APP_ID="$APP_ID" orchestrator dune download
+  docker compose exec -T -e APP_ID="$APP_ID" orchestrator dune download 2>&1 | tee "$steam_log"
   steam_rc=$?
   set -e
 
   if [ "$steam_rc" -eq 0 ]; then
     steam_ok=1
+    rm -f "$steam_log"
     break
   fi
 
   echo
-  if [ "$steam_attempt" -eq 1 ]; then
-    echo "SteamCMD first-run bootstrap did not complete the app install on this attempt."
-    echo "This can happen while SteamCMD updates and restarts itself."
+  if [ "$steam_manifest_fix_applied" = "0" ] && grep -Eiq "App '[^']+' state is 0x6|appmanifest_${APP_ID}\.acf|SteamCMD cache/metadata is stale" "$steam_log"; then
+    echo "Detected a common SteamCMD cache error while downloading the server files."
+    echo "Applying the automatic SteamCMD fix now, then retrying the update."
+    fix_steamcmd_manifest
+    steam_manifest_fix_applied=1
   else
-    echo "SteamCMD failed with exit code $steam_rc."
+    if [ "$steam_attempt" -eq 1 ]; then
+      echo "SteamCMD first-run bootstrap did not complete the app install on this attempt."
+      echo "This can happen while SteamCMD updates and restarts itself."
+    else
+      echo "SteamCMD failed with exit code $steam_rc."
+    fi
   fi
+  rm -f "$steam_log"
 
   if [ "$steam_attempt" -lt "$steam_max_attempts" ]; then
     if [ "$steam_attempt" -eq 1 ]; then

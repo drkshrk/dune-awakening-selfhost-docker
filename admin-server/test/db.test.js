@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { assertIdentifier, discoverDbConfig, isReadOnlySql, quoteQualified, redactDbError } from "../src/db.js";
-import { addCurrency, addFactionReputation, addIntel, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToStorage, listPlayers, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerJourney, playerResearchItems, resetJourneyNode, resetTutorial, tablePreview, unlockCraftingRecipe, unlockResearchItem, UnsupportedCapabilityError } from "../src/duneDb.js";
+import { addCurrency, addFactionReputation, addIntel, completeJourneyNode, completeTutorial, deleteInventoryItem, giveItemToStorage, listPlayers, listTables, liveMapPlayers, liveMapServices, playerCraftingRecipes, playerJourney, playerResearchItems, resetJourneyNode, resetTutorial, runSql, tablePreview, unlockCraftingRecipe, unlockResearchItem, updateTableRow, UnsupportedCapabilityError } from "../src/duneDb.js";
 
 test("discovers RedBlink Postgres defaults and env overrides", () => {
   assert.deepEqual(discoverDbConfig({}), {
@@ -42,6 +42,147 @@ test("builds table preview query with quoted identifiers and parameters", async 
   assert.match(calls[0].text, /"dune"\."player_state" limit \$1 offset \$2/);
   assert.deepEqual(calls[0].values, [25, 5]);
   assert.equal(result.rows[0].id, 1);
+});
+
+test("database table list returns exact row counts", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values) => {
+      calls.push({ text, values });
+      if (text.includes("information_schema.tables")) {
+        return { rows: [{ schema: "dune", name: "player_virtual_currency_balances" }] };
+      }
+      if (text.includes("count(*)::bigint")) return { rows: [{ row_count: "2" }] };
+      return { rows: [] };
+    }
+  };
+  const rows = await listTables(db, "dune");
+  assert.equal(rows[0].row_count, "2");
+  assert.match(calls[1].text, /"dune"\."player_virtual_currency_balances"/);
+});
+
+test("database currency writes emit Solaris live refresh hook", async () => {
+  const calls = [];
+  let solarisSnapshot = 0;
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.player_virtual_currency_balances") && text.includes("dune.get_solaris_id()")) {
+        solarisSnapshot += 1;
+        return { rows: [{ player_controller_id: "719", balance: solarisSnapshot === 1 ? "101" : "5000" }] };
+      }
+      return { fields: [], rows: [], rowCount: 1, command: "UPDATE" };
+    }
+  };
+  const result = await runSql(db, "update dune.player_virtual_currency_balances set balance = 5000", true);
+  assert.equal(result.rowCount, 1);
+  assert.ok(calls.some((call) => String(call.text).includes("dune.log_event_solaris")));
+});
+
+test("manual currency row edit uses game balance function", async () => {
+  const calls = [];
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("information_schema.columns")) {
+        return { rows: [
+          { name: "player_controller_id" },
+          { name: "currency_id" },
+          { name: "balance" }
+        ] };
+      }
+      if (text.includes("select player_controller_id, currency_id, balance")) {
+        return { rows: [{ player_controller_id: "719", currency_id: "0", balance: "5000" }] };
+      }
+      return { fields: [], rows: [], rowCount: 1, command: "SELECT" };
+    }
+  };
+  const result = await updateTableRow(db, "dune", "player_virtual_currency_balances", "(1,1)", {
+    player_controller_id: "719",
+    currency_id: "0",
+    balance: "550"
+  });
+  assert.equal(result.updatedRows, 1);
+  const adjustCall = calls.find((call) => String(call.text).includes("adjust_player_virtual_currency_balance"));
+  assert.ok(adjustCall);
+  assert.deepEqual(adjustCall.values, [719, 0, "-4450"]);
+});
+
+test("database faction writes sync reputation component", async () => {
+  const calls = [];
+  let factionSnapshot = 0;
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("information_schema.columns")) return { rows: [{ column_name: "properties" }] };
+      if (text.includes("from dune.player_faction_reputation") && text.includes("order by actor_id")) {
+        factionSnapshot += 1;
+        return { rows: [{ actor_id: "721", faction_id: "1", reputation_amount: factionSnapshot === 1 ? "101" : "500" }] };
+      }
+      if (text.includes("from dune.player_faction_reputation") && text.includes("faction_id in (1, 2)")) {
+        return { rows: [{ faction_id: 1, reputation_amount: 500 }] };
+      }
+      return { fields: [], rows: [], rowCount: 1, command: "UPDATE" };
+    }
+  };
+  const result = await runSql(db, "update dune.player_faction_reputation set reputation_amount = 500", true);
+  assert.equal(result.rowCount, 1);
+  assert.ok(calls.some((call) => String(call.text).includes("dune.set_player_faction_reputation")));
+  assert.ok(calls.some((call) => String(call.text).includes("FactionPlayerComponent")));
+});
+
+test("database writes replay known tutorial journey tag and item functions", async () => {
+  const calls = [];
+  let tutorialSnapshot = 0;
+  let journeySnapshot = 0;
+  let tagSnapshot = 0;
+  let itemSnapshot = 0;
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (/^\s*select/i.test(text) && text.includes("from dune.tutorial_per_player")) {
+        tutorialSnapshot += 1;
+        return { rows: [{ player_id: "719", tutorial_id: "3", tutorial_state: tutorialSnapshot === 1 ? "1" : "2" }] };
+      }
+      if (/^\s*select/i.test(text) && text.includes("from dune.journey_story_node")) {
+        journeySnapshot += 1;
+        return { rows: [{
+          account_id: "424",
+          story_node_id: "DA_Test",
+          override_reward_block: false,
+          has_pending_reward: false,
+          complete_condition_state: journeySnapshot === 1 ? "false" : "true",
+          reveal_condition_state: "true",
+          fail_condition_state: "{}",
+          metadata_state: "{}",
+          reset_group: "Default"
+        }] };
+      }
+      if (/^\s*select/i.test(text) && text.includes("from dune.player_tags")) {
+        tagSnapshot += 1;
+        return { rows: tagSnapshot === 1 ? [] : [{ account_id: "424", tag: "Faction.Atreides.Tier1" }] };
+      }
+      if (/^\s*select/i.test(text) && text.includes("from dune.items")) {
+        itemSnapshot += 1;
+        return { rows: itemSnapshot === 1 ? [{ id: "9001", inventory_id: "42", template_id: "WaterBottle_1" }] : [] };
+      }
+      return { fields: [], rows: [], rowCount: 1, command: "UPDATE" };
+    }
+  };
+  await runSql(db, "update dune.tutorial_per_player set tutorial_state = 2", true);
+  await runSql(db, "update dune.journey_story_node set complete_condition_state = 'true'", true);
+  await runSql(db, "insert into dune.player_tags(account_id, tag) values (424, 'Faction.Atreides.Tier1')", true);
+  await runSql(db, "delete from dune.items where id = 9001", true);
+  assert.ok(calls.some((call) => String(call.text).includes("dune.create_or_update_tutorial_entry")));
+  assert.ok(calls.some((call) => String(call.text).includes("dune.save_journey_story_node")));
+  assert.ok(calls.some((call) => String(call.text).includes("dune.update_player_tags")));
+  assert.ok(calls.some((call) => String(call.text).includes("dune._add_item_delete_log")));
 });
 
 test("players query uses parameterized search input", async () => {
@@ -280,6 +421,20 @@ test("research unlock appends missing verified key without duplicating existing 
   assert.deepEqual(items[1], { ItemKey: "BLD_Windtrap_Patent", bIsNewEntry: false, UnlockedState: "Purchased" });
 });
 
+test("research unlock requires offline player to avoid live state overwrite", async () => {
+  const calls = [];
+  const db = fakeMutationDb(calls, {
+    playerRows: [{ actor_id: 123, account_id: 44, controller_id: 55, online_status: "Online" }],
+    researchExists: true,
+    currentResearchItems: [{ ItemKey: "RCP_HealthPackRecipe", bIsNewEntry: true, UnlockedState: "NotPurchased" }]
+  });
+  await assert.rejects(
+    () => unlockResearchItem(db, 123, { itemKey: "RCP_HealthPackRecipe" }),
+    /require the player to be offline/
+  );
+  assert.equal(calls.some((call) => call.text.includes("TechKnowledgePlayerComponent,m_TechKnowledge,m_TechKnowledgeData") && call.text.includes("update dune.actors")), false);
+});
+
 test("journey listing groups story contract codex and tutorial rows with player status", async () => {
   const calls = [];
   const db = fakeMutationDb(calls, {
@@ -414,7 +569,7 @@ function fakeMutationDb(calls, fixtures = {}) {
       if (text.includes("create_or_update_tutorial_entry")) return { rows: [{ ok: true }] };
       if (text.includes("delete from dune.tutorial_per_player")) return { rows: [], rowCount: fixtures.tutorialDeleteRows ?? 0 };
       if (text.includes("dune.update_player_tags")) return { rows: [{ ok: true }] };
-      if (text.includes("from dune.actors a")) return { rows: [{ actor_id: 123, account_id: 44, controller_id: 55, online_status: "Offline" }] };
+      if (text.includes("from dune.actors a")) return { rows: fixtures.playerRows || [{ actor_id: 123, account_id: 44, controller_id: 55, online_status: "Offline" }] };
       if (text.includes("dune.get_solaris_id")) return { rows: [{ currency_id: 0 }] };
       if (text.includes("adjust_player_virtual_currency_balance")) return { rows: [{ ok: true }] };
       if (text.includes("player_virtual_currency_balances")) return { rows: fixtures.balanceRows || [] };

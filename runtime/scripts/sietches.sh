@@ -1378,6 +1378,19 @@ where partition_id = ${partition_id};
 " >/dev/null
 }
 
+reset_partition_label_if_possible() {
+  local partition_id="$1"
+
+  docker_postgres_running || return 0
+  docker exec dune-postgres psql -U postgres -d dune -v ON_ERROR_STOP=1 -c "
+set search_path = dune, public;
+update dune.world_partition
+set label = null
+where partition_id = ${partition_id};
+select dune.update_partition_labels(true);
+" >/dev/null
+}
+
 partition_map_name() {
   local partition_id="$1"
   local row
@@ -1588,11 +1601,18 @@ case "$cmd" in
     partition_id="$2"
     shift 2
     display_name="$*"
-    [ -n "$display_name" ] || { echo "Display name cannot be empty."; exit 1; }
     set_partition_value "$partition_id" display_name "$display_name"
-    set_partition_label_if_possible "$partition_id" "$display_name"
+    if [ -n "$display_name" ]; then
+      set_partition_label_if_possible "$partition_id" "$display_name"
+    else
+      reset_partition_label_if_possible "$partition_id"
+    fi
     sync_sietch_config_from_db "set-display-label" >/dev/null || true
-    python3 runtime/scripts/usersettings.py partition-engine-set "$(partition_map_name "$partition_id")" "$partition_id" server_display_name "$display_name" >/dev/null 2>&1 || true
+    if [ -n "$display_name" ]; then
+      python3 runtime/scripts/usersettings.py partition-engine-set "$(partition_map_name "$partition_id")" "$partition_id" server_display_name "$display_name" >/dev/null 2>&1 || true
+    elif [ "$(partition_map_name "$partition_id")" = "Survival_1" ]; then
+      sync_survival_usersettings_state
+    fi
     python3 runtime/scripts/usersettings.py materialize-current >/dev/null 2>&1 || true
     if [ "$(partition_map_name "$partition_id")" = "Survival_1" ]; then
       refresh_survival_control_plane_state

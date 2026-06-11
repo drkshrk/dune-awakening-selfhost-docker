@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildDuneArgs, isReadOnlySql, parseVehicleList, validateServiceName } from "../src/runner.js";
+import { buildDuneArgs, dockerContainerForLogService, isReadOnlySql, parseVehicleList, validateServiceName } from "../src/runner.js";
 import { redact } from "../src/redact.js";
 
 test("validates known service names and aliases", () => {
@@ -8,6 +8,12 @@ test("validates known service names and aliases", () => {
   assert.equal(validateServiceName("sgw"), "gateway");
   assert.equal(validateServiceName("dune-server-survival-1-43"), "dune-server-survival-1-43");
   assert.throws(() => validateServiceName("gateway; rm -rf /"));
+});
+
+test("allows dynamic map containers as log targets", () => {
+  assert.equal(dockerContainerForLogService("survival-1"), "dune-server-survival-1");
+  assert.equal(dockerContainerForLogService("dune-server-survival-1-43"), "dune-server-survival-1-43");
+  assert.equal(dockerContainerForLogService("dune-server-sh-arrakeen-3"), "dune-server-sh-arrakeen-3");
 });
 
 test("builds allowlisted command arguments without shell interpolation", () => {
@@ -49,6 +55,7 @@ test("builds allowlisted command arguments without shell interpolation", () => {
   assert.deepEqual(buildDuneArgs("memorySet", { map: "DeepDesert_1", memory: "8g" }), ["memory", "set", "DeepDesert_1", "8g"]);
   assert.deepEqual(buildDuneArgs("sietchesSetActive", { map: "Survival_1", count: 2 }), ["sietches", "set-active", "Survival_1", "2"]);
   assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "Sietch Alpha" }), ["sietches", "set-display", "38", "Sietch Alpha"]);
+  assert.deepEqual(buildDuneArgs("sietchesSetDisplay", { partitionId: 38, displayName: "" }), ["sietches", "set-display", "38", ""]);
   assert.deepEqual(buildDuneArgs("deepdesertAction", { action: "disable" }), ["deepdesert", "dual", "disable", "--yes", "--force"]);
   assert.deepEqual(buildDuneArgs("userSettingsEngineValues"), ["usersettings", "engine-values"]);
   assert.deepEqual(buildDuneArgs("userSettingsMapValues", { map: "Survival_1" }), ["usersettings", "map-values", "Survival_1"]);

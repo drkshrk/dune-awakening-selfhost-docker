@@ -115,6 +115,20 @@ backup_is_external() {
   [ -n "$imported_from" ] && [ "$imported_from" != "unknown" ]
 }
 
+backup_is_automatic() {
+  local backup_file="$1"
+  local origin=""
+
+  origin="$(backup_metadata_value "$backup_file" backup_origin || true)"
+  [ -n "$origin" ] || origin="$(backup_metadata_value "$backup_file" origin || true)"
+
+  case "$(printf '%s' "$origin" | tr '[:upper:]' '[:lower:]')" in
+    automatic|scheduled) return 0 ;;
+  esac
+
+  return 1
+}
+
 valid_backup_basename() {
   local name="$1"
   printf '%s' "$name" | grep -Eq '^dune-db-([a-z0-9][a-z0-9_-]*__)?[0-9]{8}-[0-9]{6}\.(dump|sql)$|^[a-z0-9][a-z0-9_-]*-[0-9]{8}-[0-9]{6}\.backup$'
@@ -459,6 +473,7 @@ prune_old_db_backups() {
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     file="$(backup_path_for_name "$name" "$backup_dir")"
+    backup_is_automatic "$file" || continue
     if find "$file" -maxdepth 0 -type f -mmin +"$minutes" -print -quit 2>/dev/null | grep -q .; then
       delete_backup_files_for_name "$name" "$backup_dir"
       removed=$((removed + 1))
@@ -466,9 +481,9 @@ prune_old_db_backups() {
   done < <(iter_valid_backup_names "$backup_dir")
 
   if [ "$removed" -gt 0 ]; then
-    echo "Removed $removed database backups older than $days days."
+    echo "Removed $removed automatic database backups older than $days days."
   else
-    echo "No database backups older than $days days were removed."
+    echo "No automatic database backups older than $days days were removed."
   fi
 }
 

@@ -65,6 +65,9 @@ const RESTARTABLE_SERVICES = [
 
 const FUNCOM_TOKEN_AUTH_ERROR_KEY = "arrakis.funcomTokenAuthError";
 const DATABASE_PASSWORD_STATE_KEY = "arrakis.databasePasswordState";
+const GAME_UPDATE_TASK_KEY = "arrakis.gameUpdateTask";
+const STACK_UPDATE_TASK_KEY = "arrakis.stackUpdateTask";
+const UPDATE_RESULT_DISMISS_MS = 10000;
 
 const SERVICE_LABELS: Record<string, string> = {
   postgres: "Postgres",
@@ -247,7 +250,7 @@ export function App() {
         {tab === "Logs" && <LogsPanel selectedService={selectedLogService} setSelectedService={setSelectedLogService} text={logs} setText={setLogs} onError={setError} />}
         {tab === "Updates" && <UpdatesPanel setTask={setTask} />}
         {tab === "Settings" && <SettingsPanel />}
-        <TaskProgress task={task} onDismiss={() => setTask(null)} />
+        {!(tab === "Maps" && task?.type === "maps") && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
       </main>
     </div>
   );
@@ -1250,12 +1253,10 @@ function AdminToolsPanel({ onError }: { onError: (text: string) => void }) {
           <InlineActionResult result={actionResult} resultKey="playerTools" />
         </div>
       </div>
-      <div className={`admin-live-toggle-panel ${liveToolsOpen ? "open" : ""}`}>
-        <div className="admin-live-toggle-row">
-          <h3>Global Live Tools</h3>
-          <button className={`icon-toggle-button ${liveToolsOpen ? "active" : ""}`} aria-label={liveToolsOpen ? "Collapse Global Live Tools" : "Expand Global Live Tools"} title={liveToolsOpen ? "Collapse" : "Expand"} onClick={() => setLiveToolsOpen(!liveToolsOpen)}>{liveToolsOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
-        </div>
-        {liveToolsOpen && <div className="global-live-tools">
+      <div className={`playerAdmin_toggle ${liveToolsOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={liveToolsOpen ? "Collapse Global Live Tools" : "Expand Global Live Tools"} onClick={() => setLiveToolsOpen(!liveToolsOpen)}>{liveToolsOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Global Live Tools</span></button>
+        {liveToolsOpen && <div className="playerAdmin_toggleBody"><div className="global-live-tools">
+          <p className="action-help-note">Live Command. Sends immediately.</p>
           <div className="action-line admin-global-actions">
             <button className="danger" onClick={() => run(kickAllPlayers)}>Kick All</button>
             <button className="success" onClick={() => run(hydrateOnlinePlayers)}>Hydrate All Players</button>
@@ -1270,20 +1271,15 @@ function AdminToolsPanel({ onError }: { onError: (text: string) => void }) {
               <InlineActionResult result={actionResult} resultKey="broadcast" />
             </div>
           </div>
-        </div>}
+        </div></div>}
       </div>
-      <div className={`admin-live-toggle-panel admin-history-toggle-panel ${historyOpen ? "open" : ""}`}>
-        <div className="admin-live-toggle-row admin-history-toggle-row">
-          <h3>Command History</h3>
-          <div className="admin-history-actions">
-            {historyRows.length > 0 && <button onClick={() => run(clearHistory)}>Clear</button>}
-            <button className={`icon-toggle-button ${historyOpen ? "active" : ""}`} aria-label={historyOpen ? "Collapse Command History" : "Expand Command History"} title={historyOpen ? "Collapse" : "Expand"} onClick={() => setHistoryOpen(!historyOpen)}>{historyOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
-          </div>
-        </div>
-        {historyOpen && <div className="admin-history-content">
+      <div className={`playerAdmin_toggle admin-history-toggle-panel ${historyOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={historyOpen ? "Collapse Command History" : "Expand Command History"} onClick={() => setHistoryOpen(!historyOpen)}>{historyOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Command History</span></button>
+        {historyOpen && <div className="playerAdmin_toggleBody"><div className="admin-history-content">
+          {historyRows.length > 0 && <div className="action-row admin-history-actions"><button onClick={() => run(clearHistory)}>Clear</button></div>}
           {historyRows.length ? <div className="admin-history-table"><DataTable rows={historyRows} columns={["time", "action", "target", "status", "summary"]} tableClassName="admin-history-grid" /></div> : <div className="admin-history-empty">Command history will appear here after an admin action runs.</div>}
           {history && <TechnicalDetails title="Advanced history output" text={history} />}
-        </div>}
+        </div></div>}
       </div>
     </section>
   );
@@ -1304,7 +1300,7 @@ function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, player
   const [playerAdmin_skillSchool, playerAdmin_setSkillSchool] = useState("");
   const [playerAdmin_waterAmount, playerAdmin_setWaterAmount] = useState("10");
   const [playerAdmin_xpAmount, playerAdmin_setXpAmount] = useState("1000");
-  const [playerAdmin_currencyType, playerAdmin_setCurrencyType] = useState("Solari");
+  const [playerAdmin_currencyType, playerAdmin_setCurrencyType] = useState("Solari Credit");
   const [playerAdmin_currencyAmount, playerAdmin_setCurrencyAmount] = useState("100");
   const [playerAdmin_intelAmount, playerAdmin_setIntelAmount] = useState("100");
   const [playerAdmin_factionName, playerAdmin_setFactionName] = useState("Atreides");
@@ -1360,8 +1356,9 @@ function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, player
     onError("");
     playerAdmin_showResult(key, pendingText, "neutral", true);
     try {
-      await action();
-      playerAdmin_showResult(key, successText, successTone);
+      const response = await action();
+      const responseText = formatMutationResult(response);
+      playerAdmin_showResult(key, responseText && responseText !== "Action completed." ? responseText : successText, successTone);
       playerAdmin_addLog(log.actionType, log.target, log.amount, "Succeeded");
     } catch (error) {
       const message = typeof failureText === "function" ? failureText(error) : failureText || playerAdmin_friendlyFailure(error, log.actionType, playerName);
@@ -1730,12 +1727,15 @@ function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, player
       </article>;
     })}</div>
   );
-  const playerAdmin_actionRow = (playerAdmin_key: string, playerAdmin_label: string, playerAdmin_input: React.ReactNode, playerAdmin_buttonLabel: string, playerAdmin_onClick: () => void, playerAdmin_disabled = false) => (
-    <div className="playerAdmin_actionRow">
-      <span>{playerAdmin_label}</span>
-      {playerAdmin_input}
-      <button disabled={playerAdmin_disabled || playerAdmin_actionResult?.pending} onClick={playerAdmin_onClick}>{playerAdmin_buttonLabel}</button>
-      <InlineActionResult result={playerAdmin_actionResult} resultKey={playerAdmin_key} />
+  const playerAdmin_actionRow = (playerAdmin_key: string, playerAdmin_label: string, playerAdmin_input: React.ReactNode, playerAdmin_buttonLabel: string, playerAdmin_onClick: () => void, playerAdmin_disabled = false, playerAdmin_note = "") => (
+    <div className="playerAdmin_actionGroup">
+      <div className="playerAdmin_actionRow">
+        <span>{playerAdmin_label}</span>
+        {playerAdmin_input}
+        <button disabled={playerAdmin_disabled || playerAdmin_actionResult?.pending} onClick={playerAdmin_onClick}>{playerAdmin_buttonLabel}</button>
+        <InlineActionResult result={playerAdmin_actionResult} resultKey={playerAdmin_key} />
+      </div>
+      {playerAdmin_note && <p className="playerAdmin_actionNote">{playerAdmin_note}</p>}
     </div>
   );
   const playerAdmin_filteredCraftingRows = playerAdmin_craftingRows.filter((row) => !playerAdmin_craftingCategory || row.category === playerAdmin_craftingCategory);
@@ -1856,22 +1856,22 @@ function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, player
       <div className="playerAdmin_tabs" role="tablist" aria-label="Player admin tabs">{playerAdmin_tabs.map((playerAdmin_tab) => <button key={playerAdmin_tab} className={playerAdmin_activeTab === playerAdmin_tab ? "active" : ""} onClick={() => playerAdmin_setActiveTab(playerAdmin_tab)}>{playerAdmin_tab}</button>)}</div>
       {playerAdmin_activeTab === "Character" && <div className="playerAdmin_content">
         <section className="playerAdmin_box"><h4>Grant Rewards</h4><div className="playerAdmin_section"><h5>Quick Rewards</h5>
-          {playerAdmin_actionRow("water", "Give Water", <input type="number" min="1" value={playerAdmin_waterAmount} onChange={(event) => playerAdmin_setWaterAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("water", `Giving ${Number(playerAdmin_waterAmount) || 10} cups of water to ${playerName}`, () => playerAdmin_runTask(() => playersApi.giveItemId(actionPlayerId, { itemId: "WaterPack_Consumable", quantity: Number(playerAdmin_waterAmount) || 10, durability: 1 })), `${playerName} received ${Number(playerAdmin_waterAmount) || 10} cups of water.`, { actionType: "Give Water", target: playerName, amount: String(Number(playerAdmin_waterAmount) || 10) }), !playerAdmin_canRunLiveAction)}
-          {playerAdmin_actionRow("xp", "Give XP", <input type="number" min="1" value={playerAdmin_xpAmount} onChange={(event) => playerAdmin_setXpAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("xp", `Giving ${Number(playerAdmin_xpAmount) || 0} XP to ${playerName}`, () => playerAdmin_runTask(() => playersApi.addXp(actionPlayerId, Number(playerAdmin_xpAmount) || 0)), `${playerName} received ${Number(playerAdmin_xpAmount) || 0} XP.`, { actionType: "Give XP", target: playerName, amount: String(Number(playerAdmin_xpAmount) || 0) }), !playerAdmin_canRunLiveAction)}
-          {playerAdmin_actionRow("currency", "Give Currency", <><select value={playerAdmin_currencyType} onChange={(event) => playerAdmin_setCurrencyType(event.target.value)}><option>Solari</option><option>Scrip</option></select><input type="number" min="1" value={playerAdmin_currencyAmount} onChange={(event) => playerAdmin_setCurrencyAmount(event.target.value)} /></>, "Give", () => playerAdmin_runAction("currency", `Giving ${Number(playerAdmin_currencyAmount) || 0} ${playerAdmin_currencyType} to ${playerName}`, () => playersApi.addCurrency(dbPlayerId, { currencyId: playerAdmin_currencyType === "Scrip" ? 1 : 0, amount: Number(playerAdmin_currencyAmount) || 0, confirmation: "ADD CURRENCY" }), `${playerName} received ${Number(playerAdmin_currencyAmount) || 0} ${playerAdmin_currencyType}.`, { actionType: `Give ${playerAdmin_currencyType}`, target: playerName, amount: String(Number(playerAdmin_currencyAmount) || 0) }), !dbPlayerId)}
-          {playerAdmin_actionRow("intel", "Give Intel", <input type="number" min="1" value={playerAdmin_intelAmount} onChange={(event) => playerAdmin_setIntelAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("intel", `Giving ${Number(playerAdmin_intelAmount) || 0} Intel to ${playerName}`, () => playersApi.addIntel(dbPlayerId, { amount: Number(playerAdmin_intelAmount) || 0, confirmation: "ADD INTEL" }), `${playerName} received ${Number(playerAdmin_intelAmount) || 0} Intel.`, { actionType: "Give Intel", target: playerName, amount: String(Number(playerAdmin_intelAmount) || 0) }), !dbPlayerId)}
-          {playerAdmin_actionRow("faction", "Give Faction Reputation", <><select value={playerAdmin_factionName} onChange={(event) => playerAdmin_setFactionName(event.target.value)}><option>Atreides</option><option>Harkonnen</option><option>Smuggler</option></select><input type="number" min="1" max="12474" value={playerAdmin_factionAmount} onChange={(event) => playerAdmin_setFactionAmount(event.target.value)} /></>, "Give", () => playerAdmin_runAction("faction", `Giving ${Number(playerAdmin_factionAmount) || 0} ${playerAdmin_factionName} reputation to ${playerName}`, () => playersApi.addFactionReputation(dbPlayerId, { factionId: playerAdmin_factionIds[playerAdmin_factionName] || 1, amount: Number(playerAdmin_factionAmount) || 0, confirmation: "ADD FACTION REPUTATION" }), `${playerName} received ${Number(playerAdmin_factionAmount) || 0} ${playerAdmin_factionName} reputation.`, { actionType: "Give Faction Reputation", target: playerAdmin_factionName, amount: String(Number(playerAdmin_factionAmount) || 0) }), !dbPlayerId)}
+          {playerAdmin_actionRow("water", "Give Water", <input type="number" min="1" value={playerAdmin_waterAmount} onChange={(event) => playerAdmin_setWaterAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("water", `Giving ${Number(playerAdmin_waterAmount) || 10} cups of water to ${playerName}`, () => playerAdmin_runTask(() => playersApi.giveItemId(actionPlayerId, { itemId: "WaterPack_Consumable", quantity: Number(playerAdmin_waterAmount) || 10, durability: 1 })), `${playerName} received ${Number(playerAdmin_waterAmount) || 10} cups of water.`, { actionType: "Give Water", target: playerName, amount: String(Number(playerAdmin_waterAmount) || 10) }), !playerAdmin_canRunLiveAction, "Live Command. Player must be online.")}
+          {playerAdmin_actionRow("xp", "Give XP", <input type="number" min="1" value={playerAdmin_xpAmount} onChange={(event) => playerAdmin_setXpAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("xp", `Giving ${Number(playerAdmin_xpAmount) || 0} XP to ${playerName}`, () => playerAdmin_runTask(() => playersApi.addXp(actionPlayerId, Number(playerAdmin_xpAmount) || 0)), `${playerName} received ${Number(playerAdmin_xpAmount) || 0} XP.`, { actionType: "Give XP", target: playerName, amount: String(Number(playerAdmin_xpAmount) || 0) }), !playerAdmin_canRunLiveAction, "Live Command. Player must be online.")}
+          {playerAdmin_actionRow("currency", "Give Currency", <><select value={playerAdmin_currencyType} onChange={(event) => playerAdmin_setCurrencyType(event.target.value)}><option>Solari Credit</option><option>Scrip</option></select><input type="number" min="1" value={playerAdmin_currencyAmount} onChange={(event) => playerAdmin_setCurrencyAmount(event.target.value)} /></>, "Give", () => playerAdmin_runAction("currency", `Giving ${Number(playerAdmin_currencyAmount) || 0} ${playerAdmin_currencyType} to ${playerName}`, () => playersApi.addCurrency(dbPlayerId, { currencyId: playerAdmin_currencyType === "Scrip" ? 1 : 0, amount: Number(playerAdmin_currencyAmount) || 0, confirmation: "ADD CURRENCY" }), `${playerName}'s ${playerAdmin_currencyType} was updated. Relog required.`, { actionType: `Give ${playerAdmin_currencyType}`, target: playerName, amount: String(Number(playerAdmin_currencyAmount) || 0) }), !dbPlayerId, "Database Edit. Relog required.")}
+          {playerAdmin_actionRow("intel", "Give Intel", <input type="number" min="1" value={playerAdmin_intelAmount} onChange={(event) => playerAdmin_setIntelAmount(event.target.value)} />, "Give", () => playerAdmin_runAction("intel", `Giving ${Number(playerAdmin_intelAmount) || 0} Intel to ${playerName}`, () => playersApi.addIntel(dbPlayerId, { amount: Number(playerAdmin_intelAmount) || 0, confirmation: "ADD INTEL" }), `${playerName}'s Intel was updated. Relog required.`, { actionType: "Give Intel", target: playerName, amount: String(Number(playerAdmin_intelAmount) || 0) }), !dbPlayerId, "Database Edit. Relog required.")}
+          {playerAdmin_actionRow("faction", "Give Faction Reputation", <><select value={playerAdmin_factionName} onChange={(event) => playerAdmin_setFactionName(event.target.value)}><option>Atreides</option><option>Harkonnen</option><option>Smuggler</option></select><input type="number" min="1" max="12474" value={playerAdmin_factionAmount} onChange={(event) => playerAdmin_setFactionAmount(event.target.value)} /></>, "Give", () => playerAdmin_runAction("faction", `Giving ${Number(playerAdmin_factionAmount) || 0} ${playerAdmin_factionName} reputation to ${playerName}`, () => playersApi.addFactionReputation(dbPlayerId, { factionId: playerAdmin_factionIds[playerAdmin_factionName] || 1, amount: Number(playerAdmin_factionAmount) || 0, confirmation: "ADD FACTION REPUTATION" }), `${playerName}'s faction reputation was updated. Relog required.`, { actionType: "Give Faction Reputation", target: playerAdmin_factionName, amount: String(Number(playerAdmin_factionAmount) || 0) }), !dbPlayerId, "Database Edit. Relog required.")}
         </div><div className="playerAdmin_section"><h5>Give Items</h5><p>Search the item catalog, select the exact item, then add one or more entries before granting them to the player.</p><ItemCatalogSelector selected={playerAdmin_selectedItem} onSelect={playerAdmin_chooseItem} /><div className="playerAdmin_actionRow"><span>Selected Item</span><input className="package-item-quantity-input" type="number" min="1" value={playerAdmin_quantity} onChange={(event) => playerAdmin_setQuantity(event.target.value)} /><input className="package-item-durability-input" type="number" min="0" value={playerAdmin_durability} onChange={(event) => playerAdmin_setDurability(event.target.value)} /><button disabled={!playerAdmin_selectedItem} onClick={playerAdmin_addSelectedItem}>Add Item</button><button disabled={!playerAdmin_multiList.length} onClick={() => playerAdmin_setMultiList([])}>Clear</button></div>
           {playerAdmin_multiList.length ? <div className="table-wrap package-items-table playerAdmin_itemsTable"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Durability</th><th>Actions</th></tr></thead><tbody>{playerAdmin_multiList.map((item, index) => <tr key={`${item.itemName || item.itemId}-${index}`}><td><PackageItemPreview item={item} /></td><td>{catalogItemName(item)}</td><td>{catalogItemId(item)}</td><td>{item.quantity}</td><td>{item.durability}</td><td className="package-actions-cell"><button className="danger" onClick={() => playerAdmin_setMultiList(playerAdmin_multiList.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></td></tr>)}</tbody></table></div> : <div className="empty playerAdmin_empty">No items queued yet.</div>}
-          <div className="playerAdmin_actionRow"><span>Grant Items</span><button disabled={!playerAdmin_canRunLiveAction || (!playerAdmin_multiList.length && !playerAdmin_selectedItem) || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_giveMultipleItems()}>{playerAdmin_multiList.length > 1 ? "Give Multiple Items" : "Give Item"}</button><InlineActionResult result={playerAdmin_actionResult} resultKey="giveMultiple" /></div></div></section>
+          <div className="playerAdmin_actionGroup"><div className="playerAdmin_actionRow"><span>Grant Items</span><button disabled={!playerAdmin_canRunLiveAction || (!playerAdmin_multiList.length && !playerAdmin_selectedItem) || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_giveMultipleItems()}>{playerAdmin_multiList.length > 1 ? "Give Multiple Items" : "Give Item"}</button><InlineActionResult result={playerAdmin_actionResult} resultKey="giveMultiple" /></div><p className="playerAdmin_actionNote">Live Command. Player must be online.</p></div></div></section>
         {playerAdmin_toggleBox("character_inventory", "Inventory", <PlayerDetailTab playerId={dbPlayerId} tab="inventory" onError={onError} />)}
         {playerAdmin_toggleBox("character_log", "Character Action Log", playerAdmin_actionLog.length ? playerAdmin_table(["Date / Time", "Admin", "Action Type", "Target", "Amount", "Notes"], playerAdmin_actionLog) : <p>No character actions have been recorded in this layout yet.</p>)}
       </div>}
-      {playerAdmin_activeTab === "Crafting" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Crafting Browser</h4><p>Select a category to view verified in-game crafting recipe IDs, then unlock the recipe for the selected player.</p><div className="playerAdmin_filterRow"><select value={playerAdmin_craftingCategory} onChange={(playerAdmin_event) => playerAdmin_setCraftingCategory(playerAdmin_event.target.value)}><option value="">All Categories</option>{playerAdmin_craftingCategories.map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select><button disabled={!dbPlayerId || playerAdmin_craftingLoading} onClick={() => playerAdmin_loadCraftingRecipes()}>{playerAdmin_craftingLoading ? "Loading..." : "Reload"}</button><span className="playerAdmin_note">{playerAdmin_filteredCraftingRows.length} recipe{playerAdmin_filteredCraftingRows.length === 1 ? "" : "s"}</span></div>{playerAdmin_craftingError ? <p className="playerAdmin_note danger">{playerAdmin_craftingError}</p> : playerAdmin_craftingTable}</section></div>}
-      {playerAdmin_activeTab === "Research" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Research Browser</h4><p>Select a research category and product group to view verified in-game tech knowledge keys.</p><div className="playerAdmin_filterRow"><select value={playerAdmin_researchCategory} onChange={(playerAdmin_event) => { playerAdmin_setResearchCategory(playerAdmin_event.target.value); playerAdmin_setProductGroup(""); }}><option value="">All Categories</option>{Object.keys(playerAdmin_researchGroups).map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select>{playerAdmin_researchCategory && <select value={playerAdmin_productGroup} onChange={(playerAdmin_event) => playerAdmin_setProductGroup(playerAdmin_event.target.value)}><option value="">All Product Groups</option>{playerAdmin_researchGroups[playerAdmin_researchCategory].map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select>}<button disabled={!dbPlayerId || playerAdmin_researchLoading} onClick={() => playerAdmin_loadResearchItems()}>{playerAdmin_researchLoading ? "Loading..." : "Reload"}</button><span className="playerAdmin_note">{playerAdmin_filteredResearchRows.length} entr{playerAdmin_filteredResearchRows.length === 1 ? "y" : "ies"}</span></div>{playerAdmin_researchError ? <p className="playerAdmin_note danger">{playerAdmin_researchError}</p> : playerAdmin_researchTable}</section></div>}
-      {playerAdmin_activeTab === "Skills" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Skill Point Controls</h4>{playerAdmin_actionRow("skillPoints", "Set Skill Points", <input type="number" min="0" value={playerAdmin_skillPointsAmount} onChange={(event) => playerAdmin_setSkillPointsAmount(event.target.value)} />, "Set", () => playerAdmin_runAction("skillPoints", `Setting ${playerName}'s skill points to ${Number(playerAdmin_skillPointsAmount) || 0}`, () => playerAdmin_runTask(() => playersApi.setSkillPoints(actionPlayerId, Number(playerAdmin_skillPointsAmount) || 0)), `${playerName}'s skill points were updated.`, { actionType: "Set Skill Points", target: playerName, amount: String(Number(playerAdmin_skillPointsAmount) || 0) }), !playerAdmin_canRunLiveAction)}</section><section className="playerAdmin_box"><h4>Skill Browser</h4><p>Select a skill school, then open a skill tree to set ranks with the bars.</p><div className="playerAdmin_filterRow"><select value={playerAdmin_skillSchool} onChange={(playerAdmin_event) => playerAdmin_setSkillSchool(playerAdmin_event.target.value)}><option value="">Select Skill School</option>{Object.keys(playerAdmin_skillTrees).map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select><button disabled={playerAdmin_skillCatalogLoading} onClick={() => playerAdmin_loadSkillCatalog()}>{playerAdmin_skillCatalogLoading ? "Loading..." : "Reload Modules"}</button><span className="playerAdmin_note">{Object.keys(playerAdmin_skillChanges).length} unsaved change{Object.keys(playerAdmin_skillChanges).length === 1 ? "" : "s"}</span></div>{playerAdmin_skillCatalogError && <p className="playerAdmin_note danger">{playerAdmin_skillCatalogError}</p>}{playerAdmin_skillSchool && <div className="playerAdmin_section"><h5>{playerAdmin_skillSchool}</h5>{playerAdmin_skillTrees[playerAdmin_skillSchool].map((playerAdmin_tree) => playerAdmin_toggleBox(`skill_${playerAdmin_skillSchool}_${playerAdmin_tree.tree}`, playerAdmin_tree.tree, playerAdmin_tree.cards.length ? playerAdmin_skillCards(playerAdmin_skillSchool, playerAdmin_tree.cards) : <p>Leave empty for now.</p>))}{Object.keys(playerAdmin_skillChanges).length > 0 && <div className="playerAdmin_saveBar"><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={() => playerAdmin_saveSkillChanges()}>Save</button><button disabled={playerAdmin_actionResult?.pending} onClick={() => playerAdmin_discardSkillChanges()}>Discard</button><InlineActionResult result={playerAdmin_actionResult} resultKey="skillSave" /></div>}</div>}</section></div>}
-      {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><p>Complete or reset story, contract, codex, and tutorial progress for the selected player. Rows with a parent dependency should be handled with that dependency in mind.</p><div className="playerAdmin_filterRow"><button disabled={!dbPlayerId || playerAdmin_journeyLoading} onClick={() => playerAdmin_loadJourneyRows()}>{playerAdmin_journeyLoading ? "Loading..." : "Reload"}</button><span className="playerAdmin_note">{playerAdmin_journeyRows.story.length + playerAdmin_journeyRows.contract.length + playerAdmin_journeyRows.codex.length + playerAdmin_journeyRows.tutorial.length} journey entr{playerAdmin_journeyRows.story.length + playerAdmin_journeyRows.contract.length + playerAdmin_journeyRows.codex.length + playerAdmin_journeyRows.tutorial.length === 1 ? "y" : "ies"}</span></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_journeyRows.story.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.story, "No story entries were found."))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_journeyRows.contract.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.contract, "No contract entries were found."))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_journeyRows.codex.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.codex, "No codex entries were found."))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_journeyRows.tutorial.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.tutorial, "No tutorial entries were found."))}</section></div>}
-      {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>Dangerous player actions require confirmation before running.</p><div className="playerAdmin_section"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={() => {
+      {playerAdmin_activeTab === "Crafting" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Crafting Browser</h4><p>Database Edit. Player must be offline.</p><div className="playerAdmin_filterRow"><select value={playerAdmin_craftingCategory} onChange={(playerAdmin_event) => playerAdmin_setCraftingCategory(playerAdmin_event.target.value)}><option value="">All Categories</option>{playerAdmin_craftingCategories.map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select><button disabled={!dbPlayerId || playerAdmin_craftingLoading} onClick={() => playerAdmin_loadCraftingRecipes()}>{playerAdmin_craftingLoading ? "Loading..." : "Reload"}</button><span className="playerAdmin_note">{playerAdmin_filteredCraftingRows.length} recipe{playerAdmin_filteredCraftingRows.length === 1 ? "" : "s"}</span></div>{playerAdmin_craftingError ? <p className="playerAdmin_note danger">{playerAdmin_craftingError}</p> : playerAdmin_craftingTable}</section></div>}
+      {playerAdmin_activeTab === "Research" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Research Browser</h4><p>Database Edit. Player must be offline.</p><div className="playerAdmin_filterRow"><select value={playerAdmin_researchCategory} onChange={(playerAdmin_event) => { playerAdmin_setResearchCategory(playerAdmin_event.target.value); playerAdmin_setProductGroup(""); }}><option value="">All Categories</option>{Object.keys(playerAdmin_researchGroups).map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select>{playerAdmin_researchCategory && <select value={playerAdmin_productGroup} onChange={(playerAdmin_event) => playerAdmin_setProductGroup(playerAdmin_event.target.value)}><option value="">All Product Groups</option>{playerAdmin_researchGroups[playerAdmin_researchCategory].map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select>}<button disabled={!dbPlayerId || playerAdmin_researchLoading} onClick={() => playerAdmin_loadResearchItems()}>{playerAdmin_researchLoading ? "Loading..." : "Reload"}</button><span className="playerAdmin_note">{playerAdmin_filteredResearchRows.length} entr{playerAdmin_filteredResearchRows.length === 1 ? "y" : "ies"}</span></div>{playerAdmin_researchError ? <p className="playerAdmin_note danger">{playerAdmin_researchError}</p> : playerAdmin_researchTable}</section></div>}
+      {playerAdmin_activeTab === "Skills" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Skill Point Controls</h4>{playerAdmin_actionRow("skillPoints", "Set Skill Points", <input type="number" min="0" value={playerAdmin_skillPointsAmount} onChange={(event) => playerAdmin_setSkillPointsAmount(event.target.value)} />, "Set", () => playerAdmin_runAction("skillPoints", `Setting ${playerName}'s skill points to ${Number(playerAdmin_skillPointsAmount) || 0}`, () => playerAdmin_runTask(() => playersApi.setSkillPoints(actionPlayerId, Number(playerAdmin_skillPointsAmount) || 0)), `${playerName}'s skill points were updated.`, { actionType: "Set Skill Points", target: playerName, amount: String(Number(playerAdmin_skillPointsAmount) || 0) }), !playerAdmin_canRunLiveAction, "Live Command. Player must be online.")}</section><section className="playerAdmin_box"><h4>Skill Browser</h4><p>Live Command. Player must be online.</p><div className="playerAdmin_filterRow"><select value={playerAdmin_skillSchool} onChange={(playerAdmin_event) => playerAdmin_setSkillSchool(playerAdmin_event.target.value)}><option value="">Select Skill School</option>{Object.keys(playerAdmin_skillTrees).map((playerAdmin_option) => <option key={playerAdmin_option}>{playerAdmin_option}</option>)}</select><button disabled={playerAdmin_skillCatalogLoading} onClick={() => playerAdmin_loadSkillCatalog()}>{playerAdmin_skillCatalogLoading ? "Loading..." : "Reload Modules"}</button><span className="playerAdmin_note">{Object.keys(playerAdmin_skillChanges).length} unsaved change{Object.keys(playerAdmin_skillChanges).length === 1 ? "" : "s"}</span></div>{playerAdmin_skillCatalogError && <p className="playerAdmin_note danger">{playerAdmin_skillCatalogError}</p>}{playerAdmin_skillSchool && <div className="playerAdmin_section"><h5>{playerAdmin_skillSchool}</h5>{playerAdmin_skillTrees[playerAdmin_skillSchool].map((playerAdmin_tree) => playerAdmin_toggleBox(`skill_${playerAdmin_skillSchool}_${playerAdmin_tree.tree}`, playerAdmin_tree.tree, playerAdmin_tree.cards.length ? playerAdmin_skillCards(playerAdmin_skillSchool, playerAdmin_tree.cards) : <p>Leave empty for now.</p>))}{Object.keys(playerAdmin_skillChanges).length > 0 && <div className="playerAdmin_saveBar"><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={() => playerAdmin_saveSkillChanges()}>Save</button><button disabled={playerAdmin_actionResult?.pending} onClick={() => playerAdmin_discardSkillChanges()}>Discard</button><InlineActionResult result={playerAdmin_actionResult} resultKey="skillSave" /></div>}</div>}</section></div>}
+      {playerAdmin_activeTab === "Journey" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Journey Browser</h4><p>Database Edit. Relog required.</p><div className="playerAdmin_filterRow"><button disabled={!dbPlayerId || playerAdmin_journeyLoading} onClick={() => playerAdmin_loadJourneyRows()}>{playerAdmin_journeyLoading ? "Loading..." : "Reload"}</button><span className="playerAdmin_note">{playerAdmin_journeyRows.story.length + playerAdmin_journeyRows.contract.length + playerAdmin_journeyRows.codex.length + playerAdmin_journeyRows.tutorial.length} journey entr{playerAdmin_journeyRows.story.length + playerAdmin_journeyRows.contract.length + playerAdmin_journeyRows.codex.length + playerAdmin_journeyRows.tutorial.length === 1 ? "y" : "ies"}</span></div>{playerAdmin_journeyError && <p className="playerAdmin_note danger">{playerAdmin_journeyError}</p>}{playerAdmin_toggleBox("journey_story", `Story (${playerAdmin_journeyRows.story.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.story, "No story entries were found."))}{playerAdmin_toggleBox("journey_contract", `Contracts (${playerAdmin_journeyRows.contract.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.contract, "No contract entries were found."))}{playerAdmin_toggleBox("journey_codex", `Codex (${playerAdmin_journeyRows.codex.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.codex, "No codex entries were found."))}{playerAdmin_toggleBox("journey_tutorial", `Tutorial (${playerAdmin_journeyRows.tutorial.length})`, playerAdmin_journeyTable(playerAdmin_journeyRows.tutorial, "No tutorial entries were found."))}</section></div>}
+      {playerAdmin_activeTab === "Admin" && <div className="playerAdmin_content"><section className="playerAdmin_box"><h4>Player Admin Actions</h4><p>These actions are sent to the running server and require the player to be online. Dangerous actions still require confirmation before running.</p><div className="playerAdmin_section"><h5>Danger Zone</h5><div className="playerAdmin_buttonRow"><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={() => {
         if (!window.confirm(`Kick ${playerName} from the server?`)) return;
         void playerAdmin_runAction("adminKick", `Kicking ${playerName}`, () => playerAdmin_runTask(() => playersApi.kick(actionPlayerId)), `${playerName} was kicked from the server.`, { actionType: "Kick Player", target: playerName, amount: "1" }, "danger");
       }}>Kick Player</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={() => {
@@ -1880,7 +1880,7 @@ function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, player
       }}>Wipe Inventory</button><button className="danger" disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={() => {
         if (!window.confirm(`Reset ${playerName}'s progression?`)) return;
         void playerAdmin_runAction("adminReset", `Resetting ${playerName}'s progression`, () => playerAdmin_runTask(() => playersApi.resetProgression(actionPlayerId, "RESET PROGRESSION")), `${playerName}'s progression was reset.`, { actionType: "Reset Progression", target: playerName, amount: "1" }, "danger");
-      }}>Reset Progression</button><InlineActionResult result={playerAdmin_actionResult} resultKey="adminKick" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminWipe" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminReset" /></div></div></section><section className="playerAdmin_box"><h4>Movement / Vehicles</h4><p>Use current position to copy known coordinates, edit X/Y/Z if needed, then teleport or spawn a vehicle near the player.</p><div className="playerAdmin_actionRow"><span>Coordinates</span><input value={playerAdmin_coords.x} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, x: event.target.value })} placeholder="X" /><input value={playerAdmin_coords.y} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, y: event.target.value })} placeholder="Y" /><input value={playerAdmin_coords.z} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, z: event.target.value })} placeholder="Z" /><input value={playerAdmin_coords.yaw} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, yaw: event.target.value })} placeholder="Yaw" /><button disabled={!dbPlayerId || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_runAction("adminPosition", `Loading ${playerName}'s position`, playerAdmin_useCurrentPosition, "Position loaded. Edit X/Y/Z before teleporting if needed.", { actionType: "Load Position", target: playerName, amount: "1" })}>Use Current Position</button><InlineActionResult result={playerAdmin_actionResult} resultKey="adminPosition" /></div><div className="playerAdmin_actionRow"><span>Teleport</span><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={() => {
+      }}>Reset Progression</button><InlineActionResult result={playerAdmin_actionResult} resultKey="adminKick" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminWipe" /><InlineActionResult result={playerAdmin_actionResult} resultKey="adminReset" /></div></div></section><section className="playerAdmin_box"><h4>Movement / Vehicles</h4><p>Live Command. Player must be online.</p><div className="playerAdmin_actionRow"><span>Coordinates</span><input value={playerAdmin_coords.x} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, x: event.target.value })} placeholder="X" /><input value={playerAdmin_coords.y} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, y: event.target.value })} placeholder="Y" /><input value={playerAdmin_coords.z} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, z: event.target.value })} placeholder="Z" /><input value={playerAdmin_coords.yaw} onChange={(event) => playerAdmin_setCoords({ ...playerAdmin_coords, yaw: event.target.value })} placeholder="Yaw" /><button disabled={!dbPlayerId || playerAdmin_actionResult?.pending} onClick={() => void playerAdmin_runAction("adminPosition", `Loading ${playerName}'s position`, playerAdmin_useCurrentPosition, "Position loaded. Edit X/Y/Z before teleporting if needed.", { actionType: "Load Position", target: playerName, amount: "1" })}>Use Current Position</button><InlineActionResult result={playerAdmin_actionResult} resultKey="adminPosition" /></div><div className="playerAdmin_actionRow"><span>Teleport</span><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={() => {
         if (!window.confirm(`Teleport ${playerName} to X=${playerAdmin_coords.x} Y=${playerAdmin_coords.y} Z=${playerAdmin_coords.z}?`)) return;
         void playerAdmin_runAction("adminTeleport", `Teleporting ${playerName}`, () => playerAdmin_runTask(() => playersApi.teleport(actionPlayerId, { x: Number(playerAdmin_coords.x), y: Number(playerAdmin_coords.y), z: Number(playerAdmin_coords.z), yaw: Number(playerAdmin_coords.yaw) })), `${playerName} was teleported.`, { actionType: "Teleport", target: playerName, amount: "1" });
       }}>Teleport</button><InlineActionResult result={playerAdmin_actionResult} resultKey="adminTeleport" /></div><div className="playerAdmin_actionRow"><span>Vehicle</span><select value={playerAdmin_vehicleId} onChange={(event) => { const nextVehicle = event.target.value; playerAdmin_setVehicleId(nextVehicle); playerAdmin_setVehicleTemplate([...(playerAdmin_vehicleCatalog[nextVehicle] || [])].sort((a, b) => friendlyVehicleTemplateName(a).localeCompare(friendlyVehicleTemplateName(b)))[0] || ""); }}>{playerAdmin_vehicleIds.length === 0 && <option value="">Manual Vehicle ID</option>}{playerAdmin_vehicleIds.map((id) => <option key={id} value={id}>{friendlyVehicleName(id)}</option>)}</select><select value={playerAdmin_vehicleTemplate} onChange={(event) => playerAdmin_setVehicleTemplate(event.target.value)}>{playerAdmin_selectedTemplates.length === 0 && <option value="">Manual Template</option>}{playerAdmin_selectedTemplates.map((template) => <option key={template} value={template}>{friendlyVehicleTemplateName(template)}</option>)}</select><button disabled={!playerAdmin_canRunLiveAction || playerAdmin_actionResult?.pending} onClick={() => {
@@ -1971,8 +1971,9 @@ function PlayerActions({ dbPlayerId, actionPlayerId, playerName, setTask, onErro
     onError("");
     showPlayerActionResult(key, pendingText, "neutral", true);
     try {
-      await action();
-      showPlayerActionResult(key, successText, successTone);
+      const response = await action();
+      const responseText = formatMutationResult(response);
+      showPlayerActionResult(key, responseText && responseText !== "Action completed." ? responseText : successText, successTone);
     } catch (error) {
       showPlayerActionResult(key, typeof failureText === "function" ? failureText(error) : failureText || friendlyInlineError(error), "danger");
     }
@@ -2044,7 +2045,7 @@ function PlayerActions({ dbPlayerId, actionPlayerId, playerName, setTask, onErro
     <div className="action-sections">
       <section className="action-section">
         <h4>Give Items</h4>
-        <p>Search the item catalog, select the exact item, then grant it to the player.</p>
+        <p>Live Command. Player must be online.</p>
         <ItemCatalogSelector selected={selectedItem} onSelect={choosePlayerItem} />
         <div className="action-line item-grant-row">
           <label className="compact-field">Quantity<input type="number" min="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
@@ -2082,6 +2083,7 @@ function PlayerActions({ dbPlayerId, actionPlayerId, playerName, setTask, onErro
 
       <section className="action-section">
         <h4>XP / Skills</h4>
+        <p>Live Command. Player must be online.</p>
         <div className="action-line">
           <label>XP Amount<input value={xp} onChange={(event) => setXp(event.target.value)} /></label>
           <button disabled={!canRunCliAction || actionResult?.pending} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => {
@@ -2123,7 +2125,7 @@ function PlayerActions({ dbPlayerId, actionPlayerId, playerName, setTask, onErro
 
       <section className="action-section">
         <h4>Movement / Vehicles</h4>
-        <p>Use current position only to copy known coordinates; edit X/Y/Z before teleporting if needed. Yaw defaults to 0 when unavailable.</p>
+        <p>Live Command. Player must be online.</p>
         <div className="action-line">
           <label>X<input value={coords.x} onChange={(event) => setCoords({ ...coords, x: event.target.value })} /></label>
           <label>Y<input value={coords.y} onChange={(event) => setCoords({ ...coords, y: event.target.value })} /></label>
@@ -2169,50 +2171,54 @@ function PlayerActions({ dbPlayerId, actionPlayerId, playerName, setTask, onErro
 
       <section className="action-section">
         <h4>Currency / Factions</h4>
-        <p>These direct DB mutations create a backup first and use the DB player ID.</p>
+        <p>Database Edit. Relog required.</p>
         <div className="action-line">
           <label>Currency ID<input value={currency.currencyId} onChange={(event) => setCurrency({ ...currency, currencyId: event.target.value })} /></label>
           <label>Currency Amount<input value={currency.amount} onChange={(event) => setCurrency({ ...currency, amount: event.target.value })} /></label>
           <button disabled={actionResult?.pending} onClick={() => run(async () => {
-            if (!window.confirm(`Add ${currency.amount} currency ${currency.currencyId || "Solaris"} to ${playerName}? A backup will be created first.`)) return;
-            await runPlayerAction("currency", `Adding currency to ${playerName}`, () => runDirect(() => playersApi.addCurrency(dbPlayerId, { currencyId: Number(currency.currencyId || 0), amount: Number(currency.amount), confirmation: "ADD CURRENCY" })), `${playerName}'s currency was updated.`, "success", (error) => `Failed to update ${playerName}'s currency. ${friendlyInlineError(error)}`);
+            if (!window.confirm(`Add ${currency.amount} currency ${currency.currencyId || "Solari Credit"} to ${playerName}?`)) return;
+            await runPlayerAction("currency", `Adding currency to ${playerName}`, () => runDirect(() => playersApi.addCurrency(dbPlayerId, { currencyId: Number(currency.currencyId || 0), amount: Number(currency.amount), confirmation: "ADD CURRENCY" })), `${playerName}'s Solari Credit was updated. Relog required.`, "success", (error) => `Failed to update ${playerName}'s currency. ${friendlyInlineError(error)}`);
           })}>Add Currency</button>
           <InlineActionResult result={actionResult} resultKey="currency" />
         </div>
+        <p className="action-help-note">Database Edit. Relog required.</p>
         <div className="action-line">
           <label>Faction ID<input value={faction.factionId} onChange={(event) => setFaction({ ...faction, factionId: event.target.value })} /></label>
           <label>Reputation Amount<input value={faction.amount} onChange={(event) => setFaction({ ...faction, amount: event.target.value })} /></label>
           <button disabled={actionResult?.pending} onClick={() => run(async () => {
-            if (!window.confirm(`Add ${faction.amount} reputation for faction ${faction.factionId} to ${playerName}? A backup will be created first.`)) return;
-            await runPlayerAction("faction", `Adding faction reputation to ${playerName}`, () => runDirect(() => playersApi.addFactionReputation(dbPlayerId, { factionId: Number(faction.factionId), amount: Number(faction.amount), confirmation: "ADD FACTION REPUTATION" })), `${playerName}'s faction reputation was updated.`, "success", (error) => `Failed to update ${playerName}'s faction reputation. ${friendlyInlineError(error)}`);
+            if (!window.confirm(`Add ${faction.amount} reputation for faction ${faction.factionId} to ${playerName}?`)) return;
+            await runPlayerAction("faction", `Adding faction reputation to ${playerName}`, () => runDirect(() => playersApi.addFactionReputation(dbPlayerId, { factionId: Number(faction.factionId), amount: Number(faction.amount), confirmation: "ADD FACTION REPUTATION" })), `${playerName}'s faction reputation was updated. Relog required.`, "success", (error) => `Failed to update ${playerName}'s faction reputation. ${friendlyInlineError(error)}`);
           })}>Add Faction Reputation</button>
           <InlineActionResult result={actionResult} resultKey="faction" />
         </div>
+        <p className="action-help-note">Database Edit. Relog required.</p>
       </section>
 
       <section className="action-section">
         <h4>Repair / Refuel</h4>
-        <p>Offline DB-backed repair/refuel actions create a backup first.</p>
+        <p>Database Edit. Player must be offline.</p>
         <div className="action-line">
           <button disabled={actionResult?.pending} onClick={() => run(async () => {
-            if (!window.confirm(`Repair gear for ${playerName}? A backup will be created first.`)) return;
+            if (!window.confirm(`Repair gear for ${playerName}?`)) return;
             await runPlayerAction("repair", `Repairing ${playerName}'s gear`, () => runDirect(() => playersApi.repairGear(dbPlayerId, "REPAIR GEAR")), `${playerName}'s gear was repaired.`, "success", (error) => `Failed to repair ${playerName}'s gear. ${friendlyInlineError(error)}`);
           })}>Repair Gear</button>
           <InlineActionResult result={actionResult} resultKey="repair" />
         </div>
+        <p className="action-help-note">Database Edit. Player must be offline.</p>
         <div className="action-line">
           <label>Refuel Vehicle Actor ID<input value={refuelVehicleId} onChange={(event) => setRefuelVehicleId(event.target.value)} /></label>
           <button disabled={actionResult?.pending} onClick={() => run(async () => {
-            if (!window.confirm(`Refuel vehicle ${refuelVehicleId} owned by ${playerName}? A backup will be created first.`)) return;
+            if (!window.confirm(`Refuel vehicle ${refuelVehicleId} owned by ${playerName}?`)) return;
             await runPlayerAction("refuel", `Refueling vehicle ${refuelVehicleId}`, () => runDirect(() => playersApi.refuelVehicle(dbPlayerId, { vehicleId: refuelVehicleId, confirmation: "REFUEL VEHICLE" })), `Vehicle ${refuelVehicleId} was refueled.`, "success", (error) => `Failed to refuel vehicle ${refuelVehicleId}. ${friendlyInlineError(error)}`);
           })}>Refuel Vehicle</button>
           <InlineActionResult result={actionResult} resultKey="refuel" />
         </div>
+        <p className="action-help-note">Database Edit. Player must be offline. Map/server reload may be required.</p>
       </section>
 
       <section className="action-section danger-section">
         <h4>Dangerous Actions</h4>
-        <p>These live CLI actions are destructive or disruptive and still require backend confirmation phrases.</p>
+        <p>Live Command. Player must be online.</p>
         <div className="action-row">
           <button className="danger" disabled={!canRunCliAction || actionResult?.pending} title={!canRunCliAction ? cliDisabledReason : undefined} onClick={() => run(async () => {
             if (!window.confirm(`Kick ${playerName}?`)) return;
@@ -2461,6 +2467,31 @@ function parseUpdateTask(task: Task) {
   return { status: current || latest ? "Completed" : "Version details unavailable", current, latest, reason: current || latest ? summarizeCommandText(text) : "Unable to parse version details from completed check." };
 }
 
+function loadPersistedUpdateTask(key: string) {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Task;
+    return parsed?.id ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistUpdateTask(key: string, task: Task | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (task && !isTerminalTask(task.status)) {
+      window.localStorage.setItem(key, JSON.stringify(task));
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // The visible page state still works if localStorage is unavailable.
+  }
+}
+
 function GameUpdateProgress({ task, repairTask, onRetry, onFixSteamcmd }: { task: Task; repairTask: Task | null; onRetry: () => Promise<void>; onFixSteamcmd: () => Promise<void> }) {
   const progress = summarizeGameUpdateProgress(task);
   const running = !isTerminalTask(task.status);
@@ -2492,18 +2523,29 @@ function summarizeGameUpdateProgress(task: Task) {
   const text = task.logLines.map((line) => line.line).join("\n");
   const latestLine = [...task.logLines].reverse().map((line) => line.line.trim()).find(Boolean) || task.progressMessage || task.currentStep || "";
   if (task.status === "succeeded") {
-    return { title: "Update Complete", percent: 100, message: "The game server update finished and the stack restart was started." };
+    return { title: "Update Complete", percent: 100, message: "The game server update is complete. The server is coming back up now." };
   }
   if (task.status === "failed") {
     return { title: "Update Failed", percent: Math.max(5, gameUpdatePercent(text)), message: conciseTaskError(task) };
   }
 
-  const retryMatch = text.match(/Retrying(?: app install)? in (\d+)s/i);
-  if (retryMatch) {
+  const fixIndex = text.lastIndexOf("Detected a common SteamCMD cache error");
+  const attemptIndexes = [...text.matchAll(/SteamCMD install attempt\s+\d+\/\d+/gi)].map((match) => match.index || 0);
+  const latestAttemptIndex = attemptIndexes.length ? attemptIndexes[attemptIndexes.length - 1] : -1;
+  if (fixIndex >= 0 && fixIndex > latestAttemptIndex) {
+    return { title: "Fixing SteamCMD", percent: Math.max(45, gameUpdatePercent(text)), message: "Detected a common Steam download error. Applying the automatic SteamCMD fix, then retrying the update." };
+  }
+  if (!isSteamcmdUpdateActive(text)) {
+    return { title: "Updating", percent: gameUpdatePercent(text), message: friendlyGameUpdateMessage(text, latestLine) };
+  }
+  const retryMatches = [...text.matchAll(/Retrying(?: app install)? in (\d+)s/gi)];
+  const retryMatch = retryMatches[retryMatches.length - 1];
+  const retryIndex = retryMatch?.index ?? -1;
+  if (retryMatch && retryIndex > latestAttemptIndex) {
     return { title: "Updating", percent: Math.max(45, gameUpdatePercent(text)), message: `Steam download hit a temporary problem. Retrying in ${retryMatch[1]} seconds.` };
   }
   const attemptMatch = text.match(/SteamCMD install attempt\s+(\d+)\/(\d+)/i);
-  const steamcmdStage = isSteamcmdUpdateActive(text) ? summarizeSteamcmdStage(task.logLines.map((line) => line.line), attemptMatch) : null;
+  const steamcmdStage = summarizeSteamcmdStage(task.logLines.map((line) => line.line), attemptMatch);
   if (steamcmdStage) {
     return { title: steamcmdStage.title, percent: Math.max(42, gameUpdatePercent(text), steamcmdStage.percent), message: steamcmdStage.message };
   }
@@ -2587,15 +2629,15 @@ function gameUpdatePercent(text: string) {
 }
 
 function friendlyGameUpdateMessage(text: string, latestLine: string) {
-  if (/Pre-flight: check Steam/i.test(text)) return "Checking Steam for the latest available server build.";
-  if (/Check Docker volume free space/i.test(text)) return "Checking available disk space before downloading files.";
-  if (/Stop game servers before update/i.test(text)) return "Stopping game servers before replacing server files.";
-  if (/Download\/update server files with SteamCMD/i.test(text)) return "Downloading updated game server files.";
-  if (/Load updated Funcom image tarballs/i.test(text)) return "Loading updated game container images.";
-  if (/Detect loaded image tags/i.test(text)) return "Detecting updated image versions.";
-  if (/Run database update\/migration/i.test(text)) return "Running database migrations for the updated build.";
-  if (/Refresh generated map catalogs/i.test(text)) return "Refreshing generated map catalogs.";
   if (/Restarting Dune stack/i.test(text)) return "Restarting the Dune stack with the updated build.";
+  if (/Refresh generated map catalogs/i.test(text)) return "Refreshing generated map catalogs.";
+  if (/Run database update\/migration/i.test(text)) return "Running database migrations for the updated build.";
+  if (/Detect loaded image tags/i.test(text)) return "Detecting updated image versions.";
+  if (/Load updated Funcom image tarballs/i.test(text)) return "Loading updated game container images.";
+  if (/Download\/update server files with SteamCMD/i.test(text)) return "Downloading updated game server files.";
+  if (/Stop game servers before update/i.test(text)) return "Stopping game servers before replacing server files.";
+  if (/Check Docker volume free space/i.test(text)) return "Checking available disk space before downloading files.";
+  if (/Pre-flight: check Steam/i.test(text)) return "Checking Steam for the latest available server build.";
   return latestLine && !/^\s*Task started/i.test(latestLine) ? friendlyGameUpdateLine(latestLine) : "Preparing the game update.";
 }
 
@@ -2726,6 +2768,7 @@ function friendlyStackUpdateLine(line: string) {
 
 function updateDisplayValue(status: Record<string, string>, key: "current" | "latest") {
   if (/checking/i.test(status.status)) return "Checking...";
+  if (/updating/i.test(status.status)) return status[key] || "Updating...";
   return status[key] || "Unknown";
 }
 
@@ -2795,7 +2838,7 @@ function PlayerDetailTab({ playerId, tab, onError }: { playerId: string; tab: st
   }, [playerId, tab]);
   async function deleteItem(row: Record<string, unknown>) {
     const itemId = String(row.id || "");
-    if (!window.confirm(`Delete item ${itemId} (${String(row.template_id || "")}) from player ${playerId}? A database backup will be created first.`)) return;
+    if (!window.confirm(`Delete item ${itemId} (${String(row.template_id || "")}) from player ${playerId}?`)) return;
     try {
       const response = await playersApi.deleteInventoryItem(playerId, itemId, "DELETE ITEM");
       setMessage(formatMutationResult(response));
@@ -2809,7 +2852,7 @@ function PlayerDetailTab({ playerId, tab, onError }: { playerId: string; tab: st
     }
   }
   const rows = Array.isArray(data?.rows) ? data.rows as Record<string, unknown>[] : data?.position ? [data.position as Record<string, unknown>] : [];
-  return <div>{data?.reason ? <p className="danger-note">{String(data.reason)}</p> : null}{message && <div className="result-panel"><strong>Mutation Result</strong><p>{message}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}<DataTable rows={rows} action={tab === "inventory" ? (row) => <button className="danger" onClick={(event) => { event.stopPropagation(); deleteItem(row); }}>Delete Item</button> : undefined} /></div>;
+  return <div>{data?.reason ? <p className="danger-note">{String(data.reason)}</p> : null}{tab === "inventory" && <p className="action-help-note">Database Edit. Relog or map/server reload may be required.</p>}{message && <div className="result-panel"><strong>Mutation Result</strong><p>{message}</p>{messageDetails && <TechnicalDetails text={messageDetails} />}</div>}<DataTable rows={rows} action={tab === "inventory" ? (row) => <button className="danger" onClick={(event) => { event.stopPropagation(); deleteItem(row); }}>Delete Item</button> : undefined} /></div>;
 }
 
 function LogsPanel({ selectedService, setSelectedService, text, setText, onError }: { selectedService: string; setSelectedService: (service: string) => void; text: string; setText: Dispatch<SetStateAction<string>>; onError: (text: string) => void }) {
@@ -2855,7 +2898,7 @@ function LogsPanel({ selectedService, setSelectedService, text, setText, onError
   return (
     <section className="panel">
       <h2>Logs</h2>
-      <div className="action-row">
+      <div className="action-row logs-action-row">
         <select value={selectedService} onChange={(event) => setSelectedService(event.target.value)}>
           {services.map((service) => <option key={service} value={service}>{friendlyServiceName(service)}</option>)}
         </select>
@@ -2863,6 +2906,7 @@ function LogsPanel({ selectedService, setSelectedService, text, setText, onError
         <button onClick={() => setStreaming(!streaming)}>{streaming ? "Stop Stream" : "Live Stream"}</button>
         <button onClick={() => setPaused(!paused)}>{paused ? "Resume" : "Pause"}</button>
         <a className="button-link" href={logsApi.downloadUrl(selectedService)}>Download</a>
+        <button className="logs-clear-button" onClick={() => setText("")}>Clear</button>
       </div>
       <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search Logs" />
       <LogViewer text={shown} />
@@ -2878,8 +2922,8 @@ function DatabasePanel() {
   const [columns, setColumns] = useState<Record<string, unknown>[]>([]);
   const [count, setCount] = useState("");
   const [sql, setSql] = useState("select * from dune.player_state limit 25");
-  const [confirmation, setConfirmation] = useState("");
-  const [queryResult, setQueryResult] = useState<{ columns?: { name: string }[]; rows?: Record<string, unknown>[] } | null>(null);
+  const [queryResult, setQueryResult] = useState<{ columns?: { name: string }[]; rows?: Record<string, unknown>[]; rowCount?: number; command?: string } | null>(null);
+  const [queryError, setQueryError] = useState("");
   const [queryRan, setQueryRan] = useState(false);
   const [databaseStatus, setDatabaseStatus] = useState<Record<string, unknown> | null>(null);
   const [databaseStatusError, setDatabaseStatusError] = useState("");
@@ -2922,6 +2966,10 @@ function DatabasePanel() {
     setSelected(table);
     setEditRow(null);
     setEditResult(null);
+    await refreshTablePreview(table);
+    window.setTimeout(() => previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+  async function refreshTablePreview(table: string) {
     const [nextPreview, nextColumns, nextCount] = await Promise.all([
       databaseApi.preview(schema, table, 50, 0),
       databaseApi.columns(schema, table),
@@ -2930,7 +2978,6 @@ function DatabasePanel() {
     setPreview(nextPreview);
     setColumns(nextColumns);
     setCount(String(nextCount.count));
-    window.setTimeout(() => previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
   async function loadDatabaseStatus() {
     setDatabaseStatusLoading(true);
@@ -2979,9 +3026,10 @@ function DatabasePanel() {
       const originalValues = Object.fromEntries(databasePreviewColumns(preview).map((column) => [column, editRow[column]]));
       const nextValues = Object.fromEntries(Object.entries(editValues).map(([key, value]) => [key, parseEditableDbValue(value, originalValues[key])]));
       const result = await databaseApi.updateRow(schema, selected, rowId, nextValues);
-      await open(selected);
+      await refreshTablePreview(selected);
+      setEditRow(null);
       setEditResult(result.updatedRows > 0
-        ? { status: "succeeded", title: "Row Saved Successfully" }
+        ? { status: "succeeded", title: "Row Saved Successfully", message: result.message }
         : { status: "failed", title: "Row Save Failed", message: "The row was not updated. Refresh the table and try again." });
     } catch (error) {
       setEditResult({ status: "failed", title: "Row Save Failed", message: error instanceof Error ? error.message : String(error) });
@@ -2989,7 +3037,25 @@ function DatabasePanel() {
   }
   async function runQuery() {
     setQueryRan(true);
-    setQueryResult(await databaseApi.query(sql, confirmation));
+    setQueryError("");
+    try {
+      setQueryResult(await databaseApi.query(sql));
+    } catch (error) {
+      setQueryResult(null);
+      setQueryError(error instanceof Error ? error.message : String(error));
+    }
+  }
+  async function exportQueryJson() {
+    setQueryRan(true);
+    setQueryError("");
+    try {
+      const result = await databaseApi.export(sql);
+      setQueryResult(result);
+      downloadText("query-export.json", JSON.stringify(result, null, 2));
+    } catch (error) {
+      setQueryResult(null);
+      setQueryError(error instanceof Error ? error.message : String(error));
+    }
   }
   async function searchColumns() {
     setSearchRan(true);
@@ -3002,8 +3068,12 @@ function DatabasePanel() {
   const previewRows = preview?.rows || [];
   const queryColumns = queryResult?.columns?.map((column) => column.name).filter((name) => name !== "__rowid");
   const queryRows = (queryResult?.rows || []).map((row) => omitInternalRowFields(row));
+  const queryAffectedRows = Number(queryResult?.rowCount ?? queryRows.length);
   return <section className="panel">
     <h2>Database Browser</h2>
+    <p className="database-browser-note">
+      Database edits may require relog or map/server restart.
+    </p>
     <div className="action-row"><button onClick={loadTables}>Refresh Tables</button><button onClick={() => setPasswordPanelOpen((open) => !open)}>Change Password</button><button disabled={databaseStatusLoading} onClick={loadDatabaseStatus}>{databaseStatusLoading ? "Checking..." : "Status"}</button></div>
     {passwordPanelOpen && <section className="result-panel database-password-panel">
       <div className="panel-title database-status-title"><strong>Change Database Password</strong><StatusPill value={databasePasswordResult?.status === "failed" ? "Failed" : databasePasswordResult?.status === "succeeded" ? "Saved" : "Info"} /></div>
@@ -3031,7 +3101,7 @@ function DatabasePanel() {
       {!databaseStatusError && Boolean(databaseServer?.version) && <TechnicalDetails title="Postgres version" text={String(databaseServer?.version)} />}
     </section>}
     <h3>Tables</h3>
-    <DataTable rows={tables} columns={["schema", "name", "estimated_rows"]} onRowClick={(row) => open(String(row.name))} />
+    <DataTable rows={tables} columns={["schema", "name", "row_count"]} onRowClick={(row) => open(String(row.name))} />
     <h3 ref={previewRef}>{selected ? `${schema}.${selected} (${count} rows)` : "Table Preview"}</h3>
     {!selected && <div className="empty database-empty">No table selected. Select a table to preview and edit rows.</div>}
     {selected && <section className="database-table-panel">
@@ -3040,6 +3110,10 @@ function DatabasePanel() {
         <DataTable rows={columns} />
       </details>
       {previewRows.length ? <DataTable rows={previewRows} columns={previewColumns} action={(row) => <button onClick={(event) => { event.stopPropagation(); startEdit(row); }}>Edit</button>} actionClassName="backup-table-actions" tableClassName="backup-table" /> : <div className="empty database-empty">This table has no rows to preview.</div>}
+      {!editRow && editResult && <section className={`result-panel ${editResult.status === "succeeded" ? "result-ok" : editResult.status === "failed" ? "result-fail" : "result-running"}`}>
+        <div className="panel-title"><strong>{editResult.title}</strong><StatusPill value={editResult.status === "succeeded" ? "Saved" : editResult.status === "failed" ? "Failed" : "Saving"} /></div>
+        {editResult.message && <p>{editResult.message}</p>}
+      </section>}
       {editRow && <section ref={editRef} className="result-panel database-edit-panel">
         <div className="panel-title"><strong>Edit Row</strong><StatusPill value={editResult?.status === "failed" ? "Failed" : editResult?.status === "succeeded" ? "Saved" : "Editing"} /></div>
         <div className="database-edit-grid">
@@ -3058,18 +3132,17 @@ function DatabasePanel() {
     <h3>Search Columns</h3>
     <div className="action-row"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search tables or columns" /><button onClick={searchColumns}>Search</button></div>
     {searchRan && (searchRows.length ? <DataTable rows={searchRows} /> : <div className="empty database-empty">No matching tables or columns found.</div>)}
-    <section className={`action-section database-advanced-section ${advancedSqlOpen ? "" : "collapsed-section"}`}>
-      <div className="panel-title">
-        <h3>Advanced SQL Console</h3>
-        <button className={`icon-toggle-button ${advancedSqlOpen ? "active" : ""}`} aria-label={advancedSqlOpen ? "Collapse Advanced SQL Console" : "Expand Advanced SQL Console"} title={advancedSqlOpen ? "Collapse" : "Expand"} onClick={() => setAdvancedSqlOpen(!advancedSqlOpen)}>{advancedSqlOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
-      </div>
-      {advancedSqlOpen && <>
+    <div className={`playerAdmin_toggle database-advanced-section ${advancedSqlOpen ? "open" : ""}`}>
+      <button className="playerAdmin_toggleHeader" aria-label={advancedSqlOpen ? "Collapse Advanced SQL Console" : "Expand Advanced SQL Console"} onClick={() => setAdvancedSqlOpen(!advancedSqlOpen)}>{advancedSqlOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Advanced SQL Console</span></button>
+      {advancedSqlOpen && <div className="playerAdmin_toggleBody">
         <textarea value={sql} onChange={(event) => setSql(event.target.value)} rows={5} />
-        <input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="RUN DESTRUCTIVE SQL for write queries" />
-        <div className="action-row"><button onClick={runQuery}>Run Query</button><button onClick={async () => setQueryResult(await databaseApi.export(sql))}>Export Query JSON</button></div>
-        {queryRan && (queryRows.length ? <DataTable rows={queryRows} columns={queryColumns} /> : <div className="empty database-empty">Query completed. No rows returned.</div>)}
-      </>}
-    </section>
+        <div className="action-row"><button onClick={runQuery}>Run Query</button><button onClick={exportQueryJson}>Export Query JSON</button></div>
+        {queryRan && queryError && <div className="empty database-empty danger-note">Query failed: {queryError}</div>}
+        {queryRan && !queryError && queryResult && (queryRows.length
+          ? <DataTable rows={queryRows} columns={queryColumns} />
+          : <div className="result-panel result-ok database-query-result">Query completed. Rows affected: {queryAffectedRows}.</div>)}
+      </div>}
+    </div>
   </section>;
 }
 
@@ -3390,19 +3463,16 @@ function CarePackagePanel({ onError }: { onError: (text: string) => void }) {
           <span>XP</span>
         </div>
         <label className="package-message-field">Send Message<textarea value={activeKit.sendMessage || ""} onChange={(event) => updateActiveKit({ sendMessage: event.target.value })} placeholder="Optional private whisper after this package is granted" /></label>
-        <div className={`package-items-toggle-panel ${packageItemsOpen ? "open" : ""}`}>
-          <div className="package-items-toggle-row">
-            <h4>Package Items</h4>
-            <button className={`icon-toggle-button ${packageItemsOpen ? "active" : ""}`} aria-label={packageItemsOpen ? "Collapse Package Items" : "Expand Package Items"} title={packageItemsOpen ? "Collapse" : "Expand"} onClick={() => setPackageItemsOpen(!packageItemsOpen)}>{packageItemsOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
-          </div>
-          {packageItemsOpen && <div className="package-items-picker-panel">
+        <div className={`playerAdmin_toggle ${packageItemsOpen ? "open" : ""}`}>
+          <button className="playerAdmin_toggleHeader" aria-label={packageItemsOpen ? "Collapse Package Items" : "Expand Package Items"} onClick={() => setPackageItemsOpen(!packageItemsOpen)}>{packageItemsOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Package Items</span></button>
+          {packageItemsOpen && <div className="playerAdmin_toggleBody"><div className="package-items-picker-panel">
             <ItemCatalogSelector selected={selectedPackageItem} onSelect={choosePackageItem} />
             <div className="action-line">
               <label>Quantity<input type="number" min="1" value={packageDraft.quantity} onChange={(event) => setPackageDraft({ ...packageDraft, quantity: event.target.value })} /></label>
               <label>Durability / Quality<input type="number" min="0" value={packageDraft.durability} onChange={(event) => setPackageDraft({ ...packageDraft, durability: event.target.value })} /></label>
               <button disabled={!selectedPackageItem} onClick={addPackageItem}>Add Item</button>
             </div>
-          </div>}
+          </div></div>}
         </div>
         {activeKit.items?.length ? <div className="table-wrap package-items-table"><table><thead><tr><th>Preview</th><th>Item Name</th><th>Item ID</th><th>Quantity</th><th>Durability</th><th>Actions</th></tr></thead><tbody>{activeKit.items.map((item, index) => {
           const editing = editingPackageIndex === index;
@@ -3815,7 +3885,7 @@ function StoragePanel({ onError }: { onError: (text: string) => void }) {
   const [items, setItems] = useState<Record<string, unknown>[]>([]);
   const [itemName, setItemName] = useState("");
   const [canGiveItem, setCanGiveItem] = useState(false);
-  const [storageResult, setStorageResult] = useState("Give Item to Storage creates a DB backup first and runs only when the backend verifies the storage schema.");
+  const [storageResult, setStorageResult] = useState("Give Item to Storage runs only when the backend verifies the storage schema.");
   async function load() {
     onError("");
     try {
@@ -3833,7 +3903,7 @@ function StoragePanel({ onError }: { onError: (text: string) => void }) {
     if (!selected) return;
     onError("");
     try {
-      if (!window.confirm(`Give 1 x ${itemName} to storage ${String(selected.id)}? A database backup will be created first.`)) return;
+      if (!window.confirm(`Give 1 x ${itemName} to storage ${String(selected.id)}?`)) return;
       const response = await worldDataApi.storageGiveItem(String(selected.id), { itemName, quantity: 1, confirmation: "GIVE ITEM TO STORAGE" });
       setStorageResult(formatMutationResult(response));
       setItems((await worldDataApi.storageItems(String(selected.id))).rows || []);
@@ -4388,6 +4458,7 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
   const [memoryError, setMemoryError] = useState("");
   const [sietchesText, setSietchesText] = useState("");
   const [sietchDimensionsText, setSietchDimensionsText] = useState("");
+  const [sietchDimensionIdsText, setSietchDimensionIdsText] = useState("");
   const [activeSietches, setActiveSietches] = useState("1");
   const [sietchDrafts, setSietchDrafts] = useState<Record<string, { displayName: string; password: string }>>({});
   const [selectedMapName, setSelectedMapName] = useState("");
@@ -4423,13 +4494,24 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
     await loadUserEngine();
     if (userGameMapName) await loadSelectedSettings(userGameMapName, userGamePartitionId);
   }
-  async function runTaskSequenceAndRefresh(actions: Array<() => Promise<{ task: Task }>>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied") {
+  async function runTaskSequenceAndRefresh(actions: Array<{ label: string; run: () => Promise<{ task: Task }> }>, runningTitle = "Applying Map Changes", successTitle = "Map Changes Applied") {
     if (!actions.length) return;
-    setMapsResult({ status: "running", title: runningTitle });
-    persistMapsResult({ status: "running", title: runningTitle });
+    setMapsResult({ status: "running", title: runningTitle, message: `Starting 1 of ${actions.length}: ${actions[0].label}` });
+    persistMapsResult({ status: "running", title: runningTitle, message: `Starting 1 of ${actions.length}: ${actions[0].label}` });
     let final: Task | null = null;
-    for (const action of actions) {
-      final = await waitForTask((await action()).task, setTask);
+    for (const [index, action] of actions.entries()) {
+      setMapsResult({ status: "running", title: runningTitle, message: `Step ${index + 1} of ${actions.length}: ${action.label}` });
+      persistMapsResult({ status: "running", title: runningTitle, message: `Step ${index + 1} of ${actions.length}: ${action.label}` });
+      final = await waitForTaskWithUpdates((await action.run()).task, (task) => {
+        setTask(task);
+        const details = taskTechnicalDetails(task);
+        setMapsResult({
+          status: "running",
+          title: runningTitle,
+          message: `Step ${index + 1} of ${actions.length}: ${action.label}`,
+          details: details || task.progressMessage || task.currentStep
+        });
+      });
       if (final.status !== "succeeded") break;
     }
     const next: HomeTaskResult = final?.status === "succeeded"
@@ -4488,10 +4570,11 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
     setRawGameOriginal(raw.content || "");
   }
   async function loadSietches() {
-    const [list, dimensions] = await Promise.all([mapsApi.sietches(), mapsApi.sietchDimensions("Survival_1")]);
+    const [list, dimensions, ids] = await Promise.all([mapsApi.sietches(), mapsApi.sietchDimensions("Survival_1"), mapsApi.sietchDimensions("Survival_1", true)]);
     setSietchesText(list.stdout || "");
     setSietchDimensionsText(dimensions.stdout || "");
-    const rows = parseSietchRows(dimensions.stdout || list.stdout || "");
+    setSietchDimensionIdsText(ids.stdout || "");
+    const rows = parseSietchRows(dimensions.stdout || list.stdout || "", ids.stdout || "");
     const drafts = Object.fromEntries(rows.map((row) => [row.partitionId, { displayName: row.displayName, password: row.password }]));
     if (rows.length) {
       setActiveSietches(String(rows.filter((row) => row.active).length || rows.length));
@@ -4524,8 +4607,11 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
   const isDeepDesertRuntime = /^(DeepDesert_|Overmap$)/i.test(selectedName);
   const isUserGameSurvival = userGameName === "Survival_1";
   const isUserGameDeepDesertRuntime = /^(DeepDesert_|Overmap$)/i.test(userGameName);
-  const sietchRows = parseSietchRows(sietchDimensionsText || sietchesText);
-  const partitionOptions = isSurvival ? sietchRows.filter((row) => row.partitionId) : [];
+  const sietchRows = parseSietchRows(sietchDimensionsText || sietchesText, sietchDimensionIdsText);
+  const survivalSietchRows = sietchRows.filter((row) => row.partitionId);
+  const primarySurvivalSietch = survivalSietchRows.find((row) => String(row.dimension) === "0") || survivalSietchRows[0] || null;
+  const dynamicSurvivalSietchRows = survivalSietchRows.filter((row) => String(row.dimension) !== "0");
+  const partitionOptions = isSurvival ? survivalSietchRows : [];
   const userGamePartitionOptions = isUserGameSurvival ? sietchRows.filter((row) => row.partitionId) : [];
   const effectivePartitionId = isSurvival ? (selectedPartitionId || partitionOptions[0]?.partitionId || "1") : isDeepDesertRuntime ? "2" : selectedPartitionId;
   const effectiveUserGamePartitionId = isUserGameSurvival ? (userGamePartitionId || userGamePartitionOptions[0]?.partitionId || "1") : isUserGameDeepDesertRuntime ? "2" : userGamePartitionId;
@@ -4537,7 +4623,11 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
   const engineFields = (schema?.engine || []).filter((field) => !["server_display_name", "server_login_password", "port", "igw_port"].includes(field.id));
   const engineDirty = changedKeys(engineValues, engineDraft, engineFields.map((field) => field.id));
   const gameDirty = changedKeys(gameValues, gameDraft, userGameFields.map((field) => field.id));
-  const sietchesDirty = activeSietches !== String(partitionOptions.filter((row) => row.active).length || partitionOptions.length || "") || partitionOptions.some((sietch) => {
+  const currentActiveSietches = String(survivalSietchRows.filter((row) => row.active).length || survivalSietchRows.length || "");
+  const activeSietchesDirty = activeSietches !== currentActiveSietches;
+  const primarySietchDraft = primarySurvivalSietch ? sietchDrafts[primarySurvivalSietch.partitionId] || { displayName: primarySurvivalSietch.displayName, password: primarySurvivalSietch.password } : null;
+  const primarySietchDirty = Boolean(primarySurvivalSietch && primarySietchDraft && (primarySietchDraft.displayName !== primarySurvivalSietch.displayName || primarySietchDraft.password !== primarySurvivalSietch.password));
+  const sietchesDirty = activeSietchesDirty || partitionOptions.some((sietch) => {
     const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
     return draft.displayName !== sietch.displayName || draft.password !== sietch.password;
   });
@@ -4558,12 +4648,26 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
     }
     setSelectedMapName(name);
     const rowPartition = String(row.partitionId || row.partition || "").trim();
-    const defaultPartition = name === "Survival_1" ? "1" : /^(DeepDesert_|Overmap$)/i.test(name) ? "2" : rowPartition;
+    const defaultPartition = name === "Survival_1" ? "" : /^(DeepDesert_|Overmap$)/i.test(name) ? "2" : rowPartition;
     setSelectedPartitionId(defaultPartition);
     setSelectedGameCategory("");
     setMemory(memoryInputValue(String(row.memory || "")));
     setModeDraft(modeInputValue(String(row.mode || "")));
     void loadSelectedSettings(name, defaultPartition || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
+  }
+  function selectSietch(row: SietchRow) {
+    if (selectedMapName === "Survival_1" && selectedPartitionId === row.partitionId) {
+      setSelectedMapName("");
+      setSelectedPartitionId("");
+      return;
+    }
+    const parent = mapRows.find((item) => String(item.map || "") === "Survival_1");
+    setSelectedMapName("Survival_1");
+    setSelectedPartitionId(row.partitionId);
+    setSelectedGameCategory("");
+    setMemory(memoryInputValue(String(parent?.memory || "")));
+    setModeDraft(modeInputValue(String(parent?.mode || "")));
+    void loadSelectedSettings("Survival_1", row.partitionId).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
   function selectPartition(next: string) {
     setSelectedPartitionId(next);
@@ -4602,41 +4706,106 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
     const originalMemory = memoryInputValue(String(row.memory || ""));
     const modeChanged = modeDraft !== originalMode && String(row.mode) !== "Core Map";
     const memoryChanged = memory !== originalMemory;
-    if (!modeChanged && !memoryChanged) return;
-    const running = /^(Ready|Running|Starting|Assigned)$/i.test(String(row.status || ""));
     const partitionId = String(row.partitionId || row.partition || "").trim();
+    const activeChanged = rowName === "Survival_1" && activeSietchesDirty;
+    const primaryChanged = rowName === "Survival_1" && primarySietchDirty;
+    if (!modeChanged && !memoryChanged && !activeChanged && !primaryChanged) return;
+    const running = /^(Ready|Running|Starting|Assigned|Warming)$/i.test(String(row.status || ""));
+    const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
+    if (modeChanged || memoryChanged) {
+      actions.push({
+        label: `Saving ${rowName}${partitionId ? ` partition ${partitionId}` : ""} map settings`,
+        run: () => mapsApi.saveMapSettings({
+          map: rowName,
+          partitionId: partitionId || undefined,
+          mode: modeDraft,
+          memory: `${memory}g`,
+          modeChanged,
+          memoryChanged,
+          running,
+          confirmation: "SAVE MAP SETTINGS"
+        })
+      });
+    }
+    if (activeChanged) actions.push(...survivalSietchActions({ includeActive: true, includePartitions: false }));
+    if (rowName === "Survival_1" && primarySurvivalSietch) actions.push(...survivalSietchActions({ includeActive: false, includePartitions: true, partitionId: primarySurvivalSietch.partitionId }));
     if (window.confirm(`Save map settings for ${rowName}${memoryChanged && running ? " and restart the affected map once" : ""}?`)) {
-      await runTaskAndRefresh(() => mapsApi.saveMapSettings({
-        map: rowName,
-        partitionId: partitionId || undefined,
-        mode: modeDraft,
-        memory: `${memory}g`,
-        modeChanged,
-        memoryChanged,
-        running,
-        confirmation: "SAVE MAP SETTINGS"
-      }), `Saving ${rowName} Settings`, "Map Settings Saved");
+      await runTaskSequenceAndRefresh(actions, `Saving ${rowName} Settings`, "Map Settings Saved");
     }
   }
-  async function saveSurvivalSietches() {
-    const actions: Array<() => Promise<{ task: Task }>> = [];
-    const currentActive = String(partitionOptions.filter((row) => row.active).length || partitionOptions.length || "");
-    if (activeSietches && activeSietches !== currentActive) {
-      actions.push(() => mapsApi.updateSietches({ action: "set-active", map: "Survival_1", count: Number(activeSietches), confirmation: "UPDATE SIETCHES" }));
+  function survivalSietchActions({ includeActive, includePartitions, partitionId }: { includeActive: boolean; includePartitions: boolean; partitionId?: string }) {
+    const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
+    if (includeActive && activeSietches && activeSietchesDirty) {
+      const requestedActive = Number(activeSietches);
+      if (requestedActive > survivalSietchRows.length) {
+        actions.push({
+          label: `Creating ${requestedActive} available sietch dimensions`,
+          run: () => mapsApi.updateSietches({ action: "set-max", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
+        });
+      }
+      actions.push({
+        label: `Activating ${requestedActive} sietch${requestedActive === 1 ? "" : "es"}`,
+        run: () => mapsApi.updateSietches({ action: "set-active", map: "Survival_1", count: requestedActive, confirmation: "UPDATE SIETCHES" })
+      });
     }
-    for (const sietch of partitionOptions) {
+    if (!includePartitions) return actions;
+    for (const sietch of survivalSietchRows) {
+      if (partitionId && sietch.partitionId !== partitionId) continue;
       const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
       if (draft.displayName !== sietch.displayName) {
-        actions.push(() => mapsApi.updateSietches({ action: "set-display", partitionId: sietch.partitionId, displayName: draft.displayName, confirmation: "UPDATE SIETCHES" }));
+        actions.push({
+          label: `Saving name for partition ${sietch.partitionId}`,
+          run: () => mapsApi.updateSietches({ action: "set-display", partitionId: sietch.partitionId, displayName: draft.displayName, confirmation: "UPDATE SIETCHES" })
+        });
       }
       if (draft.password !== sietch.password) {
-        actions.push(() => mapsApi.updateSietches({ action: "set-password", partitionId: sietch.partitionId, password: draft.password, confirmation: "UPDATE SIETCHES" }));
+        actions.push({
+          label: `Saving password for partition ${sietch.partitionId}`,
+          run: () => mapsApi.updateSietches({ action: "set-password", partitionId: sietch.partitionId, password: draft.password, confirmation: "UPDATE SIETCHES" })
+        });
       }
     }
+    return actions;
+  }
+  async function saveSurvivalSietches() {
+    const actions = survivalSietchActions({ includeActive: true, includePartitions: true });
     if (!actions.length) return;
     if (window.confirm(`Save ${actions.length} Survival_1 Sietch change${actions.length === 1 ? "" : "s"}?`)) {
       await runTaskSequenceAndRefresh(actions, "Saving Sietch Changes", "Sietches Saved");
     }
+  }
+  async function saveSietchSettings(sietch: SietchRow) {
+    const parent = mapRows.find((row) => String(row.map || "") === "Survival_1") || {};
+    const originalMemory = memoryInputValue(String(parent.memory || ""));
+    const memoryChanged = memory !== originalMemory;
+    const running = /^(Ready|Running|Starting|Assigned|Warming)$/i.test(String(parent.status || ""));
+    const actions: Array<{ label: string; run: () => Promise<{ task: Task }> }> = [];
+    if (memoryChanged) {
+      actions.push({
+        label: `Saving RAM for ${sietch.displayName}`,
+        run: () => mapsApi.saveMapSettings({
+          map: "Survival_1",
+          partitionId: sietch.partitionId,
+          memory: `${memory}g`,
+          modeChanged: false,
+          memoryChanged,
+          running,
+          confirmation: "SAVE MAP SETTINGS"
+        })
+      });
+    }
+    actions.push(...survivalSietchActions({ includeActive: false, includePartitions: true, partitionId: sietch.partitionId }));
+    if (!actions.length) return;
+    if (window.confirm(`Save settings for ${sietch.displayName || `partition ${sietch.partitionId}`}?`)) {
+      await runTaskSequenceAndRefresh(actions, `Saving ${sietch.displayName || "Sietch"} Settings`, "Sietch Saved");
+    }
+  }
+  async function forceDespawnMap(row: Record<string, unknown>) {
+    const rowName = String(row.map || "");
+    if (!rowName || rowName === "Survival_1" || rowName === "Overmap") return;
+    const target = String(row.partitionId || row.partition || rowName);
+    if (!window.confirm(`Force despawn ${rowName}?`)) return;
+    await runTaskAndRefresh(() => mapsApi.despawn(target, "DESPAWN MAP"), `Despawning ${rowName}`, "Map Despawned");
   }
   async function saveGame() {
     if (!userGameName) return;
@@ -4691,9 +4860,11 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
       {!loading && loadError && !mapRows.length && <div className="result-panel"><strong>Map list could not be loaded.</strong><p>{loadError}</p><button onClick={() => run(loadMaps)}>Retry</button></div>}
       {mapRows.length ? <div className="table-wrap maps-overview-table-wrap"><table className="maps-overview-table"><thead><tr><th>Map</th><th>Status</th><th>Mode</th><th>Memory</th><th className="actions-column">Action</th></tr></thead><tbody>{mapRows.map((row) => {
         const rowName = String(row.map || "");
-        const isSelected = selectedMapName === rowName;
+        const isSurvivalRow = rowName === "Survival_1";
+        const isSelected = selectedMapName === rowName && (!isSurvivalRow || !selectedPartitionId);
         const memoryRow = memoryForMap(liveMemory, rowName, row);
-        const mapSettingsDirty = isSelected && ((modeDraft !== modeInputValue(String(row.mode || "")) && String(row.mode) !== "Core Map") || memory !== memoryInputValue(String(row.memory || "")));
+        const canForceDespawn = mapCanForceDespawn(row);
+        const mapSettingsDirty = isSelected && ((modeDraft !== modeInputValue(String(row.mode || "")) && String(row.mode) !== "Core Map") || memory !== memoryInputValue(String(row.memory || "")) || (isSurvivalRow && (activeSietchesDirty || primarySietchDirty)));
         return <Fragment key={rowName}><tr><td>{rowName}</td><td>{String(row.status || "Not Available")}</td><td>{String(row.mode || "Not Available")}</td><td><MemoryUsageBar row={memoryRow} fallback={liveMemoryFallback(row)} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectMap(row)}>{isSelected ? "Close" : "Edit"}</button></td></tr>
           {isSelected && <tr className="inline-edit-row" key={`${rowName}-edit`}><td colSpan={5}>
             <section className="inline-edit-panel">
@@ -4703,24 +4874,13 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
                 <label className="compact-select">Mode<select value={modeDraft} disabled={String(row.mode) === "Core Map"} onChange={(event) => setModeDraft(event.target.value)}><option value="dynamic">Dynamic</option><option value="always-on">Always On</option></select></label>
                 <label className="memory-number-field">Memory<input type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
                 <span className="unit-label">GB</span>
+                {isSurvivalRow && <label className="memory-number-field">Active Sietches<input type="number" min="1" max="64" step="1" value={activeSietches} onChange={(event) => setActiveSietches(event.target.value)} /></label>}
+                {isSurvivalRow && primarySurvivalSietch && primarySietchDraft && <label>Name<input value={primarySietchDraft.displayName} onChange={(event) => setSietchDrafts({ ...sietchDrafts, [primarySurvivalSietch.partitionId]: { ...primarySietchDraft, displayName: event.target.value } })} /></label>}
+                {isSurvivalRow && primarySurvivalSietch && primarySietchDraft && <label>Password<SecretInput value={primarySietchDraft.password} onChange={(event) => setSietchDrafts({ ...sietchDrafts, [primarySurvivalSietch.partitionId]: { ...primarySietchDraft, password: event.target.value } })} /></label>}
                 <button disabled={!mapSettingsDirty} onClick={() => run(() => saveSelectedMapSettings(row))}>Save Map Settings</button>
+                {rowName !== "Survival_1" && rowName !== "Overmap" && <button className="danger" disabled={!canForceDespawn} title={canForceDespawn ? "Force despawn this running map" : "Map is not running"} onClick={() => run(() => forceDespawnMap(row))}>Force Despawn</button>}
               </div>
               {String(row.mode) === "Core Map" && <p className="muted">Core map mode is managed by the base server stack; only memory changes are exposed here.</p>}
-              {isSurvival && <section className="action-section nested-action">
-                <div className="panel-title"><h4>Sietches</h4><button onClick={() => run(loadSietches)}>Refresh Sietches</button></div>
-                <div className="action-line">
-                  <label className="memory-number-field">Active Sietches<input type="number" min="1" max="64" step="1" value={activeSietches} onChange={(event) => setActiveSietches(event.target.value)} /></label>
-                  <button disabled={!sietchesDirty} onClick={() => run(saveSurvivalSietches)}>Save Sietches</button>
-                </div>
-                {partitionOptions.length ? <div className="settings-grid">{partitionOptions.map((sietch) => {
-                  const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
-                  return <article className="settings-field" key={sietch.partitionId}>
-                    <strong>Partition {sietch.partitionId}</strong>
-                    <label>Name<input value={draft.displayName} onChange={(event) => setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, displayName: event.target.value } })} /></label>
-                    <label>Password<SecretInput value={draft.password} onChange={(event) => setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, password: event.target.value } })} /></label>
-                  </article>;
-                })}</div> : <MapCommandSummary text={sietchesText || "No Sietch dimensions reported yet."} />}
-              </section>}
               {isDeepDesert && <section className="action-section nested-action">
                 <div className="action-line deep-desert-dual-line">
                   <strong>Deep Desert Dual Setup:</strong>
@@ -4731,17 +4891,34 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
               </section>}
             </section>
           </td></tr>}
+          {isSurvivalRow && dynamicSurvivalSietchRows.map((sietch) => {
+            const childSelected = selectedMapName === "Survival_1" && selectedPartitionId === sietch.partitionId;
+            const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
+            const childMemoryRow = memoryForMap(liveMemory, "Survival_1", { map: "Survival_1", partitionId: sietch.partitionId });
+            const childMemoryDirty = childSelected && memory !== memoryInputValue(String(row.memory || ""));
+            const childDirty = childMemoryDirty || draft.displayName !== sietch.displayName || draft.password !== sietch.password;
+            return <Fragment key={`sietch-${sietch.partitionId}`}><tr className="sietch-child-row"><td><span className="sietch-child-name">{sietch.displayName}</span><span className="sietch-child-meta">Partition {sietch.partitionId} / Dimension {sietch.dimension}</span></td><td>{sietch.active ? String(row.status || "Not Available") : "Not Running"}</td><td>Sietch</td><td><MemoryUsageBar row={childMemoryRow} fallback={sietch.active ? liveMemoryFallback(row) : "Unallocated"} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectSietch(sietch)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+              {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
+                <div className="panel-title"><h4>Edit {sietch.displayName}</h4></div>
+                <KeyValueGrid items={[["Partition", sietch.partitionId], ["Dimension", sietch.dimension], ["Status", sietch.active ? row.status : "Not Running"]]} />
+                <div className="action-line">
+                  <label className="memory-number-field">Memory<input type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
+                  <span className="unit-label">GB</span>
+                  <label>Name<input value={draft.displayName} onChange={(event) => setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, displayName: event.target.value } })} /></label>
+                  <label>Password<SecretInput value={draft.password} onChange={(event) => setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, password: event.target.value } })} /></label>
+                  <button disabled={!childDirty} onClick={() => run(() => saveSietchSettings(sietch))}>Save Sietch Settings</button>
+                </div>
+              </section></td></tr>}
+            </Fragment>;
+          })}
         </Fragment>;
       })}</tbody></table></div> : null}
       {loadError && mapRows.length ? <p className="danger-note">Some map data could not be refreshed: {loadError}</p> : null}
       {memoryError && <p className="danger-note">Live memory could not be read: {memoryError}</p>}
     </section>
-    <section className="action-section">
-      <div className="panel-title">
-        <h4>Interactive Modifiers</h4>
-        <button className={`icon-toggle-button ${modifiersOpen ? "active" : ""}`} aria-label={modifiersOpen ? "Collapse Interactive Modifiers" : "Expand Interactive Modifiers"} title={modifiersOpen ? "Collapse" : "Expand"} onClick={toggleModifiers}>{modifiersOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
-      </div>
-      {modifiersOpen && <><div className="settings-tabs" role="tablist" aria-label="INI modifier editor">
+    <div className={`playerAdmin_toggle maps-modifiers-toggle ${modifiersOpen ? "open" : ""}`}>
+      <button className="playerAdmin_toggleHeader" aria-label={modifiersOpen ? "Collapse Interactive Modifiers" : "Expand Interactive Modifiers"} onClick={toggleModifiers}>{modifiersOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Interactive Modifiers</span></button>
+      {modifiersOpen && <div className="playerAdmin_toggleBody"><div className="settings-tabs" role="tablist" aria-label="INI modifier editor">
         <button className={settingsTab === "engine" ? "active" : ""} role="tab" aria-selected={settingsTab === "engine"} onClick={() => setSettingsTab("engine")}>UserEngine</button>
         <button className={settingsTab === "game" ? "active" : ""} role="tab" aria-selected={settingsTab === "game"} onClick={() => setSettingsTab("game")}>UserGame</button>
       </div>
@@ -4759,20 +4936,15 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
         </div>
         {userGameName && <SettingsCardGrid fields={activeGameFields} values={gameDraft} onChange={(id, value) => setGameDraft({ ...gameDraft, [id]: value })} />}
         <div className="action-row"><button disabled={!gameDirty.length || !userGameName} onClick={() => run(saveGame)}>Save</button><button disabled={!gameDirty.length} onClick={() => setGameDraft(gameValues)}>Discard Changes</button></div>
-      </>}</>}
-    </section>
-    <section className="action-section">
-      <div className="panel-title">
-        <h4>Advanced</h4>
-        <div className="action-row advanced-toggle-row">
-          <button className={`icon-toggle-button ${advancedOpen ? "active" : ""}`} aria-label={advancedOpen ? "Collapse Advanced" : "Expand Advanced"} title={advancedOpen ? "Collapse" : "Expand"} onClick={() => run(toggleAdvanced)}>{advancedOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button>
-        </div>
-      </div>
-      {advancedOpen && <div className="advanced-grid">
+      </>}</div>}
+    </div>
+    <div className={`playerAdmin_toggle maps-advanced-toggle ${advancedOpen ? "open" : ""}`}>
+      <button className="playerAdmin_toggleHeader" onClick={() => run(toggleAdvanced)}>{advancedOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Advanced</span></button>
+      {advancedOpen && <div className="playerAdmin_toggleBody"><div className="advanced-grid">
         <article className="raw-editor-card"><div className="panel-title"><h4>UserEngine.ini</h4><div className="action-row"><button onClick={() => downloadIni("engine")}>Download</button><label className="button-link">Import<input className="hidden-file-input" type="file" accept=".ini,text/plain" onChange={(event) => run(async () => { await importIni("engine", event.target.files?.[0] || null); })} /></label></div></div><textarea value={rawEngine} onChange={(event) => setRawEngine(event.target.value)} rows={14} /><div className="action-row"><button disabled={!rawEngineDirty} onClick={() => run(() => saveRaw("engine"))}>Save</button><button disabled={!rawEngineDirty} onClick={() => setRawEngine(rawEngineOriginal)}>Discard Changes</button><button className="danger" onClick={() => run(async () => { if (window.confirm("Restore UserEngine gameplay defaults? Server name, password, Port, and IGWPort will be preserved.")) await runTaskAndRefresh(() => mapsApi.resetUserSettings({ scope: "engine", confirmation: "RESTORE MAP DEFAULTS" }), "Restoring UserEngine defaults", "UserEngine Defaults Restored"); await loadUserEngine(); })}>Restore Defaults</button></div></article>
         <article className="raw-editor-card"><div className="panel-title"><h4>UserGame.ini</h4><div className="action-row"><button onClick={() => downloadIni("game")}>Download</button><label className="button-link">Import<input className="hidden-file-input" type="file" accept=".ini,text/plain" onChange={(event) => run(async () => { await importIni("game", event.target.files?.[0] || null); })} /></label></div></div><textarea value={rawGame} onChange={(event) => setRawGame(event.target.value)} rows={14} /><div className="action-row"><button disabled={!rawGameDirty} onClick={() => run(() => saveRaw("game"))}>Save</button><button disabled={!rawGameDirty} onClick={() => setRawGame(rawGameOriginal)}>Discard Changes</button><button disabled={!userGameName} className="danger" onClick={() => run(async () => { if (window.confirm(`Restore UserGame defaults for ${userGameName}${effectiveUserGamePartitionId ? ` partition ${effectiveUserGamePartitionId}` : ""}?`)) await runTaskAndRefresh(() => mapsApi.resetUserSettings({ scope: effectiveUserGamePartitionId ? "partition" : "map", map: userGameName, partitionId: effectiveUserGamePartitionId || undefined, confirmation: "RESTORE MAP DEFAULTS" }), "Restoring UserGame defaults", "UserGame Defaults Restored"); await loadSelectedSettings(userGameName, effectiveUserGamePartitionId || undefined); })}>Restore Defaults</button></div></article>
-      </div>}
-    </section>
+      </div></div>}
+    </div>
   </section>;
 }
 
@@ -4851,22 +5023,27 @@ function valuesForFields(values: Record<string, string>, fields: UserSettingFiel
   return Object.fromEntries(fields.map((field) => [field.id, String(values[field.id] ?? field.default ?? "")]));
 }
 
-type SietchRow = { partitionId: string; displayName: string; password: string; active: boolean };
+type SietchRow = { partitionId: string; dimension: string; displayName: string; password: string; active: boolean };
 
-function parseSietchRows(text: string): SietchRow[] {
+function parseSietchRows(text: string, idsText = ""): SietchRow[] {
   const rows: SietchRow[] = [];
+  const ids = idsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line));
+  let dimensionIndex = 0;
   for (const line of text.split(/\r?\n/)) {
+    if (/^\s*DIMENSION\b/i.test(line)) continue;
     const partitionMatch = line.match(/\b(?:partition|id)\s*[:=]?\s*(\d+)\b/i) || line.match(/^\s*(\d+)\s+/);
     if (!partitionMatch) continue;
-    const partitionId = partitionMatch[1];
+    const dimension = partitionMatch[1];
+    const partitionId = ids[dimensionIndex] || partitionMatch[1];
     const displayName = (line.match(/\b(?:display|name)\s*[:=]\s*([^|,\t]+)/i)?.[1] || line.match(/\bSietch\s+([A-Za-z0-9 _-]+)/i)?.[0] || `Sietch ${partitionId}`).trim();
     const password = (line.match(/\bpassword\s*[:=]\s*([^|,\t]+)/i)?.[1] || "").trim();
     const active = !/\binactive|disabled|stopped\b/i.test(line);
-    rows.push({ partitionId, displayName, password, active });
+    rows.push({ partitionId, dimension, displayName, password, active });
+    dimensionIndex += 1;
   }
   const unique = new globalThis.Map<string, SietchRow>();
   for (const row of rows) unique.set(row.partitionId, row);
-  return [...unique.values()].sort((a, b) => Number(a.partitionId) - Number(b.partitionId));
+  return [...unique.values()].sort((a, b) => Number(a.dimension) - Number(b.dimension));
 }
 
 function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string, unknown>) {
@@ -4886,8 +5063,8 @@ function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string
 
 function liveMemoryFallback(row: Record<string, unknown>) {
   const status = String(row.status || "");
-  if (/^(Ready|Running|Starting)$/i.test(status)) return "Unavailable";
-  return "Not Running";
+  if (/^(Ready|Running|Starting|Warming)$/i.test(status)) return "Unavailable";
+  return "Unallocated";
 }
 
 function downloadText(filename: string, text: string) {
@@ -4905,7 +5082,12 @@ const MAPS_RESULT_KEY = "dune.maps.result";
 function loadPersistedMapsResult(): HomeTaskResult | null {
   try {
     const raw = window.localStorage.getItem(MAPS_RESULT_KEY);
-    return raw ? JSON.parse(raw) as HomeTaskResult : null;
+    const result = raw ? JSON.parse(raw) as HomeTaskResult : null;
+    if (result?.status === "failed" || result?.status === "running") {
+      window.localStorage.removeItem(MAPS_RESULT_KEY);
+      return null;
+    }
+    return result;
   } catch {
     return null;
   }
@@ -4913,7 +5095,8 @@ function loadPersistedMapsResult(): HomeTaskResult | null {
 
 function persistMapsResult(result: HomeTaskResult | null) {
   try {
-    if (result) window.localStorage.setItem(MAPS_RESULT_KEY, JSON.stringify(result));
+    if (result?.status === "failed" || result?.status === "running") window.localStorage.removeItem(MAPS_RESULT_KEY);
+    else if (result) window.localStorage.setItem(MAPS_RESULT_KEY, JSON.stringify(result));
     else window.localStorage.removeItem(MAPS_RESULT_KEY);
   } catch {
     // Browser storage can be unavailable in hardened modes.
@@ -4990,18 +5173,16 @@ function friendlyMarkerType(type: string) {
 }
 
 function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
-  const [gameStatus, setGameStatus] = useState<Record<string, string>>({ status: "Not checked", current: "", latest: "", reason: "" });
-  const [stackStatus, setStackStatus] = useState<Record<string, string>>({ status: "Not checked", current: "", latest: "", reason: "" });
-  const [gameUpdateTask, setGameUpdateTask] = useState<Task | null>(null);
+  const [gameUpdateTask, setGameUpdateTask] = useState<Task | null>(() => loadPersistedUpdateTask(GAME_UPDATE_TASK_KEY));
+  const [stackUpdateTask, setStackUpdateTask] = useState<Task | null>(() => loadPersistedUpdateTask(STACK_UPDATE_TASK_KEY));
+  const [gameStatus, setGameStatus] = useState<Record<string, string>>(() => gameUpdateTask && !isTerminalTask(gameUpdateTask.status) ? { status: "Updating", current: "", latest: "", reason: "Game update is running." } : { status: "Not checked", current: "", latest: "", reason: "" });
+  const [stackStatus, setStackStatus] = useState<Record<string, string>>(() => stackUpdateTask && !isTerminalTask(stackUpdateTask.status) ? { status: "Updating", current: "", latest: "", reason: "Stack update is running." } : { status: "Not checked", current: "", latest: "", reason: "" });
   const [gameSteamcmdFixTask, setGameSteamcmdFixTask] = useState<Task | null>(null);
-  const [stackUpdateTask, setStackUpdateTask] = useState<Task | null>(null);
   const [autoGame, setAutoGame] = useState<{ stdout?: string; stderr?: string; exitCode?: number } | null>(null);
   const [autoGameLoading, setAutoGameLoading] = useState(true);
   const [autoGameEnabled, setAutoGameEnabled] = useState(false);
   const [autoGameTime, setAutoGameTime] = useState("05:00");
   const [autoGameResult, setAutoGameResult] = useState<HomeTaskResult | null>(null);
-  const [previousStack, setPreviousStack] = useState<Record<string, string>[]>([]);
-  const [previousStackReason, setPreviousStackReason] = useState("");
   const autoGameValues = parseKeyValueText(autoGame?.stdout || "");
   const autoGameTimerValue = autoGameValues.systemd_timer || "";
   const autoGameTimerLabel = autoGameTimerValue ? formatTimerStatus(autoGameTimerValue) : "Not Installed";
@@ -5040,8 +5221,8 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
     setGameSteamcmdFixTask(null);
     const response = await updatesApi.applyGame();
     setGameUpdateTask(response.task);
-    const final = await waitForTaskWithUpdates(response.task, setGameUpdateTask);
-    if (final.status === "succeeded") refreshGameStatus();
+    persistUpdateTask(GAME_UPDATE_TASK_KEY, response.task);
+    setGameStatus((current) => ({ ...current, status: "Updating", reason: "Game update is running." }));
   }
   async function fixSteamcmd() {
     const response = await updatesApi.fixSteamcmd();
@@ -5052,8 +5233,8 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
     if (!window.confirm("Apply the latest RedBlink stack update now?")) return;
     const response = await updatesApi.applyStack();
     setStackUpdateTask(response.task);
-    const final = await waitForTaskWithUpdates(response.task, setStackUpdateTask);
-    if (final.status === "succeeded") refreshStackStatus();
+    persistUpdateTask(STACK_UPDATE_TASK_KEY, response.task);
+    setStackStatus((current) => ({ ...current, status: "Updating", reason: "Stack update is running." }));
   }
   async function loadAutoGame() {
     try {
@@ -5094,25 +5275,71 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
       setAutoGameResult({ status: "failed", title: "Auto Updates Save Failed", details: error instanceof Error ? error.message : String(error) });
     }
   }
-  async function loadPreviousStack() {
-    const result = await updatesApi.previousStack();
-    setPreviousStack(parseReleaseRows(result.stdout || ""));
-    setPreviousStackReason(Number(result.exitCode || 0) === 0 ? "" : result.stderr || result.stdout || "Previous stack list unavailable");
-  }
   useEffect(() => {
-    refreshGameStatus();
-    refreshStackStatus();
+    if (!gameUpdateTask || isTerminalTask(gameUpdateTask.status)) refreshGameStatus();
+    if (!stackUpdateTask || isTerminalTask(stackUpdateTask.status)) refreshStackStatus();
     loadAutoGame().catch((error) => setAutoGame({ stdout: "", stderr: error instanceof Error ? error.message : String(error), exitCode: 1 }));
-    loadPreviousStack().catch((error) => setPreviousStackReason(error instanceof Error ? error.message : String(error)));
   }, []);
   useEffect(() => {
+    if (!gameUpdateTask || isTerminalTask(gameUpdateTask.status)) {
+      persistUpdateTask(GAME_UPDATE_TASK_KEY, gameUpdateTask);
+      return;
+    }
+    let cancelled = false;
+    persistUpdateTask(GAME_UPDATE_TASK_KEY, gameUpdateTask);
+    setGameStatus((current) => ({ ...current, status: "Updating", reason: "Game update is running." }));
+    void (async () => {
+      let current = gameUpdateTask;
+      for (let i = 0; i < 3600 && !cancelled && !isTerminalTask(current.status); i += 1) {
+        await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 1000));
+        if (cancelled) return;
+        current = (await setupApi.task(current.id)).task;
+        setGameUpdateTask(current);
+        persistUpdateTask(GAME_UPDATE_TASK_KEY, current);
+      }
+      if (!cancelled && current.status === "succeeded") refreshGameStatus();
+    })().catch(() => {
+      if (cancelled) return;
+      persistUpdateTask(GAME_UPDATE_TASK_KEY, null);
+      setGameUpdateTask(null);
+      refreshGameStatus();
+    });
+    return () => { cancelled = true; };
+  }, [gameUpdateTask?.id, gameUpdateTask?.status]);
+  useEffect(() => {
+    if (!stackUpdateTask || isTerminalTask(stackUpdateTask.status)) {
+      persistUpdateTask(STACK_UPDATE_TASK_KEY, stackUpdateTask);
+      return;
+    }
+    let cancelled = false;
+    persistUpdateTask(STACK_UPDATE_TASK_KEY, stackUpdateTask);
+    setStackStatus((current) => ({ ...current, status: "Updating", reason: "Stack update is running." }));
+    void (async () => {
+      let current = stackUpdateTask;
+      for (let i = 0; i < 3600 && !cancelled && !isTerminalTask(current.status); i += 1) {
+        await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 1000));
+        if (cancelled) return;
+        current = (await setupApi.task(current.id)).task;
+        setStackUpdateTask(current);
+        persistUpdateTask(STACK_UPDATE_TASK_KEY, current);
+      }
+      if (!cancelled && current.status === "succeeded") refreshStackStatus();
+    })().catch(() => {
+      if (cancelled) return;
+      persistUpdateTask(STACK_UPDATE_TASK_KEY, null);
+      setStackUpdateTask(null);
+      refreshStackStatus();
+    });
+    return () => { cancelled = true; };
+  }, [stackUpdateTask?.id, stackUpdateTask?.status]);
+  useEffect(() => {
     if (gameUpdateTask?.status !== "succeeded") return;
-    const id = window.setTimeout(() => setGameUpdateTask(null), 10400);
+    const id = window.setTimeout(() => setGameUpdateTask(null), UPDATE_RESULT_DISMISS_MS);
     return () => window.clearTimeout(id);
   }, [gameUpdateTask?.id, gameUpdateTask?.status]);
   useEffect(() => {
     if (stackUpdateTask?.status !== "succeeded") return;
-    const id = window.setTimeout(() => setStackUpdateTask(null), 10400);
+    const id = window.setTimeout(() => setStackUpdateTask(null), UPDATE_RESULT_DISMISS_MS);
     return () => window.clearTimeout(id);
   }, [stackUpdateTask?.id, stackUpdateTask?.status]);
   useEffect(() => {
@@ -5164,20 +5391,6 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
           {autoGameResult && <span className={`inline-task-result result-${autoGameResult.status === "succeeded" ? "ok" : autoGameResult.status === "failed" ? "fail" : "running"}`}>
             <strong className={autoGameResult.status === "running" ? "loading-dots" : ""}>{autoGameResult.title}</strong>
           </span>}
-        </div>
-      </section>
-      <section className="action-section">
-        <div className="panel-title"><h4>Restore Previous Stack</h4><button onClick={loadPreviousStack}>Refresh Releases</button></div>
-        <p className="danger-note">Restoring the previous stack changes the RedBlink stack version. Use only after reviewing backups and release history.</p>
-        {previousStackReason && <p className="danger-note">{previousStackReason}</p>}
-        {previousStack.length ? <DataTable rows={previousStack.slice(0, 3)} columns={["version", "date", "title"]} /> : <div className="empty">No previous stack releases found.</div>}
-        <div className="action-line restore-stack-line">
-          <button className="danger" disabled={previousStack.length < 2} onClick={async () => {
-            const confirmation = window.prompt("Type RESTORE PREVIOUS STACK to restore the previous stack release.");
-            if (confirmation !== "RESTORE PREVIOUS STACK") return;
-            setTask((await updatesApi.restorePreviousStack(confirmation)).task);
-          }}>Restore Previous Stack</button>
-          {previousStack[1]?.version && <span className="muted">Previous Release: {previousStack[1].version}</span>}
         </div>
       </section>
     </div>
@@ -5462,14 +5675,17 @@ function mapRuntimeStatus(row: { assignedServer?: unknown; ready?: unknown; aliv
   const assigned = Boolean(String(row.assignedServer || "").trim());
   const ready = /^true$/i.test(String(row.ready || "").trim());
   const alive = /^true$/i.test(String(row.alive || "").trim());
-  if (ready) return "Ready";
-  if (alive) return "Running";
-  if (assigned) return "Starting";
+  if (ready || alive) return "Running";
+  if (assigned) return "Warming";
   return "Not Running";
 }
 
+function mapCanForceDespawn(row: Record<string, unknown>) {
+  return /^(Warming|Running)$/i.test(String(row.status || "").trim());
+}
+
 function strongestMapStatus(a: string, b: string) {
-  const order = ["Not Available", "Not Running", "Starting", "Running", "Ready"];
+  const order = ["Not Available", "Not Running", "Warming", "Running"];
   return order.indexOf(b) > order.indexOf(a) ? b : a || b;
 }
 
@@ -5520,13 +5736,6 @@ function commandStatusSummary(result: { stdout?: string; stderr?: string; exitCo
   if (!result) return { status: "Loading", reason: "" };
   if (Number(result.exitCode || 0) === 0) return { status: "Checked", reason: "" };
   return { status: "Check Failed", reason: result.stderr || result.stdout || "Command failed" };
-}
-
-function parseReleaseRows(text: string) {
-  return stripAnsi(text).split(/\r?\n/).map((line) => {
-    const [version, date, title] = line.trim().split(/\t+/);
-    return version ? { version, date: date || "", title: title || "" } : null;
-  }).filter(Boolean).sort((a, b) => String(b?.date || "").localeCompare(String(a?.date || ""))) as Record<string, string>[];
 }
 
 function parseUserSettingRows(text: string) {
@@ -5610,6 +5819,8 @@ function friendlyColumnName(value: string) {
     durability: "Durability",
     created: "Created",
     name: "Name",
+    row_count: "Rows",
+    estimated_rows: "Estimated Rows",
     type: "Type",
     source: "Source",
     time: "Time",
@@ -5652,30 +5863,33 @@ function summarizeHomeStatus(status: string, readiness: string, readinessWarning
   void readinessWarning;
   const serverState = getHomeServerState(status, readiness);
   const bootStarting = isHomeBootStarting(status, readiness);
-  const isStarting = runningAction === "start" || runningAction === "restart" || bootStarting;
   const actionFailed = taskResult?.status === "failed" && !serverState.running;
   const actionStopped = taskResult?.status === "stopped";
   const rawOverall = findLineValue(status, ["overall"]);
-  const liveOverall = /^READY:/m.test(readiness) ? "OK" : friendlyHomeOverall(rawOverall || (readiness ? "Readiness checked" : readinessWarning ? "Status loaded, readiness warning" : status ? "Status loaded" : loading ? "Checking" : "Unknown"));
-  const transitionOverall = runningAction === "restart" ? "Restarting" : runningAction === "stop" ? "Stopping" : isStarting ? "Starting" : "";
+  const readinessReady = /^READY:/m.test(readiness);
+  const liveOverall = readinessReady ? "OK" : friendlyHomeOverall(rawOverall || (readiness ? "Readiness checked" : readinessWarning ? "Status loaded, readiness warning" : status ? "Status loaded" : loading ? "Checking" : "Unknown"));
   const rawContainers = preferKnownHomeHealth(summarizeContainers(status), summarizeReadinessContainers(readiness));
   const rawListeners = preferKnownHomeHealth(summarizeListeners(status), summarizeReadinessListeners(readiness));
   const rawDatabase = preferKnownHomeHealth(summarizeDatabase(status), summarizeReadinessDatabase(readiness));
   const rawGames = preferKnownHomeHealth(summarizeGameServers(status), summarizeReadinessGameServers(readiness));
   const rawRabbit = preferKnownHomeHealth(summarizeRabbit(status), summarizeReadinessRabbit(readiness));
   const rawFls = preferKnownHomeHealth(summarizeFls(status), summarizeReadinessFls(readiness));
+  const readyOverride = readinessReady ? { label: "OK", status: "Ready", detail: "" } : null;
+  const coreReadyWithReview = !runningAction && isHomeCoreReadyWithReview(status, readiness, rawContainers, rawListeners, rawDatabase, rawGames, rawRabbit, rawFls);
+  const isStarting = runningAction === "start" || runningAction === "restart" || (bootStarting && !coreReadyWithReview);
+  const transitionOverall = runningAction === "restart" ? "Restarting" : runningAction === "stop" ? "Stopping" : isStarting ? "Starting" : "";
   const warmingOverall = /^Warming$/i.test(rawGames.label) ? "Warming" : "";
-  const overall = isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : warmingOverall || liveOverall;
+  const overall = readinessReady && !runningAction ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : warmingOverall || liveOverall;
   const attentionHealth = !isStarting && (serverState.stopped || actionStopped || actionFailed) ? attentionHomeHealthCards() : null;
-  const transitionAction: "start" | "stop" | "restart" | "" = runningAction || (bootStarting ? "start" : "");
-  const containers = transitionHomeHealthCard(rawContainers, transitionAction) || attentionHealth?.containers || rawContainers;
-  const listeners = transitionHomeHealthCard(rawListeners, transitionAction) || attentionHealth?.listeners || rawListeners;
-  const database = transitionHomeHealthCard(rawDatabase, transitionAction) || attentionHealth?.database || rawDatabase;
-  const games = transitionHomeHealthCard(rawGames, transitionAction) || attentionHealth?.games || rawGames;
-  const rabbit = transitionHomeHealthCard(rawRabbit, transitionAction) || attentionHealth?.rabbit || rawRabbit;
+  const transitionAction: "start" | "stop" | "restart" | "" = runningAction || (bootStarting && !coreReadyWithReview ? "start" : "");
+  const containers = readyOverride || transitionHomeHealthCard(rawContainers, transitionAction) || attentionHealth?.containers || rawContainers;
+  const listeners = readyOverride || transitionHomeHealthCard(rawListeners, transitionAction) || attentionHealth?.listeners || rawListeners;
+  const database = readyOverride || transitionHomeHealthCard(rawDatabase, transitionAction) || attentionHealth?.database || rawDatabase;
+  const games = readyOverride || transitionHomeHealthCard(rawGames, transitionAction) || attentionHealth?.games || rawGames;
+  const rabbit = readyOverride || transitionHomeHealthCard(rawRabbit, transitionAction) || attentionHealth?.rabbit || rawRabbit;
   const fls = funcomTokenAuthFailure
     ? { label: "Token Mismatch Detected", status: "FAILED", detail: "" }
-    : transitionHomeHealthCard(rawFls, transitionAction) || attentionHealth?.fls || rawFls;
+    : readyOverride || transitionHomeHealthCard(rawFls, transitionAction) || attentionHealth?.fls || rawFls;
   const population = formatHomePopulation(findPopulation(status) || findLineValue(status, ["population", "players"]));
   return {
     identity: [
@@ -5711,6 +5925,28 @@ function homeNeedsWarmRefresh(status: string, readiness: string) {
     /^(Warming|Starting)$/i.test(String(games?.value || "")) ||
     isHomeBootStarting(status, readiness);
   return warming && (!overallOk || !gamesOk);
+}
+
+function isHomeCoreReadyWithReview(
+  status: string,
+  readiness: string,
+  containers: { label: string; status: string; detail: string },
+  listeners: { label: string; status: string; detail: string },
+  database: { label: string; status: string; detail: string },
+  games: { label: string; status: string; detail: string },
+  rabbit: { label: string; status: string; detail: string },
+  fls: { label: string; status: string; detail: string }
+) {
+  const text = `${status}\n${readiness}`;
+  const gamesReady = isReadyHomeCard(games) || (/OK\s+Survival_1\s+ready/i.test(text) && /OK\s+Overmap\s+ready/i.test(text));
+  const databaseReady = isReadyHomeCard(database) || /OK\s+world_partition rows:/i.test(text);
+  const rabbitReady = isReadyHomeCard(rabbit) || /OK\s+game server sg\.\* RMQ connections/i.test(text);
+  const hasReview = [containers, listeners, database, games, rabbit, fls].some((item) => /^Needs Review$/i.test(item.label) || /^WARN$/i.test(item.status));
+  return gamesReady && databaseReady && rabbitReady && hasReview;
+}
+
+function isReadyHomeCard(item: { label: string; status: string; detail: string }) {
+  return /^OK$/i.test(item.label) && /^Ready$/i.test(item.status);
 }
 
 function isHomeActionComplete(status: string, readiness: string) {
@@ -6105,6 +6341,9 @@ function formatMutationResult(result: unknown) {
   const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
   if (record.supported === false) return `Unsupported: ${String(record.reason || record.error || "This action is not available.")}`;
   if (record.ok === false) return `Failed: ${String(record.error || record.reason || "The action did not complete.")}`;
+  if (record.message) return String(record.message);
+  const nested = record.result && typeof record.result === "object" ? record.result as Record<string, unknown> : {};
+  if (nested.message) return String(nested.message);
   if (record.summary) return String(record.summary);
   if (record.status) return `Action status: ${String(record.status)}`;
   if (record.backup) return "Action completed after creating a database backup.";
@@ -6428,6 +6667,7 @@ function friendlyBackupType(name: string, line: string) {
   if (/auto|scheduled/i.test(name) || /auto|scheduled/i.test(line)) return "Automatic Backup";
   if (/restore[-_ ]?safety/i.test(name) || /restore[-_ ]?safety/i.test(line)) return "Restore Safety Backup";
   if (/pre[-_ ]?update/i.test(name) || /pre[-_ ]?update/i.test(line)) return "Pre-update Backup";
+  if (/destructive[-_ ]?sql|sql[-_ ]?safety/i.test(name) || /destructive[-_ ]?sql|sql[-_ ]?safety/i.test(line)) return "SQL Safety Backup";
   if (/import/i.test(name) || /import/i.test(line)) return "Imported Backup";
   if (name.endsWith(".backup") || name.endsWith(".dump") || name.endsWith(".sql")) return "Manual Backup";
   return "Unknown";
@@ -6537,7 +6777,13 @@ function friendlyAdminHistorySummary(friendly: string, path: string, payload: st
 }
 
 function friendlyServiceName(name: string) {
+  if (/^dune-server-[a-z0-9-]+$/i.test(name)) return friendlyDynamicServerName(name);
   return SERVICE_LABELS[name] || SERVICE_LABELS[name.replace(/^dune-/, "")] || name.replace(/^dune-server-/, "").replace(/^dune-/, "").replaceAll("-", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function friendlyDynamicServerName(name: string) {
+  const value = name.replace(/^dune-server-/i, "").replaceAll("-", " ");
+  return value.replace(/\b(sh|pve|pvp|s2s)\b/gi, (part) => part.toUpperCase()).replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function isServiceReady(status: string, service: string) {

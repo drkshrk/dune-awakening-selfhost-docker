@@ -30,13 +30,17 @@ export async function listTables(db, schema = "dune") {
   assertIdentifier(schema, "schema");
   const result = await db.query(`
     select t.table_schema as schema,
-           t.table_name as name,
-           coalesce(s.n_live_tup, 0)::bigint as estimated_rows
+           t.table_name as name
     from information_schema.tables t
-    left join pg_stat_user_tables s on s.schemaname = t.table_schema and s.relname = t.table_name
     where t.table_type = 'BASE TABLE' and t.table_schema = $1
     order by t.table_name`, [schema]);
-  return result.rows;
+  const rows = [];
+  for (const row of result.rows) {
+    const safe = quoteQualified(row.schema, row.name);
+    const count = await db.query(`select count(*)::bigint as row_count from ${safe}`);
+    rows.push({ ...row, row_count: count.rows[0]?.row_count ?? "0" });
+  }
+  return rows;
 }
 
 export async function tableColumns(db, schema, table) {
@@ -76,11 +80,67 @@ export async function updateTableRow(db, schema, table, rowId, values = {}) {
   if (!entries.length) throw new Error("No editable column values were provided");
   if (entries.length > 100) throw new Error("Too many columns in one row update");
 
+  if (schema === "dune" && table === "player_virtual_currency_balances" && Object.prototype.hasOwnProperty.call(values, "balance")) {
+    return updateCurrencyBalanceViaGameFunction(db, safe, targetRow, values);
+  }
+
+  const itemEditMessage = schema === "dune" && table === "items" ? await manualItemEditMessage(db, safe, targetRow) : undefined;
   const assignments = entries.map(([key], index) => `${quoteIdentifier(key)} = $${index + 1}`);
   const params = entries.map(([, value]) => normalizeEditableValue(value));
   params.push(targetRow);
-  const result = await db.query(`update ${safe} set ${assignments.join(", ")} where ctid = $${params.length}::tid`, params);
-  return { ok: true, updatedRows: result.rowCount || 0, schema, table };
+  const result = await withKnownLiveRefresh(db, () => db.query(`update ${safe} set ${assignments.join(", ")} where ctid = $${params.length}::tid`, params), {
+    features: liveRefreshFeaturesForTable(schema, table, entries.map(([key]) => key))
+  });
+  return { ok: true, updatedRows: result.rowCount || 0, schema, table, message: result.rowCount ? itemEditMessage : undefined };
+}
+
+async function updateCurrencyBalanceViaGameFunction(db, safeTable, rowId, values) {
+  const current = await db.query(`select player_controller_id, currency_id, balance from ${safeTable} where ctid = $1::tid`, [rowId]);
+  const row = current.rows[0];
+  if (!row) return { ok: true, updatedRows: 0, schema: "dune", table: "player_virtual_currency_balances" };
+  const controllerId = intParam(values.player_controller_id ?? row.player_controller_id, "player controller id", 1);
+  const currencyId = intParam(values.currency_id ?? row.currency_id, "currency id", 0, 32767);
+  if (String(controllerId) !== String(row.player_controller_id) || String(currencyId) !== String(row.currency_id)) {
+    throw new Error("Currency row editing can change balance only. Edit player_controller_id or currency_id with explicit SQL if needed.");
+  }
+  const oldBalance = BigInt(String(row.balance ?? 0));
+  const newBalance = BigInt(String(values.balance ?? 0));
+  const delta = newBalance - oldBalance;
+  if (delta !== 0n) {
+    await db.query("select dune.adjust_player_virtual_currency_balance($1::bigint, $2::smallint, $3::bigint)", [controllerId, currencyId, delta.toString()]);
+  }
+  const state = await db.query(`
+    select coalesce(online_status::text, 'Offline') as online_status
+    from dune.player_state
+    where player_controller_id = $1
+    limit 1`, [controllerId]);
+  const onlineStatus = state.rows[0]?.online_status || "Offline";
+  const online = String(onlineStatus).toLowerCase() === "online";
+  const direction = delta < 0n ? "lowered" : delta > 0n ? "increased" : "saved";
+  const message = online
+    ? `Currency balance was ${direction} in the database and the known game balance function was called. This player is online, so the running server may keep showing the old value until the player relogs or the affected map/server is restarted.`
+    : `Currency balance was ${direction} in the database and will be loaded when the player next joins.`;
+  return { ok: true, updatedRows: 1, schema: "dune", table: "player_virtual_currency_balances", message };
+}
+
+async function manualItemEditMessage(db, safeTable, rowId) {
+  const result = await db.query(`
+    select it.id,
+           it.template_id,
+           coalesce(ps.character_name, 'this player') as character_name,
+           coalesce(ps.online_status::text, 'Offline') as online_status
+    from ${safeTable} it
+    left join dune.inventories inv on inv.id = it.inventory_id
+    left join dune.actors a on a.id = inv.actor_id
+    left join dune.player_state ps on ps.account_id = a.owner_account_id
+    where it.ctid = $1::tid
+    limit 1`, [rowId]);
+  const row = result.rows[0];
+  if (!row) return undefined;
+  if (String(row.online_status || "").toLowerCase() === "online") {
+    return `${row.template_id || "Item"} was saved in the database for ${row.character_name}, but this player is online. The running game inventory may keep showing the old stack until the player relogs, refreshes inventory, or the affected map/server is restarted.`;
+  }
+  return `${row.template_id || "Item"} was saved in the database and will be loaded when the player next joins.`;
 }
 
 function normalizeEditableValue(value) {
@@ -105,9 +165,551 @@ export async function searchDatabase(db, q) {
 export async function runSql(db, query, allowDestructive = false) {
   const sql = String(query || "").trim();
   if (!sql) throw new Error("SQL query is required");
-  if (!allowDestructive && !isReadOnlySql(sql)) throw new Error("Only read-only SQL is allowed without destructive confirmation");
-  const result = await db.query(sql);
+  const readOnly = isReadOnlySql(sql);
+  if (!allowDestructive && !readOnly) throw new Error("Only read-only SQL is allowed without destructive confirmation");
+  const result = readOnly
+    ? await db.query(sql)
+    : await withKnownLiveRefresh(db, () => db.query(sql), { features: liveRefreshFeaturesForSql(sql) });
   return rowsResult(result);
+}
+
+function liveRefreshFeaturesForTable(schema, table, columns = []) {
+  if (schema !== "dune") return [];
+  const changed = new Set(columns);
+  if (table === "player_virtual_currency_balances" && changed.has("balance")) return ["solaris"];
+  if (table === "player_faction_reputation" && changed.has("reputation_amount")) return ["faction"];
+  if (table === "tutorial_per_player" && changed.has("tutorial_state")) return ["tutorial"];
+  if (table === "journey_story_node") return ["journey"];
+  if (table === "player_tags") return ["tags"];
+  if (table === "player_faction") return ["playerFaction"];
+  if (table === "specialization_tracks") return ["specialization"];
+  if (table === "purchased_specialization_keystones") return ["keystones"];
+  if (table === "mnemonic_recall") return ["mnemonic"];
+  return [];
+}
+
+function liveRefreshFeaturesForSql(sql) {
+  const text = String(sql || "").toLowerCase();
+  const features = [];
+  if (/\bplayer_virtual_currency_balances\b/.test(text) && !/adjust_player_virtual_currency_balance/i.test(sql)) features.push("solaris");
+  if (/\bplayer_faction_reputation\b/.test(text)) features.push("faction");
+  if (/\btutorial_per_player\b/.test(text)) features.push("tutorial");
+  if (/\bjourney_story_node\b/.test(text)) features.push("journey");
+  if (/\bplayer_tags\b/.test(text)) features.push("tags");
+  if (/\bplayer_faction\b/.test(text)) features.push("playerFaction");
+  if (/\bspecialization_tracks\b/.test(text)) features.push("specialization");
+  if (/\bpurchased_specialization_keystones\b/.test(text)) features.push("keystones");
+  if (/\bmnemonic_recall\b/.test(text)) features.push("mnemonic");
+  if (/\bdelete\s+from\s+(?:dune\.)?items\b/.test(text)) features.push("itemDelete");
+  return features;
+}
+
+async function withKnownLiveRefresh(db, fn, { features = [] } = {}) {
+  const selected = new Set(features);
+  if (!selected.size) return await fn();
+  const solarisSupported = selected.has("solaris") && await supportsSolarisLiveRefresh(db);
+  const solarisBefore = solarisSupported ? await solarisBalanceSnapshot(db) : new Map();
+  const factionSupported = selected.has("faction") && await supportsFactionMutation(db);
+  const factionBefore = factionSupported ? await factionReputationSnapshot(db) : new Map();
+  const tutorialSupported = selected.has("tutorial") && await supportsTutorialLiveRefresh(db);
+  const tutorialBefore = tutorialSupported ? await tutorialSnapshot(db) : new Map();
+  const journeySupported = selected.has("journey") && await supportsJourneyLiveRefresh(db);
+  const journeyBefore = journeySupported ? await journeySnapshot(db) : new Map();
+  const tagsSupported = selected.has("tags") && await supportsTagsLiveRefresh(db);
+  const tagsBefore = tagsSupported ? await playerTagsSnapshot(db) : new Map();
+  const itemDeleteSupported = selected.has("itemDelete") && await supportsItemDeleteLiveRefresh(db);
+  const itemsBefore = itemDeleteSupported ? await itemSnapshot(db) : new Map();
+  const playerFactionSupported = selected.has("playerFaction") && await supportsPlayerFactionLiveRefresh(db);
+  const playerFactionBefore = playerFactionSupported ? await playerFactionSnapshot(db) : new Map();
+  const specializationSupported = selected.has("specialization") && await supportsSpecializationLiveRefresh(db);
+  const specializationBefore = specializationSupported ? await specializationSnapshot(db) : new Map();
+  const keystonesSupported = selected.has("keystones") && await supportsKeystoneLiveRefresh(db);
+  const keystonesBefore = keystonesSupported ? await keystoneSnapshot(db) : new Map();
+  const mnemonicSupported = selected.has("mnemonic") && await supportsMnemonicLiveRefresh(db);
+  const mnemonicBefore = mnemonicSupported ? await mnemonicSnapshot(db) : new Map();
+  const result = await fn();
+  if (solarisSupported) {
+    const solarisAfter = await solarisBalanceSnapshot(db);
+    await emitChangedSolarisBalances(db, solarisBefore, solarisAfter);
+  }
+  if (factionSupported) {
+    const factionAfter = await factionReputationSnapshot(db);
+    await syncChangedFactionReputation(db, factionBefore, factionAfter);
+  }
+  if (tutorialSupported) {
+    const tutorialAfter = await tutorialSnapshot(db);
+    await syncChangedTutorials(db, tutorialBefore, tutorialAfter);
+  }
+  if (journeySupported) {
+    const journeyAfter = await journeySnapshot(db);
+    await syncChangedJourneyNodes(db, journeyBefore, journeyAfter);
+  }
+  if (tagsSupported) {
+    const tagsAfter = await playerTagsSnapshot(db);
+    await syncChangedPlayerTags(db, tagsBefore, tagsAfter);
+  }
+  if (itemDeleteSupported) {
+    const itemsAfter = await itemSnapshot(db);
+    await logDeletedItems(db, itemsBefore, itemsAfter);
+  }
+  if (playerFactionSupported) {
+    const playerFactionAfter = await playerFactionSnapshot(db);
+    await syncChangedPlayerFaction(db, playerFactionBefore, playerFactionAfter);
+  }
+  if (specializationSupported) {
+    const specializationAfter = await specializationSnapshot(db);
+    await syncChangedSpecializations(db, specializationBefore, specializationAfter);
+  }
+  if (keystonesSupported) {
+    const keystonesAfter = await keystoneSnapshot(db);
+    await syncChangedKeystonePlayers(db, keystonesBefore, keystonesAfter);
+  }
+  if (mnemonicSupported) {
+    const mnemonicAfter = await mnemonicSnapshot(db);
+    await syncChangedMnemonicLessons(db, mnemonicBefore, mnemonicAfter);
+  }
+  return result;
+}
+
+async function supportsSolarisLiveRefresh(db) {
+  try {
+    return await tableExists(db, "player_virtual_currency_balances") &&
+      await functionExists(db, "dune.get_solaris_id()") &&
+      await functionExists(db, "dune.log_event_solaris(oid,dune.logmessagetype,bigint,bigint,bigint)") &&
+      await functionExists(db, "dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)");
+  } catch {
+    return false;
+  }
+}
+
+async function solarisBalanceSnapshot(db) {
+  const result = await db.query(`
+    select player_controller_id::text as player_controller_id, balance::text as balance
+    from dune.player_virtual_currency_balances
+    where currency_id = dune.get_solaris_id()
+    order by player_controller_id`);
+  return new Map(result.rows.map((row) => [String(row.player_controller_id), BigInt(row.balance || 0)]));
+}
+
+async function emitChangedSolarisBalances(db, before, after) {
+  for (const [controllerId, balance] of after) {
+    const previous = before.get(controllerId);
+    if (previous === undefined || previous === balance) continue;
+    const delta = balance - previous;
+    await db.query(`
+      select dune.log_event_solaris(
+        'dune.adjust_player_virtual_currency_balance(bigint,smallint,bigint)'::regprocedure::oid,
+        'update_solaris'::dune.logmessagetype,
+        $1::bigint,
+        $2::bigint,
+        $3::bigint
+      )`, [controllerId, balance.toString(), delta.toString()]);
+  }
+}
+
+async function factionReputationSnapshot(db) {
+  const result = await db.query(`
+    select actor_id::text as actor_id, faction_id::text as faction_id, reputation_amount::text as reputation_amount
+    from dune.player_faction_reputation
+    order by actor_id, faction_id`);
+  return new Map(result.rows.map((row) => [`${row.actor_id}:${row.faction_id}`, {
+    actorId: String(row.actor_id),
+    factionId: Number(row.faction_id),
+    reputation: Number(row.reputation_amount || 0)
+  }]));
+}
+
+async function syncChangedFactionReputation(db, before, after) {
+  const syncActorIds = new Set();
+  for (const [key, next] of after) {
+    const previous = before.get(key);
+    if (previous && previous.reputation === next.reputation) continue;
+    await db.query("select dune.set_player_faction_reputation($1::bigint, $2::smallint, $3::integer)", [next.actorId, next.factionId, next.reputation]);
+    if (next.factionId === 1 || next.factionId === 2) syncActorIds.add(next.actorId);
+  }
+  for (const [key, previous] of before) {
+    if (after.has(key)) continue;
+    if (previous.factionId === 1 || previous.factionId === 2) syncActorIds.add(previous.actorId);
+  }
+  for (const actorId of syncActorIds) {
+    await syncFactionComponent(db, actorId);
+  }
+}
+
+async function supportsTutorialLiveRefresh(db) {
+  try {
+    return await tableExists(db, "tutorial_per_player") &&
+      await functionExists(db, "dune.create_or_update_tutorial_entry(bigint,smallint,smallint)");
+  } catch {
+    return false;
+  }
+}
+
+async function tutorialSnapshot(db) {
+  const result = await db.query(`
+    select player_id::text as player_id, tutorial_id::text as tutorial_id, tutorial_state::text as tutorial_state
+    from dune.tutorial_per_player
+    order by player_id, tutorial_id`);
+  return new Map(result.rows.map((row) => [`${row.player_id}:${row.tutorial_id}`, {
+    playerId: String(row.player_id),
+    tutorialId: Number(row.tutorial_id),
+    state: Number(row.tutorial_state || 0)
+  }]));
+}
+
+async function syncChangedTutorials(db, before, after) {
+  for (const [key, next] of after) {
+    const previous = before.get(key);
+    if (previous && previous.state === next.state) continue;
+    await db.query("select dune.create_or_update_tutorial_entry($1::bigint, $2::smallint, $3::smallint)", [next.playerId, next.tutorialId, next.state]);
+  }
+}
+
+async function supportsJourneyLiveRefresh(db) {
+  try {
+    return await tableExists(db, "journey_story_node") &&
+      await functionExists(db, "dune.save_journey_story_node(bigint,text,boolean,boolean,jsonb,jsonb,jsonb,jsonb,dune.journeystoryresetgroup)") &&
+      await functionExists(db, "dune.delete_journey_story_node(bigint,text)");
+  } catch {
+    return false;
+  }
+}
+
+async function journeySnapshot(db) {
+  const result = await db.query(`
+    select account_id::text as account_id,
+           story_node_id,
+           coalesce(override_reward_block, false) as override_reward_block,
+           coalesce(has_pending_reward, false) as has_pending_reward,
+           coalesce(complete_condition_state, '{}'::jsonb)::text as complete_condition_state,
+           coalesce(reveal_condition_state, '{}'::jsonb)::text as reveal_condition_state,
+           coalesce(fail_condition_state, '{}'::jsonb)::text as fail_condition_state,
+           coalesce(metadata_state, '{}'::jsonb)::text as metadata_state,
+           reset_group::text as reset_group
+    from dune.journey_story_node
+    order by account_id, story_node_id`);
+  return new Map(result.rows.map((row) => [`${row.account_id}:${row.story_node_id}`, {
+    accountId: String(row.account_id),
+    storyNodeId: String(row.story_node_id),
+    overrideRewardBlock: Boolean(row.override_reward_block),
+    hasPendingReward: Boolean(row.has_pending_reward),
+    completeConditionState: String(row.complete_condition_state || "{}"),
+    revealConditionState: String(row.reveal_condition_state || "{}"),
+    failConditionState: String(row.fail_condition_state || "{}"),
+    metadataState: String(row.metadata_state || "{}"),
+    resetGroup: String(row.reset_group || "Default")
+  }]));
+}
+
+async function syncChangedJourneyNodes(db, before, after) {
+  for (const [key, next] of after) {
+    const previous = before.get(key);
+    if (previous && JSON.stringify(previous) === JSON.stringify(next)) continue;
+    await db.query(`
+      select dune.save_journey_story_node(
+        $1::bigint, $2::text, $3::boolean, $4::boolean,
+        $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::dune.JourneyStoryResetGroup
+      )`, [
+      next.accountId,
+      next.storyNodeId,
+      next.overrideRewardBlock,
+      next.hasPendingReward,
+      next.completeConditionState,
+      next.revealConditionState,
+      next.failConditionState,
+      next.metadataState,
+      next.resetGroup
+    ]);
+  }
+  for (const [key, previous] of before) {
+    if (after.has(key)) continue;
+    await db.query("select dune.delete_journey_story_node($1::bigint, $2::text)", [previous.accountId, previous.storyNodeId]);
+  }
+}
+
+async function supportsTagsLiveRefresh(db) {
+  try {
+    return await tableExists(db, "player_tags") &&
+      await functionExists(db, "dune.update_player_tags(bigint,text[],text[])");
+  } catch {
+    return false;
+  }
+}
+
+async function playerTagsSnapshot(db) {
+  const result = await db.query(`
+    select account_id::text as account_id, tag
+    from dune.player_tags
+    order by account_id, tag`);
+  const out = new Map();
+  for (const row of result.rows) {
+    const accountId = String(row.account_id);
+    if (!out.has(accountId)) out.set(accountId, new Set());
+    out.get(accountId).add(String(row.tag));
+  }
+  return out;
+}
+
+async function syncChangedPlayerTags(db, before, after) {
+  const accountIds = new Set([...before.keys(), ...after.keys()]);
+  for (const accountId of accountIds) {
+    const oldTags = before.get(accountId) || new Set();
+    const newTags = after.get(accountId) || new Set();
+    const added = [...newTags].filter((tag) => !oldTags.has(tag));
+    const removed = [...oldTags].filter((tag) => !newTags.has(tag));
+    if (!added.length && !removed.length) continue;
+    await db.query("select dune.update_player_tags($1::bigint, $2::text[], $3::text[])", [accountId, added, removed]);
+  }
+}
+
+async function supportsItemDeleteLiveRefresh(db) {
+  try {
+    return await tableExists(db, "items") &&
+      await functionExists(db, "dune._add_item_delete_log(bigint,bigint,text)");
+  } catch {
+    return false;
+  }
+}
+
+async function itemSnapshot(db) {
+  const result = await db.query(`
+    select id::text as id, inventory_id::text as inventory_id, template_id
+    from dune.items
+    order by id`);
+  return new Map(result.rows.map((row) => [String(row.id), {
+    id: String(row.id),
+    inventoryId: String(row.inventory_id),
+    templateId: String(row.template_id || "")
+  }]));
+}
+
+async function logDeletedItems(db, before, after) {
+  for (const [id, item] of before) {
+    if (after.has(id)) continue;
+    await db.query("select dune._add_item_delete_log($1::bigint, $2::bigint, $3::text)", [item.id, item.inventoryId, item.templateId]);
+  }
+}
+
+async function supportsPlayerFactionLiveRefresh(db) {
+  try {
+    return await tableExists(db, "player_faction") &&
+      await functionExists(db, "dune.change_player_faction(bigint,smallint,smallint,timestamp without time zone)");
+  } catch {
+    return false;
+  }
+}
+
+async function playerFactionSnapshot(db) {
+  const result = await db.query(`
+    select actor_id::text as actor_id,
+           faction_id::text as faction_id,
+           coalesce(utc_time_faction_change, now())::text as utc_time_faction_change
+    from dune.player_faction
+    order by actor_id`);
+  return new Map(result.rows.map((row) => [String(row.actor_id), {
+    actorId: String(row.actor_id),
+    factionId: Number(row.faction_id),
+    changedAt: String(row.utc_time_faction_change || "")
+  }]));
+}
+
+async function syncChangedPlayerFaction(db, before, after) {
+  for (const [actorId, next] of after) {
+    const previous = before.get(actorId);
+    if (previous && previous.factionId === next.factionId && previous.changedAt === next.changedAt) continue;
+    await db.query("select dune.change_player_faction($1::bigint, $2::smallint, 3::smallint, coalesce($3::timestamp, now()::timestamp))", [next.actorId, next.factionId, next.changedAt || null]);
+  }
+  for (const [actorId, previous] of before) {
+    if (after.has(actorId)) continue;
+    await db.query("select dune.change_player_faction($1::bigint, 3::smallint, 3::smallint, now()::timestamp)", [previous.actorId]);
+  }
+}
+
+async function supportsSpecializationLiveRefresh(db) {
+  try {
+    return await tableExists(db, "specialization_tracks") &&
+      await functionExists(db, "dune.set_specialization_xp_and_level(bigint,dune.specializationtracktype,integer,real)");
+  } catch {
+    return false;
+  }
+}
+
+async function specializationSnapshot(db) {
+  const result = await db.query(`
+    select player_id::text as player_id,
+           track_type::text as track_type,
+           xp_amount::text as xp_amount,
+           level::text as level
+    from dune.specialization_tracks
+    order by player_id, track_type`);
+  return new Map(result.rows.map((row) => [`${row.player_id}:${row.track_type}`, {
+    playerId: String(row.player_id),
+    trackType: String(row.track_type),
+    xp: Number(row.xp_amount || 0),
+    level: Number(row.level || 0)
+  }]));
+}
+
+async function syncChangedSpecializations(db, before, after) {
+  for (const [key, next] of after) {
+    const previous = before.get(key);
+    if (previous && previous.xp === next.xp && previous.level === next.level) continue;
+    await db.query("select dune.set_specialization_xp_and_level($1::bigint, $2::dune.specializationtracktype, $3::integer, $4::real)", [next.playerId, next.trackType, next.xp, next.level]);
+  }
+}
+
+async function supportsKeystoneLiveRefresh(db) {
+  try {
+    return await tableExists(db, "purchased_specialization_keystones") &&
+      await tableExists(db, "specialization_keystones_map") &&
+      await tableExists(db, "player_state") &&
+      await tableExists(db, "actor_fgl_entities") &&
+      await tableExists(db, "fgl_entities");
+  } catch {
+    return false;
+  }
+}
+
+async function keystoneSnapshot(db) {
+  const result = await db.query(`
+    select player_id::text as player_id,
+           coalesce(string_agg(keystone_id::text, ',' order by keystone_id), '') as keystones
+    from dune.purchased_specialization_keystones
+    group by player_id
+    order by player_id`);
+  return new Map(result.rows.map((row) => [String(row.player_id), String(row.keystones || "")]));
+}
+
+async function syncChangedKeystonePlayers(db, before, after) {
+  const playerIds = new Set([...before.keys(), ...after.keys()]);
+  for (const playerId of playerIds) {
+    if ((before.get(playerId) || "") === (after.get(playerId) || "")) continue;
+    await syncKeystoneSkillPoints(db, playerId);
+  }
+}
+
+async function syncKeystoneSkillPoints(db, playerId) {
+  const state = await db.query(`
+    select (fe.components->'FLevelComponent'->1->>'TotalXPEarned')::bigint as xp,
+           coalesce((
+             select sum((value->>'SkillPointsSpent')::int)
+             from jsonb_each(fe.components->'FLevelComponent'->1->'ModuleData')
+             where key != format('(TagName="%s"', fe.components->'FLevelComponent'->1->'StarterSkillTreeTag'->>'TagName') || ')'
+           ), 0)::bigint as spent_sp
+    from dune.fgl_entities fe
+    join dune.actor_fgl_entities afe on afe.entity_id = fe.entity_id
+    where afe.slot_name = 'DuneCharacter'
+      and afe.actor_id = (
+        select player_pawn_id from dune.player_state
+        where player_controller_id = $1::bigint
+        limit 1
+      )
+    limit 1`, [playerId]);
+  const row = state.rows[0];
+  if (!row) return;
+  const bonus = await db.query(`
+    select coalesce(sum(case
+      when m.name ~ '_SkillPoint_Super$' then 5
+      when m.name ~ '_SkillPoint_Major$' then 3
+      when m.name ~ '_SkillPoint[0-9]*$' then 1
+      else 0
+    end), 0)::bigint as bonus
+    from dune.purchased_specialization_keystones p
+    join dune.specialization_keystones_map m on m.id = p.keystone_id
+    where p.player_id = $1::bigint`, [playerId]);
+  const expectedTotal = xpToLevel(Number(row.xp || 0)) + Number(bonus.rows[0]?.bonus || 0);
+  const expectedUnspent = Math.max(0, expectedTotal - Number(row.spent_sp || 0) - 1);
+  await db.query(`
+    update dune.fgl_entities fe
+    set components = jsonb_set(jsonb_set(
+      components,
+      '{FLevelComponent,1,TotalSkillPoints}',
+      to_jsonb($2::bigint)),
+      '{FLevelComponent,1,UnspentSkillPoints}',
+      to_jsonb($3::bigint))
+    from dune.actor_fgl_entities afe
+    where afe.entity_id = fe.entity_id
+      and afe.slot_name = 'DuneCharacter'
+      and afe.actor_id = (
+        select player_pawn_id from dune.player_state
+        where player_controller_id = $1::bigint
+        limit 1
+      )`, [playerId, expectedTotal, expectedUnspent]);
+}
+
+const CUMULATIVE_XP_BY_LEVEL = [
+  0, 40, 215, 440, 740, 1240, 1790, 2390, 2990, 3590, 4190,
+  4790, 5390, 5990, 6590, 7190, 7790, 8390, 8990, 9590, 10190,
+  10790, 11390, 11990, 12590, 13190, 13790, 14390, 14990, 15590, 16190,
+  16790, 17390, 17990, 18590, 19190, 19790, 20390, 20990, 21590, 22190,
+  22790, 23390, 23990, 24590, 25190, 25790, 26390, 26990, 27590, 28190,
+  28790, 29390, 29990, 30590, 31190, 31790, 32390, 32990, 33590, 34190,
+  34790, 35390, 35990, 36590, 37190, 37790, 38390, 38990, 39590, 40190,
+  40790, 41390, 41990, 42590, 43190, 43790, 44390, 44990, 45590, 46190,
+  46790, 47390, 47990, 48590, 49190, 49790, 50390, 50990, 51590, 52190,
+  52790, 53390, 53990, 54590, 55190, 55790, 56390, 56990, 57590, 58190,
+  58840, 59490, 60140, 60790, 61440, 62090, 62740, 63390, 64040, 64690,
+  65340, 65990, 66640, 67290, 67940, 68590, 69240, 69890, 70540, 71190,
+  71840, 72490, 73140, 73790, 74440, 75090, 75740, 76391, 77044, 77699,
+  78357, 79018, 79683, 80353, 81030, 81714, 82407, 83110, 83825, 84554,
+  85298, 86060, 86842, 87646, 88475, 89332, 90220, 91141, 92100, 93099,
+  94143, 95235, 96380, 97582, 98845, 100175, 101576, 103054, 104614, 106263,
+  108006, 109849, 111799, 113862, 116046, 118358, 120806, 123397, 126139, 129041,
+  132112, 135360, 138795, 142426, 146263, 150316, 154596, 159114, 163880, 168906,
+  174203, 179784, 185661, 191846, 198353, 205195, 212385, 219938, 227868, 236190,
+  244918, 254069, 263657, 273700, 284213, 295214, 306719, 318746, 331314, 344440
+];
+
+function xpToLevel(xp) {
+  if (xp <= 0) return 0;
+  let lo = 1;
+  let hi = CUMULATIVE_XP_BY_LEVEL.length - 1;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi + 1) / 2);
+    if (CUMULATIVE_XP_BY_LEVEL[mid] <= xp) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+async function supportsMnemonicLiveRefresh(db) {
+  try {
+    return await tableExists(db, "mnemonic_recall") &&
+      await functionExists(db, "dune.save_mnemonic_recall_lesson(bigint,text,bigint,integer,boolean)") &&
+      await functionExists(db, "dune.delete_mnemonic_recall_lesson(bigint,text)");
+  } catch {
+    return false;
+  }
+}
+
+async function mnemonicSnapshot(db) {
+  const result = await db.query(`
+    select account_id::text as account_id,
+           lesson_id,
+           lesson_state::text as lesson_state,
+           lesson_progress::text as lesson_progress,
+           coalesce(is_new, false) as is_new
+    from dune.mnemonic_recall
+    order by account_id, lesson_id`);
+  return new Map(result.rows.map((row) => [`${row.account_id}:${row.lesson_id}`, {
+    accountId: String(row.account_id),
+    lessonId: String(row.lesson_id),
+    state: String(row.lesson_state || "0"),
+    progress: Number(row.lesson_progress || 0),
+    isNew: Boolean(row.is_new)
+  }]));
+}
+
+async function syncChangedMnemonicLessons(db, before, after) {
+  for (const [key, next] of after) {
+    const previous = before.get(key);
+    if (previous && JSON.stringify(previous) === JSON.stringify(next)) continue;
+    await db.query("select dune.save_mnemonic_recall_lesson($1::bigint, $2::text, $3::bigint, $4::integer, $5::boolean)", [next.accountId, next.lessonId, next.state, next.progress, next.isNew]);
+  }
+  for (const [key, previous] of before) {
+    if (after.has(key)) continue;
+    await db.query("select dune.delete_mnemonic_recall_lesson($1::bigint, $2::text)", [previous.accountId, previous.lessonId]);
+  }
 }
 
 export async function tableExists(db, name, schema = "dune") {
@@ -564,7 +1166,16 @@ export async function addCurrency(db, id, { currencyId = 0, amount }) {
       select currency_id, balance
       from dune.player_virtual_currency_balances
       where player_controller_id = $1 and currency_id = $2`, [player.controllerId, resolvedCurrencyId]);
-    return { ok: true, player, currencyId: resolvedCurrencyId, amount: delta, balance: balance.rows[0] || null };
+    return {
+      ok: true,
+      player,
+      currencyId: resolvedCurrencyId,
+      amount: delta,
+      balance: balance.rows[0] || null,
+      message: playerOnline(player)
+        ? "Solari Credit was updated in the database. The player may need to relog before the new credit balance appears in-game."
+        : "Solari Credit was updated in the database and will be loaded when the player next joins."
+    };
   });
 }
 
@@ -583,7 +1194,16 @@ export async function addFactionReputation(db, id, { factionId, amount }) {
     const nextValue = Math.max(0, Math.min(12474, oldValue + delta));
     await tx.query("select dune.set_player_faction_reputation($1::bigint, $2::smallint, $3::integer)", [player.actorId, faction, nextValue]);
     if (faction === 1 || faction === 2) await syncFactionComponent(tx, player.actorId);
-    return { ok: true, player, factionId: faction, oldValue, newValue: nextValue };
+    return {
+      ok: true,
+      player,
+      factionId: faction,
+      oldValue,
+      newValue: nextValue,
+      message: playerOnline(player)
+        ? "Faction reputation was updated in the database. The player may need to relog before the new reputation appears in-game."
+        : "Faction reputation was updated in the database and will be loaded when the player next joins."
+    };
   });
 }
 
@@ -604,7 +1224,16 @@ export async function addIntel(db, id, { amount }) {
       update dune.actors
       set properties = jsonb_set(properties, '{TechKnowledgePlayerComponent,m_TechKnowledgePoints}', to_jsonb($2::bigint))
       where id = $1 and properties ? 'TechKnowledgePlayerComponent'`, [player.actorId, nextValue]);
-    return { ok: true, player, oldValue, newValue: nextValue, amount: delta };
+    return {
+      ok: true,
+      player,
+      oldValue,
+      newValue: nextValue,
+      amount: delta,
+      message: playerOnline(player)
+        ? "Intel was updated in the database. The player may need to relog before the new intel amount appears in-game."
+        : "Intel was updated in the database and will be loaded when the player next joins."
+    };
   });
 }
 
@@ -654,6 +1283,7 @@ export async function unlockCraftingRecipe(db, id, { recipeId }) {
   const safeRecipeId = validateRecipeId(recipeId);
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
+    requireOfflinePlayer(player, "Crafting recipe unlocks");
     const known = await tx.query(`
       select exists (
         select 1
@@ -733,6 +1363,7 @@ export async function unlockResearchItem(db, id, { itemKey }) {
   const safeItemKey = validateResearchKey(itemKey);
   return db.transaction(async (tx) => {
     const player = await resolvePlayerMutationTarget(tx, id);
+    requireOfflinePlayer(player, "Research unlocks");
     const known = await tx.query(`
       select exists (
         select 1
@@ -916,7 +1547,14 @@ export async function deleteInventoryItem(db, playerId, itemId) {
       for update`, [safeItemId, player.actorId]);
     if (!item.rows[0]) throw new Error("Inventory item was not found in the selected player's directly-owned inventory");
     await tx.query("select dune.delete_item($1::bigint)", [safeItemId]);
-    return { ok: true, player, deleted: item.rows[0] };
+    return {
+      ok: true,
+      player,
+      deleted: item.rows[0],
+      message: playerOnline(player)
+        ? `${item.rows[0].template_id || "Item"} was deleted from the database. The player may need to relog, refresh inventory, or restart the affected map before the item disappears in-game.`
+        : `${item.rows[0].template_id || "Item"} was deleted from the database and will be gone when the player next joins.`
+    };
   });
 }
 
@@ -1413,6 +2051,16 @@ async function resolvePlayerMutationTarget(db, id) {
     controllerId: Number(row.controller_id || row.actor_id),
     onlineStatus: row.online_status || "Offline"
   };
+}
+
+function playerOnline(player) {
+  return String(player?.onlineStatus || "").toLowerCase() === "online";
+}
+
+function requireOfflinePlayer(player, actionName) {
+  if (playerOnline(player)) {
+    throw new Error(`${actionName} require the player to be offline. Have the player log out fully, wait until their status is Offline, then apply the edit.`);
+  }
 }
 
 async function resolveCurrencyId(db, currencyId) {

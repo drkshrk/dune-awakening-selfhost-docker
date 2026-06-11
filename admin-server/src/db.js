@@ -113,6 +113,8 @@ export function isReadOnlySql(query) {
 export function rowsResult(result) {
   return {
     columns: result.fields.map((field) => ({ name: field.name, dataTypeId: field.dataTypeID })),
-    rows: result.rows
+    rows: result.rows,
+    rowCount: result.rowCount ?? result.rows.length,
+    command: result.command || ""
   };
 }
