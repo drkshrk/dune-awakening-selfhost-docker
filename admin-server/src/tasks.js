@@ -109,7 +109,7 @@ function taskOperations(operation, payload = {}) {
     return [
       ...(payload.modeChanged ? ["mapsSetMode"] : []),
       ...(payload.memoryChanged ? ["memorySetNoRestart"] : []),
-      ...(payload.memoryChanged ? restartOperations(payload) : [])
+      ...(payload.modeChanged ? restartOperations(payload) : [])
     ];
   }
   if (operation === "userSettingsSaveAndRestart") return ["userSettingsSave", "userSettingsMaterializeCurrent", ...restartOperations(payload)];

@@ -329,6 +329,37 @@ restart_partition_if_running() {
   fi
 }
 
+apply_live_memory_to_container() {
+  local container="$1"
+  local memory="$2"
+
+  [ -n "$container" ] || return 0
+  echo "Applying live memory limit ${memory} to ${container}."
+  docker update --memory "$memory" --memory-reservation "$memory" "$container" >/dev/null
+}
+
+apply_live_memory_to_map_if_running() {
+  local map="$1"
+  local memory="$2"
+  local info kind container partition
+
+  info="$(running_info_for_map "$map" || true)"
+  [ -n "$info" ] || return 0
+  IFS='|' read -r kind container partition <<< "$info"
+  apply_live_memory_to_container "$container" "$memory"
+}
+
+apply_live_memory_to_partition_if_running() {
+  local partition="$1"
+  local memory="$2"
+  local info kind container ignored
+
+  info="$(running_info_for_partition "$partition" || true)"
+  [ -n "$info" ] || return 0
+  IFS='|' read -r kind container ignored <<< "$info"
+  apply_live_memory_to_container "$container" "$memory"
+}
+
 show_status() {
   local default_memory
 
@@ -525,7 +556,11 @@ set_memory() {
     key="$(env_key_for "$target")"
     set_env_raw "$key" "$memory"
     echo "Set $key=$memory"
-    restart_partition_if_running "$partition"
+    if [ "${DUNE_MEMORY_SKIP_RESTART:-0}" = "1" ]; then
+      apply_live_memory_to_partition_if_running "$partition" "$memory"
+    else
+      restart_partition_if_running "$partition"
+    fi
     return
   fi
 
@@ -540,7 +575,11 @@ set_memory() {
   key="$(env_key_for "$map")"
   set_env_raw "$key" "$memory"
   echo "Set $key=$memory"
-  restart_map_if_running "$map"
+  if [ "${DUNE_MEMORY_SKIP_RESTART:-0}" = "1" ]; then
+    apply_live_memory_to_map_if_running "$map" "$memory"
+  else
+    restart_map_if_running "$map"
+  fi
 }
 
 unset_memory() {

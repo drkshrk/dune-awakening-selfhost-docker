@@ -9,7 +9,10 @@ CONFIG_FILE="runtime/generated/sietch-config.json"
 LIFECYCLE_LOG="runtime/generated/sietch-lifecycle.log"
 
 set_config_permissions() {
-  chmod 600 "$CONFIG_FILE" 2>/dev/null || true
+  # The web console may invoke this script from a container user such as
+  # nobody. Keep generated state readable by the host/admin user after writes.
+  chmod a+r "$CONFIG_FILE" 2>/dev/null || true
+  chmod u+w "$CONFIG_FILE" 2>/dev/null || true
 }
 
 log_sietch_lifecycle() {
@@ -51,6 +54,7 @@ for map_name in ("Survival_1", "DeepDesert_1"):
 if changed:
     config_path.write_text(json.dumps(config, indent=2, sort_keys=True) + "\n")
 PY
+  set_config_permissions
 }
 
 sync_sietch_config_from_db() {
@@ -304,6 +308,7 @@ if changed:
 
 print(json.dumps({"changed": changed, "events": events}, separators=(",", ":")))
 PY
+  set_config_permissions
 }
 
 map_supports_configurable_active_dimensions() {
@@ -327,6 +332,7 @@ generate_partition_catalog_from_server_catalog() {
   mkdir -p runtime/generated
   python3 - "$SERVER_CATALOG" "$PARTITION_CATALOG" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -366,6 +372,7 @@ Usage:
   dune sietches set-active <map-name> <count>
   dune sietches set-display <partition-id> <display-name>
   dune sietches set-password <partition-id> [password]
+  dune sietches set-settings <partition-id> <display-name> <password>
   dune sietches sync
   dune sietches validate
   dune sietches reconcile <map-name>
@@ -1121,6 +1128,17 @@ refresh_survival_control_plane_state() {
   refresh_survival_gateway_state
 }
 
+refresh_survival_sietch_metadata_state() {
+  sync_survival_usersettings_state
+  apply_survival_sietch_labels_from_config
+  refresh_survival_browser_state
+}
+
+sync_survival_sietch_topology_state() {
+  sync_survival_usersettings_state
+  apply_survival_sietch_labels_from_config
+}
+
 restart_survival_server_if_running() {
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx dune-server-survival-1; then
     echo "Restarting Survival_1 so sietch display/password changes are published by the running server..."
@@ -1210,13 +1228,13 @@ select dune.update_partition_labels(true);
 
   sync_partition_catalog_from_db
   if [ "$map" = "Survival_1" ]; then
-    refresh_survival_control_plane_state
+    sync_survival_sietch_topology_state
   fi
 }
 
 reconcile_map_dimensions() {
   local map="$1"
-  local safe_map target available base_partition assigned_count
+  local safe_map target available base_partition assigned_count initial_assigned_count
   local topology_changed=0
 
   ensure_config
@@ -1273,6 +1291,7 @@ PY
 
   assigned_count="$(psql_value "select count(*) from dune.world_partition where lower(map) = lower('$safe_map') and coalesce(server_id, '') <> '';" | tr -d '[:space:]')"
   [ -n "$assigned_count" ] || assigned_count=0
+  initial_assigned_count="$assigned_count"
 
   if map_supports_configurable_active_dimensions "$map"; then
     base_server_id="$(psql_value "
@@ -1404,11 +1423,10 @@ where wp.partition_id = ranked.partition_id;
     sync_survival_usersettings_state
     apply_survival_sietch_labels_from_config
   fi
-  if [ "$map" = "Survival_1" ] && [ "$topology_changed" -eq 1 ]; then
+  if [ "$map" = "Survival_1" ] && [ "$topology_changed" -eq 1 ] && [ "$target" -gt "$initial_assigned_count" ] 2>/dev/null; then
     wait_for_survival_topology_settle "$target" 90 || true
     sync_sietch_config_from_db "reconcile-$map-settled" >/dev/null || true
-    sync_survival_usersettings_state
-    refresh_survival_control_plane_state
+    sync_survival_sietch_topology_state
   fi
 }
 
@@ -1752,9 +1770,7 @@ case "$cmd" in
     fi
     python3 runtime/scripts/usersettings.py materialize-current >/dev/null 2>&1 || true
     if [ "$(partition_map_name "$partition_id")" = "Survival_1" ]; then
-      refresh_survival_control_plane_state
-      restart_sietch_partition_if_running "$partition_id"
-      refresh_survival_control_plane_state
+      refresh_survival_sietch_metadata_state
     fi
     echo "Display name updated."
     ;;
@@ -1765,15 +1781,37 @@ case "$cmd" in
     set_partition_value "$2" password "$password_value"
     python3 runtime/scripts/usersettings.py materialize-current >/dev/null 2>&1 || true
     if [ "$(partition_map_name "$2")" = "Survival_1" ]; then
-      refresh_survival_control_plane_state
-      restart_sietch_partition_if_running "$2"
-      refresh_survival_control_plane_state
+      refresh_survival_sietch_metadata_state
     fi
     if [ -n "$password_value" ]; then
       echo "Password updated."
     else
       echo "Password cleared."
     fi
+    ;;
+  set-settings)
+    [ "$#" -eq 4 ] || { usage; exit 2; }
+    partition_id="$2"
+    display_name="$3"
+    password_value="$4"
+    python3 runtime/scripts/usersettings.py partition-engine-set "$(partition_map_name "$partition_id")" "$partition_id" server_display_name "$display_name" >/dev/null 2>&1 || true
+    python3 runtime/scripts/usersettings.py partition-engine-set "$(partition_map_name "$partition_id")" "$partition_id" server_login_password "$password_value" >/dev/null 2>&1 || true
+    set_partition_value "$partition_id" display_name "$display_name"
+    set_partition_value "$partition_id" password "$password_value"
+    if [ -n "$display_name" ]; then
+      set_partition_label_if_possible "$partition_id" "$display_name"
+    else
+      reset_partition_label_if_possible "$partition_id"
+    fi
+    sync_sietch_config_from_db "set-settings" >/dev/null || true
+    if [ "$(partition_map_name "$partition_id")" = "Survival_1" ]; then
+      sync_survival_usersettings_state
+    fi
+    python3 runtime/scripts/usersettings.py materialize-current >/dev/null 2>&1 || true
+    if [ "$(partition_map_name "$partition_id")" = "Survival_1" ]; then
+      refresh_survival_sietch_metadata_state
+    fi
+    echo "Sietch settings updated."
     ;;
   sync)
     summary="$(sync_sietch_config_from_db "manual-sync")"

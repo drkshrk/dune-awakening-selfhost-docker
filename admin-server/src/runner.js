@@ -187,6 +187,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["sietches", "set-display", validatePartitionId(payload.partitionId), validateDisplayName(payload.displayName)];
     case "sietchesSetPassword":
       return ["sietches", "set-password", validatePartitionId(payload.partitionId), validateSietchPassword(payload.password ?? "")];
+    case "sietchesSetSettings":
+      return ["sietches", "set-settings", validatePartitionId(payload.partitionId), validateDisplayName(payload.displayName), validateSietchPassword(payload.password ?? "")];
     case "sietchesSync":
       return ["sietches", "sync"];
     case "sietchesValidate":

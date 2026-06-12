@@ -23,7 +23,7 @@ if docker ps --format '{{.Names}}' | grep -qx dune-server-overmap \
 fi
 while IFS= read -r container_name; do
   partition_id="${container_name##*-}"
-  if [ -n "$partition_id" ] && docker logs "$container_name" 2>&1 | grep -Eq "Server farm is READY .*partition ${partition_id}"; then
+  if [ -n "$partition_id" ] && docker logs "$container_name" 2>&1 | grep -Eq "Server farm is READY"; then
     log_ready_partition_ids="${log_ready_partition_ids}${log_ready_partition_ids:+,}${partition_id}"
   fi
 done < <(docker ps --format '{{.Names}}' | grep -E '^dune-server-.+-[0-9]+$' || true)

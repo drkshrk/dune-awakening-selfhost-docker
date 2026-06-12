@@ -16,7 +16,7 @@ import { listCatalogItems, resolveCatalogItem } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, safeStaticTarget } from "./httpSafety.js";
-import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
+import { parseBackupAutoStatus, parseBackupListRows, parseMemoryStatusRows } from "./statusParsers.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -25,6 +25,22 @@ let db = createDb(config);
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
 const journeyTagsData = loadJourneyTagsData();
+const SWAP_MEMORY_INTERVAL_MS = 10000;
+const SWAP_MEMORY_HIGH_WATERMARK = 90;
+const SWAP_MEMORY_DONOR_MAX_PERCENT = 55;
+const SWAP_MEMORY_EMERGENCY_DONOR_MAX_PERCENT = 70;
+const SWAP_MEMORY_DONOR_POST_TRANSFER_MAX_PERCENT = 80;
+const SWAP_MEMORY_CHUNK_BYTES = 1024 ** 3;
+const SWAP_MEMORY_MIN_HEADROOM_BYTES = 1024 ** 3;
+const swapMemoryState = {
+  enabled: false,
+  running: false,
+  baselineLimits: new Map(),
+  lastMessage: "Swap Memory is off.",
+  lastAction: "",
+  lastError: "",
+  updatedAt: null
+};
 
 const mime = new Map([
   [".html", "text/html; charset=utf-8"],
@@ -56,6 +72,11 @@ createServer(async (req, res) => {
 setInterval(() => {
   void carePackageAutoTick();
 }, 10000).unref?.();
+
+setInterval(() => {
+  if (!swapMemoryState.enabled) return;
+  void runSwapMemoryTick();
+}, SWAP_MEMORY_INTERVAL_MS).unref?.();
 
 function scheduleBootAutoStart() {
   if (config.mockMode || process.env.ADMIN_AUTO_START_STACK_ON_BOOT === "0") return;
@@ -332,6 +353,8 @@ async function handleApi(req, res) {
   if (path === "/api/maps/autoscaler" && req.method === "POST") return confirmedTask(req, res, "maps", "autoscalerAction", {}, "AUTOSCALER CHANGE");
   if (path === "/api/maps/autoscaler") return commandJson(res, "autoscalerStatus");
   if (path === "/api/maps/memory" && req.method === "POST") return memoryRoute(req, res);
+  if (path === "/api/maps/memory/swap" && req.method === "POST") return swapMemoryRoute(req, res);
+  if (path === "/api/maps/memory/swap") return json(res, 200, publicSwapMemoryState());
   if (path === "/api/maps/memory/live") return liveMapMemoryRoute(res);
   if (path === "/api/maps/memory") return commandJson(res, "memoryStatus");
   if (path === "/api/maps/user-settings/schema") return userSettingsSchemaRoute(res);
@@ -924,6 +947,31 @@ async function memoryRoute(req, res) {
   return task(req, res, "maps", operation, body);
 }
 
+async function swapMemoryRoute(req, res) {
+  const body = await readJson(req);
+  const enabled = Boolean(body.enabled);
+  if (enabled === swapMemoryState.enabled) return json(res, 200, publicSwapMemoryState());
+
+  swapMemoryState.enabled = enabled;
+  swapMemoryState.lastError = "";
+  swapMemoryState.updatedAt = new Date().toISOString();
+
+  if (enabled) {
+    swapMemoryState.baselineLimits.clear();
+    swapMemoryState.lastMessage = "Swap Memory is monitoring running maps";
+    await captureSwapMemoryBaseline();
+    void runSwapMemoryTick();
+  } else {
+    swapMemoryState.lastMessage = "Restoring configured memory limits.";
+    await restoreSwapMemoryBaseline();
+    swapMemoryState.baselineLimits.clear();
+    swapMemoryState.lastMessage = "Swap Memory is off. Configured memory limits are active.";
+  }
+
+  audit(config, req, "maps.memory.swap", { enabled });
+  return json(res, 200, publicSwapMemoryState());
+}
+
 async function mapSettingsRoute(req, res) {
   const body = await readJson(req);
   if (body.confirmation !== "SAVE MAP SETTINGS") return json(res, 400, { error: "Confirmation phrase required: SAVE MAP SETTINGS" });
@@ -933,7 +981,7 @@ async function mapSettingsRoute(req, res) {
   const modeChanged = Boolean(body.modeChanged);
   if (!map) return json(res, 400, { error: "Map is required." });
   if (!memoryChanged && !modeChanged) return json(res, 400, { error: "No map setting changes were submitted." });
-  const restart = memoryChanged && Boolean(body.running);
+  const restart = modeChanged && Boolean(body.running);
   const payload = {
     map,
     partitionId,
@@ -1026,12 +1074,156 @@ function restartPayload(scope, map, partitionId) {
 
 async function liveMapMemoryRoute(res) {
   try {
-    const stdout = await runProcessText("docker", ["stats", "--no-stream", "--format", "{{json .}}"], 10000);
-    const rows = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map(parseDockerStatsRow).filter(Boolean);
+    const rows = await readLiveMapMemoryRows();
     return json(res, 200, { rows, sampledAt: new Date().toISOString() });
   } catch (error) {
     return json(res, 200, { rows: [], sampledAt: new Date().toISOString(), error: redact(error.message || error) });
   }
+}
+
+async function readLiveMapMemoryRows() {
+  const stdout = await runProcessText("docker", ["stats", "--no-stream", "--format", "{{json .}}"], 10000);
+  return stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map(parseDockerStatsRow).filter(Boolean);
+}
+
+async function captureSwapMemoryBaseline() {
+  const rows = await readLiveMapMemoryRows().catch(() => []);
+  for (const row of rows) {
+    if (row.limitBytes > 0 && !swapMemoryState.baselineLimits.has(row.container)) {
+      swapMemoryState.baselineLimits.set(row.container, row.limitBytes);
+    }
+  }
+}
+
+async function restoreSwapMemoryBaseline() {
+  const configuredLimits = await configuredMemoryLimitsByContainer().catch(() => new Map());
+  const restoreTargets = new Map(swapMemoryState.baselineLimits);
+  for (const [container, limitBytes] of configuredLimits.entries()) {
+    restoreTargets.set(container, limitBytes);
+  }
+  for (const [container, limitBytes] of restoreTargets.entries()) {
+    if (limitBytes > 0) {
+      await dockerUpdateMemoryLimit(container, limitBytes).catch((error) => {
+        swapMemoryState.lastError = redact(error.message || error);
+      });
+    }
+  }
+  swapMemoryState.updatedAt = new Date().toISOString();
+}
+
+async function runSwapMemoryTick() {
+  if (!swapMemoryState.enabled || swapMemoryState.running) return;
+  swapMemoryState.running = true;
+  try {
+    const rows = (await readLiveMapMemoryRows()).filter((row) => row.usedBytes > 0 && row.limitBytes > 0);
+    for (const row of rows) {
+      if (!swapMemoryState.baselineLimits.has(row.container)) swapMemoryState.baselineLimits.set(row.container, row.limitBytes);
+    }
+    const target = rows.filter((row) => row.percent >= SWAP_MEMORY_HIGH_WATERMARK).sort((a, b) => b.percent - a.percent)[0];
+    if (!target) {
+      swapMemoryState.lastMessage = "Swap Memory is monitoring running maps";
+      swapMemoryState.lastAction = "";
+      swapMemoryState.lastError = "";
+      swapMemoryState.updatedAt = new Date().toISOString();
+      return;
+    }
+
+    const donor = selectSwapMemoryDonor(rows, target);
+
+    if (!donor) {
+      swapMemoryState.lastMessage = `${target.map} is above ${SWAP_MEMORY_HIGH_WATERMARK}% memory, but no running map has enough spare memory to donate safely`;
+      swapMemoryState.lastAction = "";
+      swapMemoryState.lastError = "";
+      swapMemoryState.updatedAt = new Date().toISOString();
+      return;
+    }
+
+    const donorLimit = donor.limitBytes - SWAP_MEMORY_CHUNK_BYTES;
+    const targetLimit = target.limitBytes + SWAP_MEMORY_CHUNK_BYTES;
+    await dockerUpdateMemoryLimit(target.container, targetLimit);
+    await dockerUpdateMemoryLimit(donor.container, donorLimit);
+    swapMemoryState.lastMessage = `Moved 1 GB from ${donor.map} to ${target.map}`;
+    swapMemoryState.lastAction = `${donor.container} -> ${target.container}`;
+    swapMemoryState.lastError = "";
+    swapMemoryState.updatedAt = new Date().toISOString();
+  } catch (error) {
+    swapMemoryState.lastError = redact(error.message || error);
+    swapMemoryState.lastMessage = "Swap Memory could not rebalance memory.";
+    swapMemoryState.updatedAt = new Date().toISOString();
+  } finally {
+    swapMemoryState.running = false;
+  }
+}
+
+async function configuredMemoryLimitsByContainer() {
+  const [rows, result] = await Promise.all([
+    readLiveMapMemoryRows(),
+    runDune(config, buildDuneArgs("memoryStatus"), { timeoutMs: 10000 })
+  ]);
+  const configuredRows = parseMemoryStatusRows(result.stdout || "");
+  const byMap = new Map(configuredRows.map((row) => [String(row.map), parseMemorySettingBytes(row.memory)]).filter(([, bytes]) => bytes > 0));
+  const limits = new Map();
+  for (const row of rows) {
+    const key = memoryTargetForContainer(row.container);
+    const configured = byMap.get(key);
+    if (configured > 0) limits.set(row.container, configured);
+  }
+  return limits;
+}
+
+function memoryTargetForContainer(container) {
+  if (container === "dune-server-survival-1") return "Survival_1";
+  const survivalPartition = String(container || "").match(/^dune-server-survival-1-(\d+)$/);
+  if (survivalPartition) return `Survival_1:${survivalPartition[1]}`;
+  if (container === "dune-server-overmap") return "Overmap";
+  return mapFromContainerName(container);
+}
+
+function parseMemorySettingBytes(value) {
+  const match = String(value || "").match(/(\d+(?:\.\d+)?)\s*([KMGT]i?B|[KMGT]B?|[kmgt]i?b|[kmgt]b?)/);
+  return match ? parseDockerBytes(`${match[1]}${match[2]}`) : 0;
+}
+
+function selectSwapMemoryDonor(rows, target) {
+  const candidates = rows
+    .filter((row) => row.container !== target.container)
+    .filter((row) => row.limitBytes - SWAP_MEMORY_CHUNK_BYTES >= minimumSwapLimit(row))
+    .filter((row) => percentAfterMemoryDonation(row) <= SWAP_MEMORY_DONOR_POST_TRANSFER_MAX_PERCENT);
+  const normal = candidates
+    .filter((row) => row.percent <= SWAP_MEMORY_DONOR_MAX_PERCENT)
+    .sort((a, b) => a.percent - b.percent || b.limitBytes - a.limitBytes)[0];
+  if (normal) return normal;
+  return candidates
+    .filter((row) => row.percent <= SWAP_MEMORY_EMERGENCY_DONOR_MAX_PERCENT)
+    .sort((a, b) => a.percent - b.percent || b.limitBytes - a.limitBytes)[0] || null;
+}
+
+function percentAfterMemoryDonation(row) {
+  const nextLimit = row.limitBytes - SWAP_MEMORY_CHUNK_BYTES;
+  return nextLimit > 0 ? (row.usedBytes / nextLimit) * 100 : 100;
+}
+
+function minimumSwapLimit(row) {
+  return Math.max(row.usedBytes + SWAP_MEMORY_MIN_HEADROOM_BYTES, Math.ceil(row.usedBytes * 1.25), SWAP_MEMORY_CHUNK_BYTES);
+}
+
+async function dockerUpdateMemoryLimit(container, limitBytes) {
+  await runProcessText("docker", ["update", "--memory", dockerMemoryArg(limitBytes), "--memory-reservation", dockerMemoryArg(limitBytes), container], 15000);
+}
+
+function dockerMemoryArg(bytes) {
+  return `${Math.max(256, Math.round(bytes / (1024 ** 2)))}m`;
+}
+
+function publicSwapMemoryState() {
+  return {
+    enabled: swapMemoryState.enabled,
+    running: swapMemoryState.running,
+    lastMessage: swapMemoryState.lastMessage,
+    lastAction: swapMemoryState.lastAction,
+    lastError: swapMemoryState.lastError,
+    updatedAt: swapMemoryState.updatedAt
+  };
 }
 
 function parseDockerStatsRow(line) {
@@ -1075,6 +1267,7 @@ function parseDockerBytes(value) {
 
 function mapFromContainerName(name) {
   if (name === "dune-server-survival-1") return "Survival_1";
+  if (/^dune-server-survival-1-\d+$/.test(name)) return `Survival_1 partition ${name.split("-").pop()}`;
   if (name === "dune-server-overmap") return "Overmap";
   return name.replace(/^dune-server-/, "");
 }
@@ -1156,13 +1349,14 @@ async function sietchesUpdateRoute(req, res) {
     "set-active": "sietchesSetActive",
     "set-display": "sietchesSetDisplay",
     "set-password": "sietchesSetPassword",
+    "set-settings": "sietchesSetSettings",
     sync: "sietchesSync",
     validate: "sietchesValidate",
     reconcile: "sietchesReconcile"
   };
   const operation = operationByAction[String(body.action || "")];
   if (!operation) return json(res, 400, { error: "Unsupported sietch update action" });
-  const dangerous = ["sietchesSetActive", "sietchesSetDisplay", "sietchesSetPassword", "sietchesReconcile"].includes(operation);
+  const dangerous = ["sietchesSetActive", "sietchesSetDisplay", "sietchesSetPassword", "sietchesSetSettings", "sietchesReconcile"].includes(operation);
   if (dangerous && body.confirmation !== "UPDATE SIETCHES") return json(res, 400, { error: "Confirmation phrase required: UPDATE SIETCHES" });
   return task(req, res, "maps", operation, body);
 }
