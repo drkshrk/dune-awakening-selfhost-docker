@@ -52,6 +52,23 @@ auto_repair_stack_git_state() {
   echo "Stack Git state repaired to ${version}."
 }
 
+detect_web_console_ip() {
+  local ip=""
+  if command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{ for (i=1; i<=NF; i++) if ($i == "src") { print $(i + 1); exit } }' || true)"
+  fi
+  if [ -z "$ip" ] && command -v hostname >/dev/null 2>&1; then
+    ip="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -Ev '^(127\.|169\.254\.|172\.17\.|172\.18\.|172\.19\.|172\.2[0-9]\.|172\.3[0-1]\.)' | head -n1 || true)"
+  fi
+  printf '%s' "${ip:-127.0.0.1}"
+}
+
+print_web_console_url() {
+  local port="${ADMIN_BIND_PORT:-8088}"
+  echo "Open Dune Docker Console in your browser:"
+  echo "  http://$(detect_web_console_ip):$port"
+}
+
 case "$cmd" in
   init|help|--help|-h) ;;
   *) auto_repair_stack_git_state ;;
@@ -72,13 +89,26 @@ EOF
       service="$(docker compose -f docker-compose.web.yml config --services 2>/dev/null | grep -E '^redblink-dune-docker-console$' | head -n1 || true)"
       if [ -n "$service" ]; then
         echo
-        echo "Starting Dune Docker Console..."
-        if docker compose -f docker-compose.web.yml up -d --build --force-recreate "$service"; then
-          echo "Dune Docker Console is running. Open the web panel on your configured admin URL, usually port 8088."
+        if docker ps --format '{{.Names}}' | grep -qx redblink-dune-docker-console; then
+          echo "Dune Docker Console is already running."
+          print_web_console_url
         else
-          echo "Dune Docker Console could not be started automatically."
-          echo "Run: docker compose -f docker-compose.web.yml up -d --build --force-recreate redblink-dune-docker-console"
-          exit 1
+          echo "Starting Dune Docker Console..."
+          if DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" docker compose -f docker-compose.web.yml up -d --build "$service"; then
+            echo "Dune Docker Console is running."
+            print_web_console_url
+          else
+            echo "Dune Docker Console could not be started automatically."
+            echo "Run: DUNE_HOST_REPO_ROOT=\"\$(pwd -P)\" docker compose -f docker-compose.web.yml up -d --build redblink-dune-docker-console"
+            exit 1
+          fi
+        fi
+        if [ -f runtime/secrets/admin-web-password.txt ]; then
+          echo
+          echo "Use your local admin password to sign in."
+        else
+          echo
+          echo "Run ./install.sh once if you need the first admin password shown again."
         fi
       else
         echo
