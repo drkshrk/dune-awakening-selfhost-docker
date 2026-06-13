@@ -9,7 +9,9 @@ host_path() {
   local host_root="${DUNE_HOST_REPO_ROOT:-$PWD}"
 
   if [ -z "${DUNE_HOST_REPO_ROOT:-}" ] && [ "$PWD" = "/repo" ]; then
-    host_root="${DUNE_REAL_HOST_REPO_ROOT:-/home/ubuntu/dune-awakening-selfhost-docker}"
+    echo "DUNE_HOST_REPO_ROOT is not set, so Docker bind mounts cannot be prepared safely." >&2
+    echo "Restart the Web UI with DUNE_HOST_REPO_ROOT set to the host repository path." >&2
+    return 1
   fi
 
   if [ "$path" = "$container_root" ]; then

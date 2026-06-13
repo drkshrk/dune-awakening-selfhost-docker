@@ -193,6 +193,7 @@ start_console() {
   fi
 
   step "Starting the Web UI."
+  export DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
   "${DOCKER[@]}" compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
 }
 
