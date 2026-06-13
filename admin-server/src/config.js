@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
 
-export const APP_NAME = "RedBlink Dune Docker Console";
+export const APP_NAME = "Dune Docker Console";
 
 export function loadConfig() {
   const repoRoot = resolve(process.env.DUNE_DOCKER_DIR || process.env.RUNTIME_DIR || process.cwd());
@@ -13,6 +13,8 @@ export function loadConfig() {
   mkdirSync(generatedDir, { recursive: true });
   mkdirSync(secretsDir, { recursive: true });
 
+  const adminPasswordFile = resolve(secretsDir, "admin-web-password.txt");
+  const adminPasswordEnvManaged = Boolean(process.env.ADMIN_PASSWORD);
   return {
     appName: APP_NAME,
     repoRoot,
@@ -24,7 +26,9 @@ export function loadConfig() {
     allowHostBootstrap: process.env.ALLOW_HOST_BOOTSTRAP === "true",
     mockMode: process.env.ADMIN_MOCK_MODE === "1",
     sessionSecret: getOrCreateSecret(resolve(secretsDir, "admin-web-session-secret.txt"), 48),
-    adminPassword: process.env.ADMIN_PASSWORD || getOrCreateSecret(resolve(secretsDir, "admin-web-password.txt"), 18),
+    adminPassword: process.env.ADMIN_PASSWORD || getOrCreateSecret(adminPasswordFile, 18),
+    adminPasswordFile,
+    adminPasswordEnvManaged,
     generatedDir,
     secretsDir,
     auditLog: resolve(generatedDir, "web-admin-audit.jsonl"),
@@ -88,6 +92,7 @@ export function publicConfig(config) {
     appName: config.appName,
     repoRoot: config.repoRoot,
     authDisabled: config.authDisabled,
+    adminPasswordEnvManaged: config.adminPasswordEnvManaged,
     secureCookies: config.secureCookies,
     allowHostBootstrap: config.allowHostBootstrap,
     mockMode: config.mockMode

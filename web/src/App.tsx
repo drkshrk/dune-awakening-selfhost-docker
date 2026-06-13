@@ -1,6 +1,6 @@
 import { Fragment, isValidElement, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import { Archive, ChevronDown, ChevronUp, Database, FileText, Gift, Home, Lock, Map as MapIcon, PackagePlus, Play, RefreshCw, Server, Settings, Shield, Sparkles, Users, X } from "lucide-react";
+import { Archive, ChevronDown, ChevronUp, Database, FileText, Gift, Heart, Home, Lock, Map as MapIcon, MessageCircle, PackagePlus, Play, RefreshCw, Server, Settings, Shield, Sparkles, Users, X } from "lucide-react";
 import { api, post, setCsrfToken } from "./api/client";
 import { serverApi } from "./api/server";
 import type { PerformanceSnapshot } from "./api/server";
@@ -77,22 +77,53 @@ function formatResultMessage(value: unknown) {
   return formatUiSentence(value, false);
 }
 
-const nav: { tab: Tab; icon: React.ReactNode }[] = [
-  { tab: "Home", icon: <Home size={18} /> },
-  { tab: "Setup", icon: <Shield size={18} /> },
-  { tab: "Server Control", icon: <Server size={18} /> },
-  { tab: "Players", icon: <Users size={18} /> },
-  { tab: "Admin Tools", icon: <PackagePlus size={18} /> },
-  { tab: "Live Map", icon: <MapIcon size={18} /> },
-  { tab: "Maps", icon: <MapIcon size={18} /> },
-  { tab: "Care Package", icon: <Gift size={18} /> },
-  { tab: "Addons", icon: <Sparkles size={18} /> },
-  { tab: "Database", icon: <Database size={18} /> },
-  { tab: "Backups", icon: <Archive size={18} /> },
-  { tab: "Logs", icon: <FileText size={18} /> },
-  { tab: "Updates", icon: <RefreshCw size={18} /> },
-  { tab: "Settings", icon: <Settings size={18} /> }
+const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }[] = [
+  {
+    title: "Server Operations",
+    items: [
+      { tab: "Setup", icon: <Shield size={18} /> },
+      { tab: "Server Control", icon: <Server size={18} /> },
+      { tab: "Backups", icon: <Archive size={18} /> },
+      { tab: "Database", icon: <Database size={18} /> },
+      { tab: "Updates", icon: <RefreshCw size={18} /> },
+      { tab: "Logs", icon: <FileText size={18} /> },
+      { tab: "Settings", icon: <Settings size={18} /> }
+    ]
+  },
+  {
+    title: "Arrakis Management",
+    items: [
+      { tab: "Maps", icon: <MapIcon size={18} /> },
+      { tab: "Players", icon: <Users size={18} /> },
+      { tab: "Live Map", icon: <MapIcon size={18} /> },
+      { tab: "Admin Tools", icon: <PackagePlus size={18} /> },
+      { tab: "Care Package", icon: <Gift size={18} /> }
+    ]
+  },
+  {
+    title: "Community",
+    items: [
+      { tab: "Addons", icon: <Sparkles size={18} /> }
+    ]
+  }
 ];
+
+const VEHICLE_SPAWN_OFFSET_UNITS = 1000; // 10 meters in Unreal units.
+const REDBLINK_REPO_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker";
+const REDBLINK_DISCORD_URL = "https://discord.gg/9pQqytu6BU";
+const REDBLINK_KOFI_URL = "https://ko-fi.com/redblink";
+
+function DiscordLogo({ size = 18 }: { size?: number }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path fill="currentColor" d="M20.3 4.4A18.4 18.4 0 0 0 15.8 3l-.2.4a13.1 13.1 0 0 1 4 2 14.2 14.2 0 0 0-5-1.5 14.8 14.8 0 0 0-5.2 0 14.2 14.2 0 0 0-5 1.5 13.1 13.1 0 0 1 4-2L8.2 3a18.4 18.4 0 0 0-4.5 1.4C.9 8.5.1 12.5.5 16.5A18.7 18.7 0 0 0 6 19.2l.7-.9a11.6 11.6 0 0 1-1.8-.9l.4-.3a13.2 13.2 0 0 0 13.4 0l.4.3a11.6 11.6 0 0 1-1.8.9l.7.9a18.7 18.7 0 0 0 5.5-2.7c.5-4.6-.8-8.5-3.2-12.1ZM8.4 14.2c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm7.2 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z" />
+  </svg>;
+}
+
+function KofiLogo({ size = 18 }: { size?: number }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path fill="currentColor" d="M4.2 6.1h12.5c1.7 0 3 1.3 3 3v.3h.5a3.3 3.3 0 0 1 0 6.6h-.8a6.6 6.6 0 0 1-6 3.9H7.7A6.7 6.7 0 0 1 1 13.2V9.3c0-1.8 1.4-3.2 3.2-3.2Zm15.5 7.5h.5a1 1 0 0 0 0-2h-.5v2ZM8.6 9.4c-.8 0-1.5.6-1.5 1.5 0 2 3.5 4 3.8 4.1.3-.1 3.8-2.1 3.8-4.1 0-.9-.7-1.5-1.5-1.5-.8 0-1.5.5-2.3 1.4-.8-.9-1.5-1.4-2.3-1.4Z" />
+  </svg>;
+}
 
 const DUNE_ASSET_BASE = "/assets/dune";
 
@@ -211,6 +242,7 @@ export function App() {
   const [homeTaskResult, setHomeTaskResult] = useState<HomeTaskResult | null>(null);
   const [funcomTokenResult, setFuncomTokenResult] = useState<HomeTaskResult | null>(() => loadPersistedFuncomTokenResult());
   const [homeRunningAction, setHomeRunningAction] = useState<"start" | "stop" | "restart" | "">("");
+  const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
   const stackActionStartedAt = useRef(0);
   const stackStatusLoadRef = useRef<Promise<HomeLoadResult> | null>(null);
   const [setupJump, setSetupJump] = useState({ step: 0, nonce: 0 });
@@ -245,6 +277,18 @@ export function App() {
     const result = await post<{ authenticated: boolean; csrfToken: string }>("/api/auth/login", { password });
     setCsrfToken(result.csrfToken);
     setAuth(result.authenticated);
+  }
+
+  async function logoutAfterPasswordChange() {
+    try {
+      await post("/api/auth/logout");
+    } catch {
+      // The password already changed; return to login even if session cleanup fails.
+    }
+    setCsrfToken(null);
+    setAuth(false);
+    setPassword("");
+    setTab("Home");
   }
 
   async function safe(action: () => Promise<void>) {
@@ -310,11 +354,25 @@ export function App() {
     };
   }, [homeRunningAction, loadStackStatus]);
 
+  useEffect(() => {
+    if (!auth) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const final = await waitForTaskSilently((await updatesApi.checkStack()).task);
+        if (!cancelled) setStackVersionStatus(parseUpdateTask(final));
+      } catch {
+        if (!cancelled) setStackVersionStatus({ status: "Unavailable", current: "", latest: "" });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [auth]);
+
   if (!auth) {
     return (
       <main className="login-screen">
         <section className="login-panel">
-          <h1>RedBlink Dune Docker Console</h1>
+          <h1>Dune Docker Console</h1>
           <p>Sign in with the local admin password from <code>runtime/secrets/admin-web-password.txt</code></p>
           <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
           <button onClick={() => safe(login)}>Sign In</button>
@@ -327,11 +385,28 @@ export function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <h1>RedBlink Dune Docker Console</h1>
-        <nav>{nav.map((item) => <button key={item.tab} className={tab === item.tab ? "active" : ""} onClick={() => {
-          if (item.tab === "Setup") setSetupJump((current) => ({ step: 0, nonce: current.nonce + 1 }));
-          setTab(item.tab);
-        }}>{item.icon}{item.tab}</button>)}</nav>
+        <div className="sidebar-brand">
+          <button className="sidebar-home-button" type="button" onClick={() => setTab("Home")} title="Open Home">
+            <h1>Dune Docker Console</h1>
+          </button>
+          <button className="stack-version-button" title={stackVersionButtonTitle(stackVersionStatus)} aria-label={stackVersionButtonTitle(stackVersionStatus)} onClick={() => setTab("Updates")}>{stackVersionButtonLabel(stackVersionStatus)}</button>
+        </div>
+        <nav className="sidebar-nav">
+          {navGroups.map((group) => (
+            <section className="sidebar-nav-group" key={group.title} aria-label={group.title}>
+              <p className="sidebar-nav-heading">{group.title}</p>
+              {group.items.map((item) => (
+                <button key={item.tab} className={tab === item.tab ? "active" : ""} onClick={() => {
+                  if (item.tab === "Setup") setSetupJump((current) => ({ step: 0, nonce: current.nonce + 1 }));
+                  setTab(item.tab);
+                }}>{item.icon}{item.tab}</button>
+              ))}
+              {group.title === "Community" && (
+                <a className="sidebar-request-button" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer"><MessageCircle size={18} />Requests</a>
+              )}
+            </section>
+          ))}
+        </nav>
       </aside>
       <main className={tab === "Home" ? "home-main" : undefined}>
         {tab === "Home" && (
@@ -344,6 +419,10 @@ export function App() {
           <div>
             <strong>{tab}</strong>
             <span>A Docker-powered Dune server stack with a built-in web admin panel.</span>
+          </div>
+          <div className="topbar-links" aria-label="Community links">
+            <a className="community-button discord" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer" title="Join Discord"><span>Join Discord</span><DiscordLogo size={19} /></a>
+            <a className="community-button support" href={REDBLINK_KOFI_URL} target="_blank" rel="noreferrer" title="Support Project"><span>Support Project</span><KofiLogo size={19} /></a>
           </div>
         </header>
         {error && <div className="error-banner">{error}</div>}
@@ -365,8 +444,9 @@ export function App() {
         {tab === "Backups" && <BackupsPanel backupRestoreTask={backupRestoreTask} setBackupRestoreTask={setBackupRestoreTask} onError={setError} />}
         {tab === "Logs" && <LogsPanel selectedService={selectedLogService} setSelectedService={setSelectedLogService} text={logs} setText={setLogs} onError={setError} />}
         {tab === "Updates" && <UpdatesPanel setTask={setTask} />}
-        {tab === "Settings" && <SettingsPanel />}
+        {tab === "Settings" && <SettingsPanel onPasswordChanged={logoutAfterPasswordChange} />}
         {tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
+        <footer className="app-footer"><Heart size={16} fill="currentColor" /><span>Made with Love By <a href={REDBLINK_REPO_URL} target="_blank" rel="noreferrer">RedBlink</a></span></footer>
       </main>
       <ConfirmDialog request={confirmRequest} onClose={closeConfirmDialog} />
     </div>
@@ -2347,8 +2427,8 @@ function CharacterAdminUI({ detail, fallback, dbPlayerId, actionPlayerId, player
         }
         const vehicleLabel = friendlyVehicleName(playerAdmin_vehicleId);
         const templateLabel = friendlyVehicleTemplateName(playerAdmin_vehicleTemplate);
-        if (!(await confirmDialog(`Spawn ${vehicleLabel} / ${templateLabel} in front of ${playerName}?`))) return;
-        void playerAdmin_runAction("adminVehicle", `Spawning ${vehicleLabel} for ${playerName}`, () => playerAdmin_runTask(() => playersApi.spawnVehicle(actionPlayerId, { vehicleId: playerAdmin_vehicleId, template: playerAdmin_vehicleTemplate, offset: 1000 })), `${vehicleLabel} (${templateLabel}) was spawned for ${playerName}.`, { actionType: "Spawn Vehicle", target: playerName, amount: vehicleLabel });
+        if (!(await confirmDialog(`Spawn ${vehicleLabel} / ${templateLabel} 10 meters in front of ${playerName}?`))) return;
+        void playerAdmin_runAction("adminVehicle", `Spawning ${vehicleLabel} for ${playerName}`, () => playerAdmin_runTask(() => playersApi.spawnVehicle(actionPlayerId, { vehicleId: playerAdmin_vehicleId, template: playerAdmin_vehicleTemplate, offset: VEHICLE_SPAWN_OFFSET_UNITS })), `${vehicleLabel} (${templateLabel}) was spawned 10 meters in front of ${playerName}.`, { actionType: "Spawn Vehicle", target: playerName, amount: vehicleLabel });
       }}>Spawn</button><InlineActionResult result={playerAdmin_actionResult} resultKey="adminVehicle" /></div><details className="technical-details"><summary>Advanced manual override</summary><div className="actions-grid"><label>Manual Vehicle ID<input value={playerAdmin_vehicleId} onChange={(event) => playerAdmin_setVehicleId(event.target.value)} placeholder="Sandbike" /></label><label>Manual Template<input value={playerAdmin_vehicleTemplate} onChange={(event) => playerAdmin_setVehicleTemplate(event.target.value)} placeholder="T1_ExtraSeat" /></label></div></details></section>{playerAdmin_toggleBox("admin_log", "Admin Action Log", <div className="playerAdmin_logSection">{playerAdmin_adminLog.length > 0 && <div className="action-row admin-history-actions"><button onClick={() => playerAdmin_setAdminLog([])}>Clear</button></div>}{playerAdmin_adminLog.length ? playerAdmin_table(["Date / Time", "Admin", "Action Type", "Target", "Amount", "Notes"], playerAdmin_adminLog) : <p>No admin actions have been recorded in this layout yet.</p>}</div>)}</div>}
     </section>
   );
@@ -2616,8 +2696,8 @@ function PlayerActions({ dbPlayerId, actionPlayerId, playerName, setTask, onErro
             if (knownTemplates.includes(vehicleId) && !vehicleCatalog[vehicleId]) throw new Error(`${vehicleId} is a vehicle template, not a vehicle ID. Choose a vehicle such as Sandbike, then choose ${vehicleId} as the template.`);
             const vehicleLabel = friendlyVehicleName(vehicleId);
             const templateLabel = friendlyVehicleTemplateName(vehicleTemplate);
-            if (!(await confirmDialog(`Spawn ${vehicleLabel} / ${templateLabel} in front of ${playerName}?`))) return;
-            await runPlayerAction("vehicle", `Spawning ${vehicleLabel} for ${playerName}`, () => runTask(() => playersApi.spawnVehicle(actionPlayerId, { vehicleId, template: vehicleTemplate, offset: 1000 })), `${vehicleLabel} (${templateLabel}) was spawned for ${playerName}.`, "success", (error) => `Failed to spawn ${vehicleLabel} for ${playerName}. ${friendlyInlineError(error)}`);
+            if (!(await confirmDialog(`Spawn ${vehicleLabel} / ${templateLabel} 10 meters in front of ${playerName}?`))) return;
+            await runPlayerAction("vehicle", `Spawning ${vehicleLabel} for ${playerName}`, () => runTask(() => playersApi.spawnVehicle(actionPlayerId, { vehicleId, template: vehicleTemplate, offset: VEHICLE_SPAWN_OFFSET_UNITS })), `${vehicleLabel} (${templateLabel}) was spawned 10 meters in front of ${playerName}.`, "success", (error) => `Failed to spawn ${vehicleLabel} for ${playerName}. ${friendlyInlineError(error)}`);
           })}>Spawn Vehicle</button>
           <InlineActionResult result={actionResult} resultKey="vehicle" />
         </div>
@@ -3090,7 +3170,7 @@ function gameUpdatePercent(text: string) {
 }
 
 function friendlyGameUpdateMessage(text: string, latestLine: string) {
-  if (/Restarting Dune stack/i.test(text)) return "Restarting the Dune stack with the updated build.";
+    if (/Restarting Dune stack/i.test(text)) return "Restarting the Dune server with the updated build.";
   if (/Refresh generated map catalogs/i.test(text)) return "Refreshing generated map catalogs.";
   if (/Run database update\/migration/i.test(text)) return "Running database migrations for the updated build.";
   if (/Detect loaded image tags/i.test(text)) return "Detecting updated image versions.";
@@ -3123,13 +3203,13 @@ function StackUpdateProgress({ task, onRetry }: { task: Task; onRetry: () => Pro
       <StatusPill value={task.status === "failed" ? "Failed" : task.status === "succeeded" ? "Succeeded" : "Running"} />
     </div>
     <div className="progress-row">
-      <div className="progress-track" aria-label={`Stack update progress ${progress.percent}%`}>
+      <div className="progress-track" aria-label={`Console update progress ${progress.percent}%`}>
         <div className="progress-fill" style={{ width: `${progress.percent}%` }} />
       </div>
       <strong>{progress.percent}%</strong>
     </div>
     <p>{formatResultMessage(progress.message)}</p>
-    {task.status === "failed" && <div className="action-line"><button onClick={onRetry}>Retry Stack Update</button></div>}
+    {task.status === "failed" && <div className="action-line"><button onClick={onRetry}>Retry Console Update</button></div>}
   </div>;
 }
 
@@ -3138,14 +3218,14 @@ function summarizeStackUpdateProgress(task: Task) {
   const latestLine = [...task.logLines].reverse().map((line) => line.line.trim()).find(Boolean) || task.progressMessage || task.currentStep || "";
   if (task.status === "succeeded") {
     const installedVersion = firstVersionMatch(text, [/Installed stack version:\s*([^\n]+)/i]);
-    return { title: "Stack Update Complete", percent: 100, message: installedVersion ? `Stack files were updated to ${installedVersion}. Restart or rebuild the web console to run the new stack version.` : "Stack files were updated. Restart or rebuild the web console to run the new stack version." };
+    return { title: "Console Update Complete", percent: 100, message: installedVersion ? `Console files were updated to ${installedVersion}. Restart or rebuild the web console to run the new console version.` : "Console files were updated. Restart or rebuild the web console to run the new console version." };
   }
   if (task.status === "failed") {
-    return { title: "Stack Update Failed", percent: Math.max(5, stackUpdatePercent(text)), message: conciseTaskError(task) };
+    return { title: "Console Update Failed", percent: Math.max(5, stackUpdatePercent(text)), message: conciseTaskError(task) };
   }
   const stackStage = summarizeStackUpdateStage(task.logLines.map((line) => line.line));
   if (stackStage) return stackStage;
-  return { title: "Updating Stack", percent: stackUpdatePercent(text), message: friendlyStackUpdateMessage(text, latestLine) };
+  return { title: "Updating Console", percent: stackUpdatePercent(text), message: friendlyStackUpdateMessage(text, latestLine) };
 }
 
 function stackUpdatePercent(text: string) {
@@ -3166,12 +3246,12 @@ function stackUpdatePercent(text: string) {
 }
 
 function friendlyStackUpdateMessage(text: string, latestLine: string) {
-  if (/Downloading stack release/i.test(text)) return "Downloading the selected GitHub release.";
-  if (/Backing up current stack files/i.test(text)) return "Backing up the current stack files before replacing them.";
-  if (/Installing stack release into/i.test(text)) return "Installing the downloaded stack release files.";
-  if (/Installed stack version/i.test(text)) return "Verifying the installed stack version.";
-  if (/Previous stack files backup/i.test(text)) return "Finishing the stack update and recording the backup location.";
-  return latestLine && !/^\s*Task started/i.test(latestLine) ? friendlyStackUpdateLine(latestLine) : "Preparing the stack update.";
+  if (/Downloading stack release/i.test(text)) return "Downloading the selected console release.";
+  if (/Backing up current stack files/i.test(text)) return "Backing up the current console files before replacing them.";
+  if (/Installing stack release into/i.test(text)) return "Installing the downloaded console release files.";
+  if (/Installed stack version/i.test(text)) return "Verifying the installed console version.";
+  if (/Previous stack files backup/i.test(text)) return "Finishing the console update and recording the backup location.";
+  return latestLine && !/^\s*Task started/i.test(latestLine) ? friendlyStackUpdateLine(latestLine) : "Preparing the console update.";
 }
 
 function summarizeStackUpdateStage(lines: string[]) {
@@ -3191,26 +3271,26 @@ function summarizeStackUpdateStage(lines: string[]) {
 
   if (backupDoneIndex >= 0) {
     const backupFile = nextIndentedLine(cleanLines, backupDoneIndex);
-    return { title: "Finishing Stack Update", percent: 94, message: backupFile ? `Recorded backup at ${backupFile}.` : "Recording the previous stack backup location." };
+    return { title: "Finishing Console Update", percent: 94, message: backupFile ? `Recorded backup at ${backupFile}.` : "Recording the previous console backup location." };
   }
   if (installedIndex >= 0) {
     const version = cleanLines[installedIndex].trim().replace(/^Installed stack version:\s*/i, "").trim();
-    return { title: "Verifying Stack Version", percent: 88, message: version ? `Installed stack version ${version}. Verifying the update before finishing.` : "Verifying the installed stack version." };
+    return { title: "Verifying Console Version", percent: 88, message: version ? `Installed console version ${version}. Verifying the update before finishing.` : "Verifying the installed console version." };
   }
   if (installIndex >= 0) {
     const target = nextIndentedLine(cleanLines, installIndex);
-    return { title: "Installing Stack Release", percent: 66, message: target ? `Installing the downloaded stack release into ${target}.` : "Installing the downloaded stack release files." };
+    return { title: "Installing Console Release", percent: 66, message: target ? `Installing the downloaded console release into ${target}.` : "Installing the downloaded console release files." };
   }
   if (backupIndex >= 0) {
     const backupDir = nextIndentedLine(cleanLines, backupIndex);
-    return { title: "Backing Up Stack Files", percent: 42, message: backupDir ? `Backing up current stack files to ${backupDir}.` : "Backing up the current stack files before replacing them." };
+    return { title: "Backing Up Console Files", percent: 42, message: backupDir ? `Backing up current console files to ${backupDir}.` : "Backing up the current console files before replacing them." };
   }
   if (downloadIndex >= 0) {
     const tag = cleanLines[downloadIndex].trim().replace(/^Downloading stack release:\s*/i, "").trim();
-    return { title: "Downloading Stack Release", percent: 20, message: tag ? `Downloading stack release ${tag} from GitHub.` : "Downloading the selected GitHub release." };
+    return { title: "Downloading Console Release", percent: 20, message: tag ? `Downloading console release ${tag} from GitHub.` : "Downloading the selected console release." };
   }
   if (dirtyIndex >= 0) {
-    return { title: "Preparing Stack Backup", percent: 12, message: "Local tracked changes were detected; the updater will back up the current project files first." };
+    return { title: "Preparing Console Backup", percent: 12, message: "Local tracked changes were detected; the updater will back up the current console files first." };
   }
   return null;
 }
@@ -3221,16 +3301,42 @@ function nextIndentedLine(lines: string[], index: number) {
 }
 
 function friendlyStackUpdateLine(line: string) {
-  if (/^Running selfUpdateApply$/i.test(line)) return "Preparing the stack update.";
-  if (/^Task started$/i.test(line)) return "Preparing the stack update.";
+  if (/^Running selfUpdateApply$/i.test(line)) return "Preparing the console update.";
+  if (/^Task started$/i.test(line)) return "Preparing the console update.";
   if (/Could not|failed|denied|rate-limited/i.test(line)) return line;
-  return "Working on the stack update.";
+  return "Working on the console update.";
 }
 
-function updateDisplayValue(status: Record<string, string>, key: "current" | "latest") {
+function updateDisplayValue(status: Record<string, string>, key: "current" | "latest", formatter?: (value: string) => string) {
   if (/checking/i.test(status.status)) return "Checking...";
   if (/updating/i.test(status.status)) return status[key] || "Updating...";
-  return status[key] || "Unknown";
+  const value = status[key] || "";
+  return value ? (formatter ? formatter(value) : value) : "Unknown";
+}
+
+function stackVersionButtonLabel(status: Record<string, string>) {
+  const current = String(status.current || "").trim();
+  const latest = String(status.latest || "").trim();
+  if (/checking/i.test(String(status.status || ""))) return "Checking";
+  if (current && latest && !sameUpdateVersion(current, latest)) return `${formatStackVersionLabel(current)} > ${formatStackVersionLabel(latest)}`;
+  return formatStackVersionLabel(current || latest) || "Version";
+}
+
+function stackVersionButtonTitle(status: Record<string, string>) {
+  const current = String(status.current || "").trim();
+  const latest = String(status.latest || "").trim();
+  if (current && latest && !sameUpdateVersion(current, latest)) return "Update Available";
+  if (status.status === "Update Available") return "Update Available";
+  if (status.status === "Latest" || (current && latest && sameUpdateVersion(current, latest))) return "Latest";
+  return "Open Updates";
+}
+
+function formatStackVersionLabel(value: string) {
+  const clean = String(value || "").trim();
+  if (!clean) return "";
+  if (/^v/i.test(clean)) return clean;
+  if (/^\d+(?:\.\d+)*(?:[-+][\w.-]+)?$/i.test(clean)) return `v${clean}`;
+  return clean;
 }
 
 function canApplyUpdateStatus(status: Record<string, string>) {
@@ -5189,7 +5295,7 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
   const [settingsTab, setSettingsTab] = useState<"engine" | "game">("engine");
   const [modifiersOpen, setModifiersOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [deepDesertDualAction, setDeepDesertDualAction] = useState("enable");
+  const [deepDesertDualAction, setDeepDesertDualAction] = useState("disable");
   const [memory, setMemory] = useState("8");
   const [modeDraft, setModeDraft] = useState("dynamic");
   const [loading, setLoading] = useState(false);
@@ -5257,7 +5363,7 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
             persistMapsTask(null);
             void refreshMapRuntime().catch(() => undefined);
             void loadLiveMemory().catch(() => undefined);
-            void loadSietches({ preserveDrafts: true }).catch(() => undefined);
+            void loadSietches().catch(() => undefined);
           }
           return;
         }
@@ -5498,6 +5604,9 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
   const survivalSietchRows = sietchRows.filter((row) => row.partitionId);
   const primarySurvivalSietch = survivalSietchRows.find((row) => String(row.dimension) === "0") || survivalSietchRows[0] || null;
   const dynamicSurvivalSietchRows = survivalSietchRows.filter((row) => String(row.dimension) !== "0");
+  const deepDesertPartitionRows = serverPartitionRows.filter((row) => String(row.map || "") === "DeepDesert_1").sort((a, b) => Number(a.dimension ?? 0) - Number(b.dimension ?? 0));
+  const dynamicDeepDesertRows = deepDesertPartitionRows.filter((row) => String(row.dimension || "") !== "0");
+  const deepDesertDualEnabled = dynamicDeepDesertRows.length > 0;
   const partitionOptions = isSurvival ? survivalSietchRows : [];
   const userGamePartitionOptions = isUserGameSurvival ? sietchRows.filter((row) => row.partitionId) : [];
   const effectivePartitionId = isSurvival ? (selectedPartitionId || partitionOptions[0]?.partitionId || "1") : isDeepDesertRuntime ? "2" : selectedPartitionId;
@@ -5536,12 +5645,27 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
     }
     setSelectedMapName(name);
     const rowPartition = String(row.partitionId || row.partition || "").trim();
-    const defaultPartition = name === "Survival_1" ? "" : /^(DeepDesert_|Overmap$)/i.test(name) ? "2" : rowPartition;
+    const defaultPartition = name === "Survival_1" || /^DeepDesert_/i.test(name) ? "" : /^Overmap$/i.test(name) ? "2" : rowPartition;
     setSelectedPartitionId(defaultPartition);
     setSelectedGameCategory("");
     setMemory(memoryInputValue(String(row.memory || "")));
     setModeDraft(modeInputValue(String(row.mode || "")));
     void loadSelectedSettings(name, defaultPartition || undefined).catch((error) => onError(error instanceof Error ? error.message : String(error)));
+  }
+  function selectDeepDesertPartition(row: Record<string, unknown>) {
+    const partitionId = String(row.partitionId || "").trim();
+    if (selectedMapName === "DeepDesert_1" && selectedPartitionId === partitionId) {
+      setSelectedMapName("");
+      setSelectedPartitionId("");
+      return;
+    }
+    const parent = mapRows.find((item) => String(item.map || "") === "DeepDesert_1");
+    setSelectedMapName("DeepDesert_1");
+    setSelectedPartitionId(partitionId);
+    setSelectedGameCategory("");
+    setMemory(memoryInputValue(partitionMemoryValue(memoryText, partitionId, String(parent?.memory || ""), "DeepDesert_1")));
+    setModeDraft(modeInputValue(String(parent?.mode || "")));
+    void loadSelectedSettings("DeepDesert_1", partitionId).catch((error) => onError(error instanceof Error ? error.message : String(error)));
   }
   function selectSietch(row: SietchRow) {
     if (selectedMapName === "Survival_1" && selectedPartitionId === row.partitionId) {
@@ -5757,6 +5881,52 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
       await runTaskSequenceAndRefresh(actions, `Saving ${sietchTargetDisplayName(sietch, draft.displayName)} Settings`, "Sietch Saved", { saveAcceptedMessage: successMessage });
     }
   }
+  async function enableDualDeepDesert() {
+    if (!(await confirmDialog("Enable dual Deep Desert setup?"))) return;
+    await runTaskAndRefresh(
+      () => mapsApi.updateDeepdesert({ action: "enable", confirmation: "UPDATE DEEP DESERT" }),
+      "Enabling Dual Deep Desert",
+      "Dual Deep Desert Enabled"
+    );
+  }
+  async function disableDualDeepDesert(row?: Record<string, unknown>) {
+    const label = row ? deepDesertPartitionName(row) : "Dual Deep Desert";
+    if (!(await confirmDialog(`Disable ${label}?`, {
+      title: "Disable Deep Desert",
+      confirmLabel: "Disable",
+      danger: true,
+      details: [
+        { label: "Impact", value: "The extra Deep Desert instance will be despawned.", tone: "danger" }
+      ]
+    }))) return;
+    await runTaskAndRefresh(
+      () => mapsApi.updateDeepdesert({ action: "disable", confirmation: "UPDATE DEEP DESERT" }),
+      "Despawning Extra Deep Desert",
+      "Dual Deep Desert Disabled"
+    );
+  }
+  async function saveDeepDesertPartitionSettings(row: Record<string, unknown>) {
+    const parent = mapRows.find((item) => String(item.map || "") === "DeepDesert_1") || {};
+    const partitionId = String(row.partitionId || "").trim();
+    const originalMemory = memoryInputValue(partitionMemoryValue(memoryText, partitionId, String(parent.memory || ""), "DeepDesert_1"));
+    const memoryChanged = memory !== originalMemory;
+    if (!memoryChanged || !partitionId) return;
+    const running = /^(Ready|Running|Starting|Assigned|Warming)$/i.test(String(row.status || parent.status || ""));
+    if (!(await confirmDialog(`Save memory settings for ${deepDesertPartitionName(row)}?`))) return;
+    await runTaskAndRefresh(
+      () => mapsApi.saveMapSettings({
+        map: "DeepDesert_1",
+        partitionId,
+        memory: `${memory}g`,
+        modeChanged: false,
+        memoryChanged,
+        running,
+        confirmation: "SAVE MAP SETTINGS"
+      }),
+      `Saving ${deepDesertPartitionName(row)} Settings`,
+      "Deep Desert Saved"
+    );
+  }
   async function forceDespawnMap(row: Record<string, unknown>) {
     const rowName = String(row.map || "");
     if (!rowName || rowName === "Survival_1" || rowName === "Overmap") return;
@@ -5822,7 +5992,8 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
       {mapRows.length ? <div className="table-wrap maps-overview-table-wrap"><table className="maps-overview-table"><thead><tr><th>Map</th><th>Status</th><th>Mode</th><th>Memory</th><th className="actions-column">Action</th></tr></thead><tbody>{mapRows.map((row) => {
         const rowName = String(row.map || "");
         const isSurvivalRow = rowName === "Survival_1";
-        const isSelected = selectedMapName === rowName && (!isSurvivalRow || !selectedPartitionId);
+        const isDeepDesertRow = /^DeepDesert_/i.test(rowName);
+        const isSelected = selectedMapName === rowName && (!(isSurvivalRow || isDeepDesertRow) || !selectedPartitionId);
         const memoryRow = memoryForMap(liveMemory, rowName, row);
         const canForceDespawn = mapCanForceDespawn(row);
         const mapSettingsDirty = isSelected && ((modeDraft !== modeInputValue(String(row.mode || "")) && String(row.mode) !== "Core Map") || memory !== memoryInputValue(String(row.memory || "")) || (isSurvivalRow && (activeSietchesDirty || primarySietchDirty)));
@@ -5847,12 +6018,29 @@ function MapsPanel({ setTask, onError }: { setTask: (task: Task) => void; onErro
                 <div className="action-line deep-desert-dual-line">
                   <strong>Deep Desert Dual Setup:</strong>
                   <label className="compact-select"><select value={deepDesertDualAction} onChange={(event) => setDeepDesertDualAction(event.target.value)}><option value="enable">Enable</option><option value="disable">Disable</option></select></label>
-                  <button className={deepDesertDualAction === "disable" ? "danger" : ""} onClick={() => run(async () => { if (await confirmDialog(`${titleCase(deepDesertDualAction)} dual Deep Desert setup?`)) await runTaskAndRefresh(() => mapsApi.updateDeepdesert({ action: deepDesertDualAction, confirmation: "UPDATE DEEP DESERT" }), `Running Deep Desert ${deepDesertDualAction}`, "Deep Desert Updated"); })}>Save</button>
+                  <button className={deepDesertDualAction === "disable" ? "danger" : ""} onClick={() => run(() => deepDesertDualAction === "enable" ? enableDualDeepDesert() : disableDualDeepDesert())}>Save</button>
                 </div>
                 {deepText && <MapCommandSummary text={deepText} />}
               </section>}
             </section>
           </td></tr>}
+          {isDeepDesertRow && dynamicDeepDesertRows.map((deepRow) => {
+            const childSelected = selectedMapName === "DeepDesert_1" && selectedPartitionId === String(deepRow.partitionId || "");
+            const deepMemory = partitionMemoryValue(memoryText, String(deepRow.partitionId || ""), String(row.memory || ""), "DeepDesert_1");
+            const childStatus = partitionStatusById.get(String(deepRow.partitionId || "")) || String(deepRow.status || "Not Available");
+            const childMemoryDirty = childSelected && memory !== memoryInputValue(deepMemory);
+            return <Fragment key={`deepdesert-${String(deepRow.partitionId || deepRow.dimension || "")}`}><tr className="sietch-child-row"><td><span className="sietch-child-name">{deepDesertPartitionName(deepRow)}</span><span className="sietch-child-meta">Partition {String(deepRow.partitionId || "Unknown")} / Dimension {String(deepRow.dimension || "Unknown")}</span></td><td>{childStatus}</td><td>Dual</td><td><MemoryUsageBar row={memoryForMap(liveMemory, "DeepDesert_1", { partitionId: deepRow.partitionId })} fallback={liveMemoryFallback({ ...row, status: childStatus })} configuredLimit={deepMemory} /></td><td className="actions-column"><button className="stable-action-button" onClick={() => selectDeepDesertPartition(deepRow)}>{childSelected ? "Close" : "Edit"}</button></td></tr>
+              {childSelected && <tr className="inline-edit-row"><td colSpan={5}><section className="inline-edit-panel">
+                <div className="panel-title"><h4>Edit {deepDesertPartitionName(deepRow)}</h4></div>
+                <KeyValueGrid items={[["Partition", deepRow.partitionId], ["Dimension", deepRow.dimension], ["Status", childStatus], ["Memory", deepMemory]]} />
+                <div className="action-line">
+                  <label className="memory-number-field">Memory<input type="number" min="1" step="1" value={memory} onChange={(event) => setMemory(event.target.value)} placeholder="8" /></label>
+                  <span className="unit-label">GB</span>
+                  <button disabled={!childMemoryDirty} onClick={() => run(() => saveDeepDesertPartitionSettings(deepRow))}>Save Deep Desert Settings</button>
+                </div>
+              </section></td></tr>}
+            </Fragment>;
+          })}
           {isSurvivalRow && dynamicSurvivalSietchRows.map((sietch) => {
             const childSelected = selectedMapName === "Survival_1" && selectedPartitionId === sietch.partitionId;
             const draft = sietchDrafts[sietch.partitionId] || { displayName: sietch.displayName, password: sietch.password };
@@ -6080,10 +6268,19 @@ function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string
   }) || null;
 }
 
-function partitionMemoryValue(memoryText: string, partitionId: string, fallback: string) {
-  const target = `Survival_1:${partitionId}`;
+function partitionMemoryValue(memoryText: string, partitionId: string, fallback: string, mapName = "Survival_1") {
+  const target = `${mapName}:${partitionId}`;
   const row = parseMemoryRows(memoryText).find((item) => String(item.map || "") === target);
   return String(row?.memory || fallback || "");
+}
+
+function deepDesertPartitionName(row: Record<string, unknown>) {
+  const label = String(row.label || "").trim();
+  if (label && !/^[-\d\s]+$/.test(label)) return label;
+  const dimension = Number(row.dimension);
+  if (dimension === 0) return "Deep Desert PvP";
+  if (dimension === 1) return "Deep Desert PvE";
+  return `Deep Desert ${Number.isFinite(dimension) ? dimension + 1 : "Instance"}`;
 }
 
 function liveMemoryFallback(row: Record<string, unknown>) {
@@ -6219,7 +6416,7 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
   const [gameUpdateTask, setGameUpdateTask] = useState<Task | null>(() => loadPersistedUpdateTask(GAME_UPDATE_TASK_KEY));
   const [stackUpdateTask, setStackUpdateTask] = useState<Task | null>(() => loadPersistedUpdateTask(STACK_UPDATE_TASK_KEY));
   const [gameStatus, setGameStatus] = useState<Record<string, string>>(() => gameUpdateTask && !isTerminalTask(gameUpdateTask.status) ? { status: "Updating", current: "", latest: "", reason: "Game update is running." } : { status: "Not checked", current: "", latest: "", reason: "" });
-  const [stackStatus, setStackStatus] = useState<Record<string, string>>(() => stackUpdateTask && !isTerminalTask(stackUpdateTask.status) ? { status: "Updating", current: "", latest: "", reason: "Stack update is running." } : { status: "Not checked", current: "", latest: "", reason: "" });
+  const [stackStatus, setStackStatus] = useState<Record<string, string>>(() => stackUpdateTask && !isTerminalTask(stackUpdateTask.status) ? { status: "Updating", current: "", latest: "", reason: "Console update is running." } : { status: "Not checked", current: "", latest: "", reason: "" });
   const [gameSteamcmdFixTask, setGameSteamcmdFixTask] = useState<Task | null>(null);
   const [autoGame, setAutoGame] = useState<{ stdout?: string; stderr?: string; exitCode?: number } | null>(null);
   const [autoGameLoading, setAutoGameLoading] = useState(true);
@@ -6273,11 +6470,11 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
     await waitForTaskWithUpdates(response.task, setGameSteamcmdFixTask);
   }
   async function applyStackUpdate() {
-    if (!(await confirmDialog("Apply the latest RedBlink stack update now?"))) return;
+    if (!(await confirmDialog("Apply the latest console update now?"))) return;
     const response = await updatesApi.applyStack();
     setStackUpdateTask(response.task);
     persistUpdateTask(STACK_UPDATE_TASK_KEY, response.task);
-    setStackStatus((current) => ({ ...current, status: "Updating", reason: "Stack update is running." }));
+    setStackStatus((current) => ({ ...current, status: "Updating", reason: "Console update is running." }));
   }
   async function loadAutoGame() {
     try {
@@ -6356,7 +6553,7 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
     }
     let cancelled = false;
     persistUpdateTask(STACK_UPDATE_TASK_KEY, stackUpdateTask);
-    setStackStatus((current) => ({ ...current, status: "Updating", reason: "Stack update is running." }));
+    setStackStatus((current) => ({ ...current, status: "Updating", reason: "Console update is running." }));
     void (async () => {
       let current = stackUpdateTask;
       for (let i = 0; i < 3600 && !cancelled && !isTerminalTask(current.status); i += 1) {
@@ -6409,13 +6606,13 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
         {gameUpdateTask && <GameUpdateProgress task={gameUpdateTask} repairTask={gameSteamcmdFixTask} onRetry={applyGameUpdate} onFixSteamcmd={fixSteamcmd} />}
       </section>
       <section className="action-section">
-        <div className="panel-title"><h4>Stack Update</h4><StatusPill value={stackStatus.status} /></div>
-        <KeyValueGrid items={[["Current Version", updateDisplayValue(stackStatus, "current")], ["Latest Version", updateDisplayValue(stackStatus, "latest")], ["Status", stackStatus.status]]} />
+        <div className="panel-title"><h4>Console Update</h4><StatusPill value={stackStatus.status} /></div>
+        <KeyValueGrid items={[["Current Console Version", updateDisplayValue(stackStatus, "current", formatStackVersionLabel)], ["Latest Console Version", updateDisplayValue(stackStatus, "latest", formatStackVersionLabel)], ["Status", stackStatus.status]]} />
         {stackStatus.status === "Check Failed" && stackStatus.reason && <p className="danger-note">{stackStatus.reason}</p>}
         {stackStatus.status === "Version details unavailable" && <p className="muted">{stackStatus.reason}</p>}
         <div className="action-line">
-          <button disabled={stackUpdateRunning} onClick={checkStack}>Refresh Stack Check</button>
-          {stackCanApply && <button className="update-action" onClick={applyStackUpdate}>Apply Stack Update</button>}
+          <button disabled={stackUpdateRunning} onClick={checkStack}>Refresh Console Check</button>
+          {stackCanApply && <button className="update-action" onClick={applyStackUpdate}>Apply Console Update</button>}
         </div>
         {stackUpdateTask && <StackUpdateProgress task={stackUpdateTask} onRetry={applyStackUpdate} />}
       </section>
@@ -6439,18 +6636,101 @@ function UpdatesPanel({ setTask }: { setTask: (task: Task) => void }) {
   </section>;
 }
 
-function SettingsPanel() {
+function SettingsPanel({ onPasswordChanged }: { onPasswordChanged: () => Promise<void> }) {
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordResult, setPasswordResult] = useState<HomeTaskResult | null>(null);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [loginPasswordOpen, setLoginPasswordOpen] = useState(false);
   async function refresh() {
     setSettings(await api<Record<string, unknown>>("/api/settings"));
   }
   useEffect(() => {
     refresh().catch(() => undefined);
   }, []);
+  useEffect(() => {
+    if (!passwordResult || passwordResult.status === "running") return;
+    const id = window.setTimeout(() => setPasswordResult(null), 5400);
+    return () => window.clearTimeout(id);
+  }, [passwordResult]);
+  const passwordChecks = adminPasswordChecks(newPassword);
+  const passwordMeetsRequirements = passwordChecks.every((check) => check.passed);
+  const passwordStarted = newPassword.length > 0;
+  const confirmStarted = confirmPassword.length > 0;
+  const passwordsMatch = newPassword === confirmPassword;
+  async function changeLoginPassword() {
+    if (!currentPassword) {
+      setPasswordResult({ status: "failed", title: "Password Change Failed", message: "Enter your current login password." });
+      return;
+    }
+    if (!passwordMeetsRequirements) {
+      setPasswordResult({ status: "failed", title: "Password Change Failed", message: "New password must meet all password requirements." });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordResult({ status: "failed", title: "Password Change Failed", message: "New password and confirmation do not match." });
+      return;
+    }
+    setPasswordSaving(true);
+    setPasswordResult({ status: "running", title: "Changing Login Password..." });
+    try {
+      await post("/api/settings/admin-password", { currentPassword, newPassword });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordResult({ status: "succeeded", title: "Login Password Changed", message: "Signing you out so you can log back in with the new password." });
+      window.setTimeout(() => { void onPasswordChanged(); }, 1600);
+    } catch (error) {
+      setPasswordResult({ status: "failed", title: "Password Change Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setPasswordSaving(false);
+    }
+  }
+  const config = (settings?.config as Record<string, unknown> | undefined) || {};
+  const passwordEnvManaged = Boolean(config.adminPasswordEnvManaged);
   return <section className="panel">
-    <div className="panel-title"><h2>Settings</h2><button onClick={refresh}>Refresh Runtime Settings</button></div>
-    <RuntimeSettingsSummary settings={settings} />
+    <div className="panel-title"><h2>Settings</h2><button onClick={refresh}>Refresh</button></div>
+    <div className="settings-section-stack">
+      <RuntimeSettingsSummary settings={settings} />
+      <div className={`playerAdmin_toggle settings-login-password-toggle ${loginPasswordOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={loginPasswordOpen ? "Collapse Login Password" : "Expand Login Password"} onClick={() => setLoginPasswordOpen(!loginPasswordOpen)}>{loginPasswordOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Login Password</span></button>
+        {loginPasswordOpen && <div className="playerAdmin_toggleBody">
+          <p className="muted">Change the password used to sign in to this web console.</p>
+          {passwordEnvManaged && <p className="attention-text">The login password is managed by <code>ADMIN_PASSWORD</code>. Update the environment value to change it.</p>}
+          <div className="settings-password-grid">
+            <label>Current Password<SecretInput disabled={passwordEnvManaged || passwordSaving} value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} placeholder="Current password" /></label>
+            <label>New Password<SecretInput disabled={passwordEnvManaged || passwordSaving} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} placeholder="At Least 13 Characters" /></label>
+            <label><span className="field-label-row"><span>Confirm New Password</span>{confirmStarted && <span className={`password-match-inline ${passwordsMatch ? "passed" : "missing"}`}>{passwordsMatch ? "Matches" : "Passwords do not match"}</span>}</span><SecretInput disabled={passwordEnvManaged || passwordSaving} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Confirm new password" /></label>
+          </div>
+          {passwordStarted && <div className="password-check-box">
+            <strong>Password Requirements</strong>
+            <ul className="password-requirements" aria-label="Password requirements">
+              {passwordChecks.map((check) => <li className={check.passed ? "passed" : "missing"} key={check.label}>{check.label}</li>)}
+            </ul>
+          </div>}
+          <div className="action-row">
+            <button disabled={passwordEnvManaged || passwordSaving || !passwordMeetsRequirements || !passwordsMatch} onClick={() => { void changeLoginPassword(); }}>{passwordSaving ? "Saving..." : "Change Password"}</button>
+            {passwordResult && <span className={`inline-task-result result-${passwordResult.status === "succeeded" ? "ok" : passwordResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={passwordResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(passwordResult.title, passwordResult.status === "running")}</strong>
+              {passwordResult.message && <span className="inline-task-message">{formatResultMessage(passwordResult.message)}</span>}
+            </span>}
+          </div>
+        </div>}
+      </div>
+    </div>
   </section>;
+}
+
+function adminPasswordChecks(password: string) {
+  return [
+    { label: "At Least 13 Characters", passed: password.length >= 13 },
+    { label: "Lowercase Letter", passed: /[a-z]/.test(password) },
+    { label: "Uppercase Letter", passed: /[A-Z]/.test(password) },
+    { label: "Number", passed: /\d/.test(password) },
+    { label: "Special Character", passed: /[^A-Za-z0-9]/.test(password) }
+  ];
 }
 
 function HomeHealthCards({ status, readiness, readinessWarning, loading, runningAction, taskResult, funcomTokenResult }: { status: string; readiness: string; readinessWarning: string; loading: boolean; runningAction: "start" | "stop" | "restart" | ""; taskResult: HomeTaskResult | null; funcomTokenResult: HomeTaskResult | null }) {
@@ -6564,8 +6844,8 @@ function RuntimeSettingsSummary({ settings }: { settings: Record<string, unknown
     <section className="action-section">
       <h4>Runtime Configuration</h4>
       <KeyValueGrid items={[
-        ["App name", firstDefined(config.appName, config.app_name, "RedBlink Dune Docker Console")],
-        ["Repo root", config.repoRoot],
+        ["App Name", firstDefined(config.appName, config.app_name, "Dune Docker Console")],
+        ["Repo Root", config.repoRoot],
         ["Auth", config.authEnabled === false ? "Disabled" : "Enabled"],
         ["Secure Cookies", booleanLabel(config.secureCookies)],
         ["Host Bootstrap", booleanLabel(config.allowHostBootstrap)],
@@ -7221,7 +7501,8 @@ function isMapRuntimeHandoffTask(task: Task) {
     /\bwarming\b/i.test(text) ||
     /\bRestarting\b.+\b(Survival_1|sietch|map|server)\b/i.test(text) ||
     /\bStarting\b.+\b(Survival_1|sietch|map|server)\b/i.test(text) ||
-    /\bSpawned\b.+\bdune-server-/i.test(text);
+    /\bSpawned\b.+\bdune-server-/i.test(text) ||
+    /\bActive dimensions for\b.+\bset to\b/i.test(text);
 }
 
 function friendlyHomeStatusError(error: string) {

@@ -48,7 +48,7 @@ export function createAuth(config) {
   function requireAuth(req, res) {
     const session = readSession(req);
     if (!session) {
-      json(res, 401, { error: "Authentication required" });
+      json(res, 401, { error: "Your console session expired or the console restarted. Refresh the page, then sign in again." });
       return null;
     }
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method || "")) {

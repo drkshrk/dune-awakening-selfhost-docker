@@ -1718,7 +1718,7 @@ spawn_vehicle_at_command() {
   echo "Actor class: $actor_class"
   echo "Template: $template"
   publish_player_command "SpawnVehicleAt" "$player" 0 \
-    "ClassName=$actor_class=string" "TemplateName=$template=string" \
+    "ClassName=$vehicle_id=string" "TemplateName=$template=string" \
     "X=$x=float" "Y=$y=float" "Z=$z=float" "Rotation=$rotation=float" "Persistent=1.0=float"
 }
 

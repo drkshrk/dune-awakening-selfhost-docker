@@ -256,6 +256,7 @@ async function handleApi(req, res) {
   if (path === "/api/database/query" && req.method === "POST") return databaseQuery(req, res);
   if (path === "/api/database/export" && req.method === "POST") return databaseExport(req, res);
   if (path === "/api/database/password" && req.method === "POST") return databasePasswordRoute(req, res);
+  if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
 
   if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "" }));
   if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, { online: true }));
@@ -856,6 +857,45 @@ function validateDatabasePassword(value) {
   }
   if (password.length > 256 || /[\r\n\0]/.test(password)) {
     const error = new Error("Database password contains unsupported characters.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return password;
+}
+
+async function adminPasswordRoute(req, res) {
+  const body = await readJson(req);
+  if (config.authDisabled) return json(res, 400, { error: "Login password changes are unavailable while admin authentication is disabled." });
+  if (config.adminPasswordEnvManaged) return json(res, 400, { error: "The login password is managed by ADMIN_PASSWORD. Update the environment value instead." });
+  if (!auth.passwordMatches(body.currentPassword)) return json(res, 400, { error: "Current password is incorrect." });
+  const password = validateAdminPassword(body.newPassword);
+  writeFileSync(config.adminPasswordFile, `${password}\n`, { mode: 0o600 });
+  try {
+    chmodSync(config.adminPasswordFile, 0o600);
+  } catch {
+    // Best effort on non-POSIX development hosts.
+  }
+  config.adminPassword = password;
+  audit(config, req, "settings.change-admin-password", { password: "<redacted>" });
+  return json(res, 200, { ok: true });
+}
+
+function validateAdminPassword(value) {
+  const password = String(value || "");
+  const requirements = [
+    password.length >= 13,
+    /[a-z]/.test(password),
+    /[A-Z]/.test(password),
+    /\d/.test(password),
+    /[^A-Za-z0-9]/.test(password)
+  ];
+  if (requirements.some((passed) => !passed)) {
+    const error = new Error("New password must be at least 13 characters and include lowercase letters, uppercase letters, numbers, and special symbols.");
+    error.statusCode = 400;
+    throw error;
+  }
+  if (password.length > 256 || /[\r\n\0]/.test(password)) {
+    const error = new Error("New password contains unsupported characters.");
     error.statusCode = 400;
     throw error;
   }

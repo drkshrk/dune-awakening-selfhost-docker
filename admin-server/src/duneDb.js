@@ -1099,8 +1099,10 @@ export async function liveMapPartitions(db) {
            ${hasWorldPartition ? "coalesce(nullif(wp.label, ''), nullif(wp.map, ''), 'Partition ' || coalesce(a.partition_id, 0)::text)" : "'Partition ' || coalesce(a.partition_id, 0)::text"} as name,
            count(*)::int as marker_count
     from dune.actors a
-    ${hasWorldPartition ? "left join dune.world_partition wp on wp.partition_id = a.partition_id" : ""}
+    ${hasWorldPartition ? "join dune.world_partition wp on wp.partition_id = a.partition_id" : ""}
     where a.transform is not null
+      and coalesce(a.partition_id, 0) > 0
+      ${hasWorldPartition ? "and nullif(wp.server_id, '') is not null" : ""}
     group by a.map, a.partition_id${hasWorldPartition ? ", wp.label, wp.map" : ""}
     order by map, partition_id`);
   return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
@@ -1108,8 +1110,10 @@ export async function liveMapPartitions(db) {
 
 export async function liveMapPlayers(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "player_state"))) return unsupportedMap("players", ["dune.actors", "dune.player_state"]);
+  const hasWorldPartition = await tableExists(db, "world_partition");
   const values = [];
   const where = mapFilterClause(map, values, "a");
+  const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
   try {
     const result = await db.query(`
       select a.id,
@@ -1129,7 +1133,7 @@ export async function liveMapPlayers(db, map = "") {
       from dune.actors a
       join dune.player_state ps on ps.player_pawn_id = a.id
       left join dune.accounts ac on ac.id = ps.account_id
-      where a.transform is not null ${where}
+      where a.transform is not null ${partitionWhere} ${where}
       order by coalesce(ps.online_status::text, '') desc, lower(coalesce(ps.character_name, ''))`, values);
     return { capabilities: { players: true }, rows: result.rows.map(normalizeMarker) };
   } catch (error) {
@@ -1167,8 +1171,10 @@ export async function teleportOfflinePlayerToCoords(db, playerId, { x, y, z, par
 
 export async function liveMapVehicles(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "vehicles"))) return unsupportedMap("vehicles", ["dune.actors", "dune.vehicles"]);
+  const hasWorldPartition = await tableExists(db, "world_partition");
   const values = [];
   const where = mapFilterClause(map, values, "a");
+  const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
   try {
     const result = await db.query(`
       select a.id,
@@ -1182,7 +1188,7 @@ export async function liveMapVehicles(db, map = "") {
              ((a.transform).location).z as z
       from dune.vehicles v
       join dune.actors a on a.id = v.id
-      where a.transform is not null ${where}
+      where a.transform is not null ${partitionWhere} ${where}
       order by a.map, a.partition_id, a.id`, values);
     return { capabilities: { vehicles: true }, rows: result.rows.map(normalizeMarker) };
   } catch (error) {
@@ -1192,8 +1198,10 @@ export async function liveMapVehicles(db, map = "") {
 
 export async function liveMapStorage(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "placeables"))) return unsupportedMap("storage", ["dune.actors", "dune.placeables"]);
+  const hasWorldPartition = await tableExists(db, "world_partition");
   const values = [];
   const where = mapFilterClause(map, values, "a");
+  const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
   try {
     const result = await db.query(`
       select p.id,
@@ -1212,7 +1220,7 @@ export async function liveMapStorage(db, map = "") {
       left join dune.inventories inv on inv.actor_id = p.id
       left join dune.items i on i.inventory_id = inv.id
       where p.building_type in ('SpiceSilo_Placeable','GenericContainer_Placeable','StorageContainer_Placeable','MediumStorageContainer_Placeable')
-        and a.transform is not null ${where}
+        and a.transform is not null ${partitionWhere} ${where}
       group by p.id, p.building_type, a.map, a.partition_id, a.transform
       order by a.map, a.partition_id, p.id`, values);
     return { capabilities: { storage: true }, rows: result.rows.map(normalizeMarker) };
@@ -1223,8 +1231,10 @@ export async function liveMapStorage(db, map = "") {
 
 export async function liveMapBases(db, map = "") {
   if (!(await tableExists(db, "actors")) || !(await tableExists(db, "buildings"))) return unsupportedMap("bases", ["dune.actors", "dune.buildings"]);
+  const hasWorldPartition = await tableExists(db, "world_partition");
   const values = [];
   const where = mapFilterClause(map, values, "a");
+  const partitionWhere = validActorPartitionClause(hasWorldPartition, "a");
   try {
     const result = await db.query(`
       select b.id,
@@ -1241,7 +1251,7 @@ export async function liveMapBases(db, map = "") {
       join dune.actor_fgl_entities afe on afe.entity_id = bi.owner_entity_id
       join dune.actors a on a.id = afe.actor_id
       left join dune.permission_actor pa on pa.actor_id = a.id
-      where a.transform is not null ${where}
+      where a.transform is not null ${partitionWhere} ${where}
       group by b.id, pa.actor_name, a.id, a.map, a.partition_id, a.class, a.transform
       order by a.map, a.partition_id, b.id`, values);
     return { capabilities: { bases: true }, rows: result.rows.map(normalizeMarker) };
@@ -2314,6 +2324,12 @@ function mapFilterClause(map, values, alias) {
   if (!safe) return "";
   values.push(safe);
   return ` and ${alias}.map = $${values.length}`;
+}
+
+function validActorPartitionClause(hasWorldPartition, alias) {
+  const partitionId = `coalesce(${alias}.partition_id, 0)`;
+  if (!hasWorldPartition) return ` and ${partitionId} > 0`;
+  return ` and ${partitionId} > 0 and exists (select 1 from dune.world_partition wp where wp.partition_id = ${alias}.partition_id and nullif(wp.server_id, '') is not null)`;
 }
 
 function validatePlayerIdForDb(value) {

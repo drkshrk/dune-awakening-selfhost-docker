@@ -43,7 +43,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0 }: { initialStep?: 
       </div>
       <div className="panel">
         {step === 0 && <>
-          <h2>Welcome to RedBlink Dune Docker Console</h2>
+          <h2>Welcome to Dune Docker Console</h2>
           <p>A Docker-powered Dune server stack with a built-in web admin panel. It is an unofficial community self-hosting tool.</p>
           <ul className="requirements">
             <li>Linux host with Docker Engine and Compose plugin</li>
@@ -87,7 +87,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0 }: { initialStep?: 
           <div className="action-sections">
             <section className="action-section">
               <h4>Admin Panel</h4>
-              <p>RedBlink Dune Docker Console listens on 8088/tcp by default. Keep it local, VPN-only, or protected by a reverse proxy/firewall.</p>
+              <p>Dune Docker Console listens on 8088/tcp by default. Keep it local, VPN-only, or protected by a reverse proxy/firewall.</p>
             </section>
             <section className="action-section">
               <h4>Game Client Ports</h4>

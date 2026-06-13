@@ -21,6 +21,12 @@ export async function api<T>(path: string, options: RequestInit = {}): ApiResult
     }
   }
   const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
+  if (response.status === 401 || response.status === 403) {
+    const rawError = String(record.error || "");
+    if (/authentication required|csrf token/i.test(rawError)) {
+      throw new Error("Your console session expired or the console restarted. Refresh the page, then sign in again.");
+    }
+  }
   if (!response.ok) throw new Error(String(record.error || `Request failed: ${response.status}`));
   return data as T;
 }
