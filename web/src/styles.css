@@ -711,6 +711,8 @@ body.debug .technical-details { display: block; }
 .theme-note { color: #ffd08a; }
 .deployment-progress { display: grid; gap: 7px; margin-top: 12px; }
 .deployment-progress span { color: #d9c8aa; font-size: 13px; }
+.task-elapsed { margin-top: 8px; color: #d9c8aa; }
+.task-elapsed strong, .setup-success-countdown strong { color: #fff1d4; }
 .danger-note, .error, .error-banner { color: var(--danger-text); }
 .success-note { color: #9be6bd; }
 .error-banner { background: #351b1b; border: 1px solid var(--danger-strong); padding: 12px; border-radius: 6px; margin-bottom: 14px; }

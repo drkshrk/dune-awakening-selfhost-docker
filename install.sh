@@ -163,6 +163,15 @@ ensure_compose() {
   fi
 }
 
+install_cli_command() {
+  if [ ! -x runtime/scripts/install-command.sh ]; then
+    return
+  fi
+
+  step "Installing the dune command."
+  need_sudo runtime/scripts/install-command.sh
+}
+
 host_ip() {
   local ip=""
   if command -v ip >/dev/null 2>&1; then
@@ -246,6 +255,7 @@ show_finish() {
   fi
   echo
   echo "After signing in, the setup wizard will check the server and finish everything from the browser."
+  echo "If you prefer the terminal, you can also run: dune --help"
 }
 
 say "Starting Dune Docker Console Installer."
@@ -260,5 +270,6 @@ install_docker
 start_docker
 ensure_docker_group_access
 ensure_compose
+install_cli_command
 start_console
 show_finish

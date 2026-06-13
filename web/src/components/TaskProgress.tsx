@@ -6,6 +6,7 @@ const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
 
 export function TaskProgress({ task, onDismiss }: { task: Task | null; onDismiss?: () => void }) {
   const [liveTask, setLiveTask] = useState<Task | null>(task);
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     setLiveTask(task);
@@ -26,6 +27,12 @@ export function TaskProgress({ task, onDismiss }: { task: Task | null; onDismiss
     return () => window.clearTimeout(id);
   }, [liveTask?.id, liveTask?.status, onDismiss]);
 
+  useEffect(() => {
+    if (!liveTask || terminalStatuses.has(liveTask.status)) return;
+    const id = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [liveTask?.id, liveTask?.status]);
+
   if (!liveTask) return null;
   return (
     <section className="panel">
@@ -37,6 +44,7 @@ export function TaskProgress({ task, onDismiss }: { task: Task | null; onDismiss
         </div>
       </div>
       <p>{formatUiSentence(taskMessage(liveTask))}</p>
+      {liveTask.operation === "init" && !terminalStatuses.has(liveTask.status) && <p className="task-elapsed">This can take a while on a fresh server. Elapsed time: <strong>{formatElapsed(now - new Date(liveTask.startedAt).getTime())}</strong></p>}
       {liveTask.operation === "init" && <ProgressBar progress={initTaskProgress(liveTask)} />}
       {liveTask.errorMessage && <p className="error">{formatUiSentence(liveTask.errorMessage)}</p>}
       <details className={liveTask.operation === "init" ? "task-technical-details" : "technical-details"}>
@@ -45,6 +53,13 @@ export function TaskProgress({ task, onDismiss }: { task: Task | null; onDismiss
       </details>
     </section>
   );
+}
+
+function formatElapsed(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 function ProgressBar({ progress }: { progress: { percent: number; label: string } }) {

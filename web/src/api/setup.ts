@@ -20,5 +20,6 @@ export const setupApi = {
   writeConfig: (body: Record<string, string>) => post<{ ok: boolean }>("/api/setup/write-config", body),
   saveToken: (token: string) => post<{ ok: boolean }>("/api/setup/save-token", { token }),
   init: () => post<{ task: Task }>("/api/setup/init"),
+  tasks: () => api<{ tasks: Task[] }>("/api/setup/tasks"),
   task: (id: string) => api<{ task: Task }>(`/api/setup/tasks/${id}`)
 };

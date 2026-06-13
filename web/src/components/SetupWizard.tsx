@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { setupApi, type Check, type Task } from "../api/setup";
 import { PreflightCheckCard } from "./PreflightCheckCard";
 import { SecretInput } from "./SecretInput";
@@ -8,15 +8,22 @@ const steps = ["Welcome", "Host Check", "Docker Setup", "Runtime Location", "Ser
 const regions = ["Europe", "North America", "South America", "Asia", "Oceania", "Africa"];
 type SetupConfig = { SERVER_TITLE: string; SERVER_REGION: string; SERVER_IP: string; SERVER_IP_MODE: string; SERVER_PROVIDER: string; STEAM_APP_ID: string };
 const terminalStatuses = new Set(["succeeded", "failed", "cancelled"]);
+const completionRedirectSeconds = 5;
 
 export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }: { initialStep?: number; jumpNonce?: number; onSetupComplete?: () => void }) {
   const [step, setStep] = useState(initialStep);
   const [maxUnlockedStep, setMaxUnlockedStep] = useState(initialStep);
   const [checks, setChecks] = useState<Check[]>([]);
   const [task, setTask] = useState<Task | null>(null);
+  const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null);
   const [token, setToken] = useState("");
   const [existingToken, setExistingToken] = useState(false);
   const [config, setConfig] = useState<SetupConfig>({ SERVER_TITLE: "My Dune Server", SERVER_REGION: "Europe", SERVER_IP: "auto", SERVER_IP_MODE: "public", SERVER_PROVIDER: "dune-docker", STEAM_APP_ID: "4754530" });
+  const onSetupCompleteRef = useRef(onSetupComplete);
+
+  useEffect(() => {
+    onSetupCompleteRef.current = onSetupComplete;
+  }, [onSetupComplete]);
 
   useEffect(() => {
     const next = Math.max(0, Math.min(initialStep, steps.length - 1));
@@ -31,6 +38,38 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }:
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setupApi.tasks().then(({ tasks }) => {
+      if (cancelled) return;
+      const latestInit = tasks.find((item) => item.operation === "init" && !terminalStatuses.has(item.status));
+      if (!latestInit) return;
+      setTask(latestInit);
+      setStep(8);
+      setMaxUnlockedStep((current) => Math.max(current, 8));
+      if (!terminalStatuses.has(latestInit.status)) void watchInitTask(latestInit.id);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (task?.operation !== "init" || task.status !== "succeeded") {
+      setRedirectCountdown(null);
+      return;
+    }
+    setRedirectCountdown(completionRedirectSeconds);
+  }, [task?.id, task?.operation, task?.status]);
+
+  useEffect(() => {
+    if (redirectCountdown === null) return;
+    if (redirectCountdown <= 0) {
+      onSetupCompleteRef.current?.();
+      return;
+    }
+    const id = window.setTimeout(() => setRedirectCountdown((current) => current === null ? null : current - 1), 1000);
+    return () => window.clearTimeout(id);
+  }, [redirectCountdown]);
 
   async function runPreflight() {
     const result = await setupApi.preflight();
@@ -57,7 +96,6 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }:
       current = (await setupApi.task(current.id)).task;
       setTask(current);
     }
-    if (current.status === "succeeded") onSetupComplete?.();
   }
 
   const hasToken = Boolean(token.trim() || existingToken);
@@ -210,10 +248,10 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }:
         </>}
         {step === 8 && <>
           <h2>Deploy Server</h2>
-          <p>This starts the Dune Docker deployment. The console will prepare local settings, download required server assets, update the database, and start the game services.</p>
+          <p>This starts the Dune Docker deployment. The console will prepare local settings, download required server assets, update the database, and start the game services. First-time deployment can take a while, so keep this page open while the progress updates.</p>
           <button disabled={deploymentRunning || deploymentSucceeded} onClick={init}>{deploymentSucceeded ? "Deployment Complete" : deploymentRunning ? "Deploying..." : "Start Deployment"}</button>
           <TaskProgress task={task} />
-          {deploymentSucceeded && <p className="success-note">Deployment finished. Continue to the final step while the game services warm up.</p>}
+          {deploymentSucceeded && <p className="success-note setup-success-countdown">Deployment was successful. The console will open the full dashboard in <strong>{redirectCountdown ?? completionRedirectSeconds}</strong> seconds.</p>}
         </>}
         {step === 9 && <>
           <h2>Finish</h2>
