@@ -235,95 +235,139 @@ echo "Existing local config/state is backed up first, but players should treat t
 echo
 
 require_docker_prereqs
-check_running_stack
-confirm_overwrite
+if [ "${DUNE_INIT_ASSUME_YES:-0}" = "1" ]; then
+  echo "Using saved Web UI setup values."
 
-SERVER_TITLE="$(prompt_default "Server title" "My Dune Server")"
+  if [ ! -f .env ]; then
+    echo "Saved server settings were not found. Open the Web UI setup wizard and complete Server Identity first."
+    exit 1
+  fi
 
-echo
-echo "Select server region:"
-echo "  1) Asia"
-echo "  2) Europe"
-echo "  3) North America"
-echo "  4) Oceania"
-echo "  5) South America"
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
 
-SERVER_REGION=""
-while [ -z "$SERVER_REGION" ]; do
-  read -r -p "Choice [1-5]: " region_choice
-  case "$region_choice" in
-    1) SERVER_REGION="Asia" ;;
-    2) SERVER_REGION="Europe" ;;
-    3) SERVER_REGION="North America" ;;
-    4) SERVER_REGION="Oceania" ;;
-    5) SERVER_REGION="South America" ;;
-    *) echo "Invalid choice. Pick 1, 2, 3, 4, or 5." ;;
-  esac
-done
+  SERVER_TITLE="${SERVER_TITLE:-My Dune Server}"
+  SERVER_REGION="${SERVER_REGION:-Europe}"
+  SERVER_IP="${SERVER_IP:-auto}"
+  SERVER_IP_MODE="${SERVER_IP_MODE:-public}"
+  STEAM_APP_ID="${STEAM_APP_ID:-4754530}"
 
-echo
-echo "Detecting player-facing IP addresses..."
-PUBLIC_IP="$(detect_public_ip || true)"
-LAN_IP="$(detect_lan_ip || true)"
+  if [ ! -f runtime/secrets/funcom-token.txt ]; then
+    echo "Funcom token was not found. Open the Web UI setup wizard and paste your token before deploying."
+    exit 1
+  fi
 
-echo
-echo "How will players connect to this server?"
-echo "  1) Public / internet server"
-echo "     Use this for VPS, dedicated servers, or home servers with port forwarding."
-echo "     Detected public IP: ${PUBLIC_IP:-not detected}"
-echo
-echo "  2) Local / LAN server"
-echo "     Use this for players on the same local network only."
-echo "     Detected local IP:  ${LAN_IP:-not detected}"
-echo
+  FUNCOM_TOKEN="$(tr -d '\r\n' < runtime/secrets/funcom-token.txt)"
+  if [ -z "$FUNCOM_TOKEN" ]; then
+    echo "Funcom token is empty. Open the Web UI setup wizard and save the token again."
+    exit 1
+  fi
 
-SERVER_IP=""
-while [ -z "$SERVER_IP" ]; do
-  read -r -p "Choice [1/2]: " ip_choice
+  if [ -f runtime/generated/battlegroup.env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . runtime/generated/battlegroup.env
+    set +a
+  fi
 
-  case "$ip_choice" in
-    1)
-      if [ -z "$PUBLIC_IP" ]; then
-        echo "Public IP was not detected. Check internet access and try again."
-        exit 1
-      fi
-      SERVER_IP="$PUBLIC_IP"
-      SERVER_IP_MODE="public"
-      ;;
-    2)
-      if [ -z "$LAN_IP" ]; then
-        echo "Local/LAN IP was not detected. Check the host network and try again."
-        exit 1
-      fi
-      SERVER_IP="$LAN_IP"
-      SERVER_IP_MODE="local"
-      ;;
-    *)
-      echo "Invalid choice. Pick 1 for public or 2 for local/LAN."
-      ;;
-  esac
-done
+  if [ -z "${BATTLEGROUP_ID:-}" ]; then
+    echo
+    echo "Generating battlegroup ID using Funcom's world name format..."
+    BATTLEGROUP_ID="$(derive_battlegroup_id "$FUNCOM_TOKEN")"
+  fi
+else
+  check_running_stack
+  confirm_overwrite
 
-echo "Selected player-facing IP: $SERVER_IP ($SERVER_IP_MODE)"
+  SERVER_TITLE="$(prompt_default "Server title" "My Dune Server")"
 
-# Funcom self-host server Steam app id. This is selected automatically, not prompted.
-STEAM_APP_ID="${STEAM_APP_ID:-4754530}"
-echo "Steam app id: $STEAM_APP_ID"
+  echo
+  echo "Select server region:"
+  echo "  1) Asia"
+  echo "  2) Europe"
+  echo "  3) North America"
+  echo "  4) Oceania"
+  echo "  5) South America"
 
-echo
-echo "Paste your Funcom self-host service token."
-echo "Input is hidden. Press Enter after pasting."
-read -r -s -p "Funcom token: " FUNCOM_TOKEN
-echo
+  SERVER_REGION=""
+  while [ -z "$SERVER_REGION" ]; do
+    read -r -p "Choice [1-5]: " region_choice
+    case "$region_choice" in
+      1) SERVER_REGION="Asia" ;;
+      2) SERVER_REGION="Europe" ;;
+      3) SERVER_REGION="North America" ;;
+      4) SERVER_REGION="Oceania" ;;
+      5) SERVER_REGION="South America" ;;
+      *) echo "Invalid choice. Pick 1, 2, 3, 4, or 5." ;;
+    esac
+  done
 
-if [ -z "$FUNCOM_TOKEN" ]; then
-  echo "Token cannot be empty."
-  exit 1
+  echo
+  echo "Detecting player-facing IP addresses..."
+  PUBLIC_IP="$(detect_public_ip || true)"
+  LAN_IP="$(detect_lan_ip || true)"
+
+  echo
+  echo "How will players connect to this server?"
+  echo "  1) Public / internet server"
+  echo "     Use this for VPS, dedicated servers, or home servers with port forwarding."
+  echo "     Detected public IP: ${PUBLIC_IP:-not detected}"
+  echo
+  echo "  2) Local / LAN server"
+  echo "     Use this for players on the same local network only."
+  echo "     Detected local IP:  ${LAN_IP:-not detected}"
+  echo
+
+  SERVER_IP=""
+  while [ -z "$SERVER_IP" ]; do
+    read -r -p "Choice [1/2]: " ip_choice
+
+    case "$ip_choice" in
+      1)
+        if [ -z "$PUBLIC_IP" ]; then
+          echo "Public IP was not detected. Check internet access and try again."
+          exit 1
+        fi
+        SERVER_IP="$PUBLIC_IP"
+        SERVER_IP_MODE="public"
+        ;;
+      2)
+        if [ -z "$LAN_IP" ]; then
+          echo "Local/LAN IP was not detected. Check the host network and try again."
+          exit 1
+        fi
+        SERVER_IP="$LAN_IP"
+        SERVER_IP_MODE="local"
+        ;;
+      *)
+        echo "Invalid choice. Pick 1 for public or 2 for local/LAN."
+        ;;
+    esac
+  done
+
+  echo "Selected player-facing IP: $SERVER_IP ($SERVER_IP_MODE)"
+
+  # Funcom self-host server Steam app id. This is selected automatically, not prompted.
+  STEAM_APP_ID="${STEAM_APP_ID:-4754530}"
+  echo "Steam app id: $STEAM_APP_ID"
+
+  echo
+  echo "Paste your Funcom self-host service token."
+  echo "Input is hidden. Press Enter after pasting."
+  read -r -s -p "Funcom token: " FUNCOM_TOKEN
+  echo
+
+  if [ -z "$FUNCOM_TOKEN" ]; then
+    echo "Token cannot be empty."
+    exit 1
+  fi
+
+  echo
+  echo "Generating battlegroup ID using Funcom's world name format..."
+  BATTLEGROUP_ID="$(derive_battlegroup_id "$FUNCOM_TOKEN")"
 fi
-
-echo
-echo "Generating battlegroup ID using Funcom's world name format..."
-BATTLEGROUP_ID="$(derive_battlegroup_id "$FUNCOM_TOKEN")"
 
 echo
 echo "=== Setup summary ==="
@@ -345,11 +389,15 @@ fi
 echo
 echo "This will now stop existing local Dune services, reset the local database volume,"
 echo "download/load assets if needed, apply world partitions, and start a fresh stack."
-read -r -p "Create this fresh local world now? [y/N]: " final_answer
-case "$final_answer" in
-  y|Y|yes|YES) ;;
-  *) echo "Init cancelled."; exit 1 ;;
-esac
+if [ "${DUNE_INIT_ASSUME_YES:-0}" = "1" ]; then
+  echo "Web setup approved deployment. Continuing without terminal prompts."
+else
+  read -r -p "Create this fresh local world now? [y/N]: " final_answer
+  case "$final_answer" in
+    y|Y|yes|YES) ;;
+    *) echo "Init cancelled."; exit 1 ;;
+  esac
+fi
 
 fresh_reset_runtime
 

@@ -31,7 +31,7 @@ You do not need to be a Linux expert. Start with a fresh server and the installe
 | What you need | Plain Explanation |
 |---|---|
 | A server | Ubuntu/Linux is the easiest path. Docker Desktop on Windows/WSL2 or a VM can also work. |
-| Docker | The installer checks Docker and installs it automatically on supported Linux servers. |
+| Docker | You can start even if Docker is not ready yet. On supported Linux servers, the installer prepares Docker for you. |
 | Funcom token | You will paste this into the browser setup wizard. |
 | CPU support | The game server needs AVX/AVX2. Most modern dedicated servers and VPS plans expose this. |
 | Disk space | 100 GB or more is recommended. |

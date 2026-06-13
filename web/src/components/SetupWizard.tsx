@@ -93,7 +93,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }:
       <div className="panel">
         {step === 0 && <>
           <h2>Welcome to Dune Docker Console</h2>
-          <p>A Docker-powered Dune server stack with a built-in web admin panel. It is an unofficial community self-hosting tool.</p>
+          <p>Run and manage your Dune: Awakening self-hosted Docker server from a browser. The console guides the first setup, then gives you the tools to manage maps, players, updates, backups, and admin work in one place.</p>
           <ul className="requirements">
             <li>Best experience: run it directly on a Linux server.</li>
             <li>Also possible: Docker Desktop on Windows/WSL2 or a virtual machine.</li>
@@ -109,7 +109,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }:
         </>}
         {step === 2 && <>
           <h2>Docker Setup</h2>
-          <p>The installer checks the server for you. If Docker or Compose is missing on a supported Linux server, it installs what is needed before the Web UI opens.</p>
+          <p>The installer takes care of the Docker check before you get here. If anything was missing on a supported Linux server, it was installed and started for you so you can continue in the browser.</p>
         </>}
         {step === 3 && <>
           <h2>Runtime Location</h2>
@@ -131,7 +131,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }:
           <p>Paste your Funcom self-host token here. When you continue, the console saves it securely on this server and keeps it out of logs.</p>
           {existingToken && !token && <p className="muted">An existing token is already saved. Paste a new one only if you want to replace it.</p>}
           <SecretInput value={token} onChange={(event) => setToken(event.target.value)} placeholder="Paste token" />
-          {!hasToken && <p className="danger-note">A Funcom self-host token is required before deployment.</p>}
+          {!hasToken && <p className="theme-note">Paste your Funcom self-host token to continue to deployment.</p>}
         </>}
         {step === 6 && <>
           <h2>Ports and Firewall</h2>
@@ -191,7 +191,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }:
               <ReviewGrid items={[
                 ["Funcom token", token ? "Ready to save" : "Not entered in this session"],
                 ["Admin auth", "Enabled unless ADMIN_AUTH_DISABLED is set"],
-                ["Secret storage", "runtime/secrets with restrictive permissions"]
+                ["Secret storage", "Saved privately on this server"]
               ]} />
             </section>
             <section className="action-section warning-panel">
@@ -199,7 +199,7 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }:
               <ul className="requirements">
                 {!token && <li>Funcom token was not entered in this wizard session. Existing token file may still be used if present.</li>}
                 {config.SERVER_IP === "auto" && <li>Server IP is set to auto. Confirm Home readiness after setup to verify advertised IP.</li>}
-                <li>Initial setup can initialize or reset local world state. Create backups before destructive setup work.</li>
+                <li>Deployment starts a fresh local world and keeps a backup of existing local setup files when they exist.</li>
               </ul>
             </section>
           </div>
@@ -207,7 +207,6 @@ export function SetupWizard({ initialStep = 0, jumpNonce = 0, onSetupComplete }:
             <summary>Advanced review data</summary>
             <pre className="mini-output">{JSON.stringify(config, null, 2)}</pre>
           </details>
-          <p className="danger-note">Initial setup can initialize or reset local world state. Review before continuing.</p>
         </>}
         {step === 8 && <>
           <h2>Deploy Server</h2>

@@ -262,6 +262,7 @@ main { padding: 22px; min-width: 0; }
     linear-gradient(180deg, rgba(13, 15, 18, .72) 0%, rgba(13, 15, 18, .28) 38%, rgba(13, 15, 18, .84) 100%),
     url("/images/backgrounds/home-desert-bg.png") center / cover no-repeat;
 }
+.setup-only-shell .home-backdrop { inset: 0; }
 .home-sand-fine, .home-sand-near {
   position: absolute;
   display: block;
@@ -664,6 +665,15 @@ main { padding: 22px; min-width: 0; }
 .badge-fail, .badge-failed { border-color: var(--danger); color: var(--danger-text); }
 .badge-info, .badge-queued { border-color: #5983b7; color: #b6d5ff; }
 .wizard { display: grid; grid-template-columns: 250px 1fr; gap: 16px; }
+.setup-main .wizard > .panel,
+.setup-main .stepper {
+  background: rgba(18, 20, 22, .78);
+  border: 1px solid rgba(255, 208, 138, .22);
+  border-radius: 8px;
+  padding: 14px;
+  backdrop-filter: blur(12px);
+}
+.setup-main .wizard > .panel { padding: 18px; }
 .stepper { display: grid; gap: 8px; align-content: start; }
 .stepper button { text-align: left; }
 .stepper button:disabled { opacity: .45; cursor: not-allowed; }
@@ -697,6 +707,9 @@ body.debug .technical-details { display: block; }
 .logs-clear-button { margin-left: auto; }
 .command-preview { color: #ffd08a; }
 .empty { color: #d9c8aa; }
+.theme-note { color: #ffd08a; }
+.deployment-progress { display: grid; gap: 7px; margin-top: 12px; }
+.deployment-progress span { color: #d9c8aa; font-size: 13px; }
 .danger-note, .error, .error-banner { color: var(--danger-text); }
 .success-note { color: #9be6bd; }
 .error-banner { background: #351b1b; border: 1px solid var(--danger-strong); padding: 12px; border-radius: 6px; margin-bottom: 14px; }

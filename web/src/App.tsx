@@ -423,7 +423,11 @@ export function App() {
   if (firstRunSetup) {
     return (
       <div className="app-shell setup-only-shell">
-        <main>
+        <main className="home-main setup-main">
+          <div className="home-backdrop" aria-hidden="true">
+            <span className="home-sand-fine" />
+            <span className="home-sand-near" />
+          </div>
           <header className="topbar">
             <div>
               <strong>Setup</strong>
@@ -440,6 +444,7 @@ export function App() {
               if (state.files?.env && state.files?.token && state.files?.battlegroup) setTab("Home");
             }}
           />
+          <footer className="app-footer"><Heart size={16} fill="currentColor" /><span>Created with love by <a href={REDBLINK_REPO_URL} target="_blank" rel="noreferrer">RedBlink</a></span></footer>
         </main>
       </div>
     );
@@ -481,7 +486,7 @@ export function App() {
         <header className="topbar">
           <div>
             <strong>{tab}</strong>
-            <span>A Docker-powered Dune server stack with a built-in web admin panel.</span>
+            <span>Run and manage your self-hosted Dune server from the browser.</span>
           </div>
           <div className="topbar-links" aria-label="Community links">
             <a className="community-button discord" href={REDBLINK_DISCORD_URL} target="_blank" rel="noreferrer" title="Join Discord"><span>Join Discord</span><DiscordLogo size={19} /></a>
@@ -509,7 +514,7 @@ export function App() {
         {tab === "Updates" && <UpdatesPanel setTask={setTask} />}
         {tab === "Settings" && <SettingsPanel onPasswordChanged={logoutAfterPasswordChange} />}
         {tab !== "Maps" && <TaskProgress task={task} onDismiss={() => setTask(null)} />}
-        <footer className="app-footer"><Heart size={16} fill="currentColor" /><span>Made with Love By <a href={REDBLINK_REPO_URL} target="_blank" rel="noreferrer">RedBlink</a></span></footer>
+        <footer className="app-footer"><Heart size={16} fill="currentColor" /><span>Created with love by <a href={REDBLINK_REPO_URL} target="_blank" rel="noreferrer">RedBlink</a></span></footer>
       </main>
       <ConfirmDialog request={confirmRequest} onClose={closeConfirmDialog} />
     </div>

@@ -37,12 +37,27 @@ export function TaskProgress({ task, onDismiss }: { task: Task | null; onDismiss
         </div>
       </div>
       <p>{formatUiSentence(taskMessage(liveTask))}</p>
+      {liveTask.operation === "init" && <ProgressBar progress={initTaskProgress(liveTask)} />}
       {liveTask.errorMessage && <p className="error">{formatUiSentence(liveTask.errorMessage)}</p>}
       <details className="technical-details">
         <summary>Technical details</summary>
         <pre className="log-box">{liveTask.logLines.slice(-120).map((line) => line.line).join("\n")}</pre>
       </details>
     </section>
+  );
+}
+
+function ProgressBar({ progress }: { progress: { percent: number; label: string } }) {
+  return (
+    <div className="deployment-progress">
+      <div className="progress-row">
+        <div className="progress-track" aria-label={`Deployment progress ${progress.percent}%`}>
+          <div className="progress-fill" style={{ width: `${progress.percent}%` }} />
+        </div>
+        <strong>{progress.percent}%</strong>
+      </div>
+      <span>{progress.label}</span>
+    </div>
   );
 }
 
@@ -101,4 +116,17 @@ function initTaskMessage(task: Task) {
   if (/SteamCMD|download|app_update|Loading server assets/i.test(lines)) return "Downloading or updating Dune server files.";
   if (/run DB setup|database setup|Applying|world partitions/i.test(lines)) return "Preparing Dune database and world data.";
   return "Preparing deployment.";
+}
+
+function initTaskProgress(task: Task) {
+  if (task.status === "succeeded") return { percent: 100, label: "Deployment complete." };
+  if (task.status === "failed" || task.status === "cancelled") return { percent: 100, label: "Deployment stopped." };
+  const lines = task.logLines.map((row) => row.line).join("\n");
+  if (/Starting Dune stack/i.test(lines)) return { percent: 90, label: "Starting game services." };
+  if (/Downloading\/loading assets and running database setup\/update|SteamCMD|app_update|Loading server assets/i.test(lines)) return { percent: 68, label: "Downloading assets and preparing game data." };
+  if (/Starting orchestrator container|Creating|Started|Running/i.test(lines)) return { percent: 42, label: "Starting deployment tools." };
+  if (/Wrote local config|Generated battlegroup ID|Saving server settings/i.test(lines)) return { percent: 28, label: "Saving setup settings." };
+  if (/Preparing fresh runtime state|Backing up existing local config|Resetting Postgres volume/i.test(lines)) return { percent: 18, label: "Preparing the server workspace." };
+  if (/Using saved Web UI setup values|Generating battlegroup ID/i.test(lines)) return { percent: 10, label: "Reading setup details." };
+  return { percent: task.status === "queued" ? 3 : 6, label: "Starting deployment." };
 }

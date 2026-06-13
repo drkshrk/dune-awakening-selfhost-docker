@@ -57,6 +57,7 @@ export class TaskManager {
         const args = buildDuneArgs(operation, payload);
         const result = await runDune(this.config, args, {
           allowedExitCodes: operation === "updateCheck" ? [0, 100] : [0],
+          env: operation === "init" ? { DUNE_INIT_ASSUME_YES: "1" } : {},
           timeoutMs: taskTimeoutMs(this.config, operation),
           onLine: (text, stream) => this.append(task, text, stream)
         });
