@@ -43,6 +43,8 @@ fi
 
 
 MULTIHOME_IP="$(resolve_bind_ip)"
+RMQ_GAME_HOST="$(resolve_rmq_game_host)"
+RMQ_ADMIN_HOST="$(resolve_rmq_admin_host)"
 mapfile -t GAME_EXTERNAL_ADDRESS_ENV < <(game_external_address_override_env_args)
 
 psql_value() {
@@ -202,9 +204,9 @@ docker run -d \
   "-ini:engine:[URL]:Port=$GAME_PORT" \
   "-ini:engine:[URL]:IGWPort=$IGW_PORT" \
   -battlegroup-director-url=127.0.0.1:11717 \
-  --RMQGameHostname=127.0.0.1 \
+  "--RMQGameHostname=$RMQ_GAME_HOST" \
   --RMQGamePort=31982 \
-  --RMQAdminHostname=127.0.0.1 \
+  "--RMQAdminHostname=$RMQ_ADMIN_HOST" \
   --RMQAdminPort=32573 \
   "${SIETCH_RUNTIME_ARGS[@]}" \
   "${LOG_RUNTIME_ARGS[@]}"

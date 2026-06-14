@@ -52,12 +52,25 @@ check_tcp() {
   fi
 }
 
+container_logs_have_udp_listener() {
+  local container="$1"
+  local port="$2"
+
+  [ -n "$container" ] || return 1
+  is_running "$container" || return 1
+
+  docker logs "$container" 2>&1 \
+    | grep -Eq "listening for (Clients|Servers) on [0-9.]+:${port}\\b"
+}
+
 check_udp() {
   local port="$1"
   local label="$2"
   local container="${3:-}"
 
   if ss -lnup | grep -q ":$port "; then
+    mark_ok "UDP $port $label"
+  elif container_logs_have_udp_listener "$container" "$port"; then
     mark_ok "UDP $port $label"
   elif [ -n "$container" ] && is_running "$container"; then
     mark_wait "UDP $port $label"

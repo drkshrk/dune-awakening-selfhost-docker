@@ -185,11 +185,43 @@ detect_local_ip() {
   return 1
 }
 
+detect_docker_desktop_host_bind_ip() {
+  local ip="" container=""
+
+  command -v docker >/dev/null 2>&1 || return 1
+  docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop' || return 1
+
+  container="$(docker ps --filter name='^/dune-orchestrator$' --format '{{.Names}}' 2>/dev/null | head -n1 || true)"
+  if [ -n "$container" ]; then
+    ip="$(docker exec "$container" sh -c "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(\$i==\"src\"){print \$(i+1); exit}}'" 2>/dev/null | tr -d '[:space:]' || true)"
+    if is_ipv4 "$ip"; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  fi
+
+  if docker image inspect redblink-dune-docker-console:dev >/dev/null 2>&1; then
+    ip="$(docker run --rm --network host --entrypoint sh redblink-dune-docker-console:dev -c "ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if(\$i==\"src\"){print \$(i+1); exit}}'" 2>/dev/null | tr -d '[:space:]' || true)"
+    if is_ipv4 "$ip"; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
 detect_bind_ip() {
   local ip=""
 
+  ip="$(detect_docker_desktop_host_bind_ip 2>/dev/null || true)"
+  if is_ipv4 "$ip"; then
+    printf '%s' "$ip"
+    return 0
+  fi
+
   if command -v ip >/dev/null 2>&1; then
-    ip="$(ip -o -4 addr show up scope global 2>/dev/null | awk '$2 !~ /^(docker|br-|veth)/ { sub(/\/.*/, "", $4); print $4; exit }' | tr -d '[:space:]' || true)"
+    ip="$(ip -o -4 addr show up scope global 2>/dev/null | awk '$2 !~ /^(lo|docker|br-|veth)/ { sub(/\/.*/, "", $4); print $4; exit }' | tr -d '[:space:]' || true)"
     if is_ipv4 "$ip"; then
       printf '%s' "$ip"
       return 0
@@ -217,8 +249,16 @@ detect_bind_ip() {
 bind_ip_is_assigned() {
   local requested="$1"
   [ -n "$requested" ] || return 1
+  is_ipv4 "$requested" || return 1
   command -v ip >/dev/null 2>&1 || return 1
-  ip -o -4 addr show up scope global 2>/dev/null     | awk '$2 !~ /^(docker|br-|veth)/ { sub(/\/.*/, "", $4); print $4 }'     | grep -qx "$requested"
+  ip -o -4 addr show up scope global 2>/dev/null     | awk '$2 !~ /^(lo|docker|br-|veth)/ { sub(/\/.*/, "", $4); print $4 }'     | grep -qx "$requested" && return 0
+
+  if command -v docker >/dev/null 2>&1 \
+    && docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
+    return 0
+  fi
+
+  return 1
 }
 
 resolve_server_ip_mode() {
@@ -307,6 +347,36 @@ resolve_game_addr_ip() {
 
 resolve_igw_addr_ip() {
   resolve_game_listen_ip
+}
+
+resolve_rmq_game_host() {
+  local configured
+
+  configured="$(first_known_value "${DUNE_RMQ_GAME_HOST:-}" "$(config_value .env DUNE_RMQ_GAME_HOST 2>/dev/null || true)" || true)"
+  if value_is_known "$configured"; then
+    printf '%s' "$configured"
+    return 0
+  fi
+
+  if command -v docker >/dev/null 2>&1 \
+    && docker info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
+    resolve_advertised_ip
+    return 0
+  fi
+
+  printf '%s' "127.0.0.1"
+}
+
+resolve_rmq_admin_host() {
+  local configured
+
+  configured="$(first_known_value "${DUNE_RMQ_ADMIN_HOST:-}" "$(config_value .env DUNE_RMQ_ADMIN_HOST 2>/dev/null || true)" || true)"
+  if value_is_known "$configured"; then
+    printf '%s' "$configured"
+    return 0
+  fi
+
+  resolve_rmq_game_host
 }
 
 game_external_address_override_env_args() {
