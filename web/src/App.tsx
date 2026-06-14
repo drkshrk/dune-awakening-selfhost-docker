@@ -141,6 +141,23 @@ function KofiLogo({ size = 18 }: { size?: number }) {
 }
 
 const DUNE_ASSET_BASE = "/assets/dune";
+const PLAYER_ADMIN_ICON_RAIL_LABELS = [
+  "All Categories",
+  "Essentials",
+  "Water Discipline",
+  "Combat",
+  "Construction",
+  "Exploration",
+  "Vehicles",
+  "Augmentations",
+  "Uniques",
+  "Trooper",
+  "Swordmaster",
+  "Bene Gesserit",
+  "Mentat",
+  "Planetologist"
+];
+let playerAdminIconRailPreloadStarted = false;
 
 function duneCategoryAssetKey(label: string) {
   const normalized = label.trim().toLowerCase();
@@ -153,6 +170,21 @@ function duneCategoryIconPath(label: string, selected: boolean) {
   const key = duneCategoryAssetKey(label);
   if (selected && key === "all_categories") return `${DUNE_ASSET_BASE}/${key}_selected.png`;
   return `${DUNE_ASSET_BASE}/${key}_icon${selected ? "_selected" : ""}.png`;
+}
+
+function preloadPlayerAdminIconRailAssets() {
+  if (playerAdminIconRailPreloadStarted || typeof window === "undefined") return;
+  playerAdminIconRailPreloadStarted = true;
+  const paths = new Set<string>();
+  PLAYER_ADMIN_ICON_RAIL_LABELS.forEach((label) => {
+    paths.add(duneCategoryIconPath(label, false));
+    paths.add(duneCategoryIconPath(label, true));
+  });
+  paths.forEach((path) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.src = path;
+  });
 }
 
 function PlayerCategoryIconRail({
@@ -189,7 +221,7 @@ function PlayerCategoryIconRail({
                 title={item.label}
                 onClick={() => onChange(item.value)}
               >
-                <img src={duneCategoryIconPath(item.label, selected)} alt="" />
+                <img src={duneCategoryIconPath(item.label, selected)} alt="" loading="eager" decoding="async" fetchPriority="high" />
               </button>
             );
           })}
@@ -267,6 +299,10 @@ export function App() {
   const [confirmRequest, setConfirmRequest] = useState<ConfirmDialogRequest | null>(null);
   const setupComplete = Boolean(setupState?.files?.complete ?? (setupState?.files?.env && setupState?.files?.token && setupState?.files?.battlegroup));
   const firstRunSetup = auth && setupStateLoaded && !setupComplete;
+
+  useEffect(() => {
+    preloadPlayerAdminIconRailAssets();
+  }, []);
 
   useEffect(() => {
     api<{ authenticated: boolean; csrfToken: string | null }>("/api/auth/state").then((state) => {
@@ -4890,7 +4926,13 @@ function BackupsPanel({ backupRestoreTask, setBackupRestoreTask, onError }: { ba
     }
   }
   useEffect(() => {
-    run(refresh);
+    refresh().catch((error) => {
+      setBackupResult({
+        status: "failed",
+        title: "Backup List Unavailable",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    });
   }, []);
   useEffect(() => {
     if (!backupResult || backupResult.status === "running" || backupResult.tone === "attention") return;
