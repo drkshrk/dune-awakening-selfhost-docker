@@ -12,6 +12,7 @@ type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; 
 type DatabasePasswordState = { taskId?: string; result: HomeTaskResult | null };
 
 const DATABASE_PASSWORD_STATE_KEY = "arrakis.databasePasswordState";
+const DATABASE_PREVIEW_MAX_ROWS = 10000;
 
 function formatResultTitle(value: unknown, pending = false) {
   return formatUiSentence(value, pending);
@@ -92,6 +93,8 @@ export function DatabasePanel() {
   const [preview, setPreview] = useState<{ columns?: { name: string }[]; rows?: Record<string, unknown>[] } | null>(null);
   const [columns, setColumns] = useState<Record<string, unknown>[]>([]);
   const [count, setCount] = useState("");
+  const [previewError, setPreviewError] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [sql, setSql] = useState("select * from dune.player_state limit 25");
   const [queryResult, setQueryResult] = useState<{ columns?: { name: string }[]; rows?: Record<string, unknown>[]; rowCount?: number; command?: string } | null>(null);
   const [queryError, setQueryError] = useState("");
@@ -160,18 +163,34 @@ export function DatabasePanel() {
     setSelected(table);
     setEditRow(null);
     setEditResult(null);
+    setPreview(null);
+    setColumns([]);
+    setCount("");
+    setPreviewError("");
     await refreshTablePreview(table);
     window.setTimeout(() => previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
   async function refreshTablePreview(table: string) {
-    const [nextPreview, nextColumns, nextCount] = await Promise.all([
-      databaseApi.preview(schema, table, 50, 0),
-      databaseApi.columns(schema, table),
-      databaseApi.count(schema, table)
-    ]);
-    setPreview(nextPreview);
-    setColumns(nextColumns);
-    setCount(String(nextCount.count));
+    setPreviewLoading(true);
+    setPreviewError("");
+    try {
+      const [nextColumns, nextCount] = await Promise.all([
+        databaseApi.columns(schema, table),
+        databaseApi.count(schema, table)
+      ]);
+      const rowCount = Math.max(0, Number(nextCount.count) || 0);
+      const previewLimit = Math.max(1, Math.min(rowCount || DATABASE_PREVIEW_MAX_ROWS, DATABASE_PREVIEW_MAX_ROWS));
+      const nextPreview = rowCount > 0 ? await databaseApi.preview(schema, table, previewLimit, 0) : { columns: [], rows: [] };
+      setPreview(nextPreview);
+      setColumns(nextColumns);
+      setCount(String(nextCount.count));
+    } catch (error) {
+      setPreview(null);
+      setColumns([]);
+      setPreviewError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPreviewLoading(false);
+    }
   }
   async function loadDatabaseStatus() {
     setDatabaseStatusLoading(true);
@@ -260,6 +279,8 @@ export function DatabasePanel() {
   const showDefaultDatabasePasswordNote = !databaseStatus || databaseStatus.usesDefaultPassword !== false;
   const previewColumns = databasePreviewColumns(preview);
   const previewRows = preview?.rows || [];
+  const previewRowCount = Number(count || 0);
+  const previewIsTruncated = previewRowCount > previewRows.length;
   const queryColumns = queryResult?.columns?.map((column) => column.name).filter((name) => name !== "__rowid");
   const queryRows = (queryResult?.rows || []).map((row) => omitInternalRowFields(row));
   const queryAffectedRows = Number(queryResult?.rowCount ?? queryRows.length);
@@ -299,11 +320,17 @@ export function DatabasePanel() {
     <h3 ref={previewRef}>{selected ? `${schema}.${selected} (${count} rows)` : "Table Preview"}</h3>
     {!selected && <div className="empty database-empty">No table selected. Select a table to preview and edit rows.</div>}
     {selected && <section className="database-table-panel">
+      {previewLoading && <div className="empty database-empty">Loading full table preview...</div>}
+      {previewError && <div className="empty database-empty danger-note">Preview failed: {formatResultMessage(previewError)}</div>}
+      {!previewLoading && !previewError && <p className="muted database-preview-count">
+        Showing {previewRows.length.toLocaleString()} of {previewRowCount.toLocaleString()} rows.
+        {previewIsTruncated ? ` Full preview is capped at ${DATABASE_PREVIEW_MAX_ROWS.toLocaleString()} rows to keep the browser responsive.` : ""}
+      </p>}
       <details className="technical-details">
         <summary>Columns</summary>
         <DataTable rows={columns} />
       </details>
-      {previewRows.length ? <DataTable rows={previewRows} columns={previewColumns} action={(row) => <button onClick={(event) => { event.stopPropagation(); startEdit(row); }}>Edit</button>} actionClassName="backup-table-actions" tableClassName="backup-table" /> : <div className="empty database-empty">This table has no rows to preview.</div>}
+      {!previewLoading && !previewError && (previewRows.length ? <DataTable rows={previewRows} columns={previewColumns} action={(row) => <button onClick={(event) => { event.stopPropagation(); startEdit(row); }}>Edit</button>} actionClassName="backup-table-actions" tableClassName="backup-table" /> : <div className="empty database-empty">This table has no rows to preview.</div>)}
       {!editRow && editResult && <section className={`result-panel ${editResult.status === "running" ? "" : "transient-result"} ${editResult.status === "succeeded" ? "result-ok" : editResult.status === "failed" ? "result-fail" : "result-running"}`}>
         <div className="panel-title"><strong>{formatResultTitle(editResult.title, editResult.status === "running")}</strong><StatusPill value={editResult.status === "succeeded" ? "Saved" : editResult.status === "failed" ? "Failed" : "Saving"} /></div>
         {editResult.message && <p>{formatResultMessage(editResult.message)}</p>}

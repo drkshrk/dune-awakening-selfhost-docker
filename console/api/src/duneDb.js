@@ -24,6 +24,7 @@ import {
 } from "./duneDb/presentation.js";
 
 const MAX_INTEL_POINTS = 2779;
+const MAX_TABLE_PREVIEW_ROWS = 10000;
 
 export class UnsupportedCapabilityError extends Error {
   constructor(message, details = {}) {
@@ -102,7 +103,7 @@ export async function tableCount(db, schema, table) {
 
 export async function tablePreview(db, schema, table, limit = 50, offset = 0) {
   const safe = quoteQualified(schema, table);
-  const maxLimit = intParam(limit, "limit", 1, 500);
+  const maxLimit = intParam(limit, "limit", 1, MAX_TABLE_PREVIEW_ROWS);
   const safeOffset = intParam(offset, "offset", 0);
   const primaryKeys = await tablePrimaryKeyColumns(db, schema, table);
   const rowIdSql = primaryKeys.length
