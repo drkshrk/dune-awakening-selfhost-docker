@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fetchCommunityAddons, installedAddonContentPath, listInstalledAddons, normalizeAddonManifest, normalizeCommunityAddonManifest, normalizeCommunityAddonsIndex, removeInstalledAddon, setInstalledAddonEnabled, validateZipEntries } from "../src/addons.js";
+import { assertInstalledAddonPermission, fetchCommunityAddons, installedAddonContentPath, listInstalledAddons, normalizeAddonManifest, normalizeAddonPermissions, normalizeCommunityAddonManifest, normalizeCommunityAddonsIndex, removeInstalledAddon, setInstalledAddonEnabled, validateZipEntries } from "../src/addons.js";
 
 test("normalizes community addons index summaries", () => {
   const result = normalizeCommunityAddonsIndex({
@@ -57,6 +57,39 @@ test("fetches and validates community addons with injected fetch", async () => {
   assert.equal(result.addons[0].sourceUrl, "https://github.com/Red-Blink/demo-addon");
 });
 
+test("enriches community addon permissions from manifest when index omits them", async () => {
+  const result = await fetchCommunityAddons(async (url) => ({
+    ok: true,
+    status: 200,
+    async json() {
+      if (String(url).endsWith("/demo.json")) {
+        return {
+          id: "demo-addon",
+          name: "Demo",
+          version: "1.0.0",
+          type: "ui",
+          sourceUrl: "https://github.com/Red-Blink/demo-addon",
+          downloadUrl: "https://github.com/Red-Blink/demo-addon/releases/download/v1.0.0/demo.zip",
+          sha256: "862cbb38adab95ffc7b584aa374d3a1fb4437cf33f0360e3a8f5120ab83e4bd4",
+          permissions: { players: ["read"], database: ["read"] }
+        };
+      }
+      return {
+        schemaVersion: 1,
+        addons: [{
+          id: "demo-addon",
+          name: "Demo",
+          version: "1.0.0",
+          sourceUrl: "https://github.com/Red-Blink/demo-addon",
+          manifestUrl: "https://example.test/demo.json"
+        }]
+      };
+    },
+    url
+  }), "https://example.test/index.json");
+  assert.deepEqual(result.addons[0].permissions, ["database:read", "players:read"]);
+});
+
 test("validates community addon manifests for pinned install assets", () => {
   const manifest = normalizeCommunityAddonManifest({
     id: "leadership-board-demo",
@@ -72,6 +105,13 @@ test("validates community addon manifests for pinned install assets", () => {
   assert.equal(manifest.id, "leadership-board-demo");
   assert.equal(manifest.downloadUrl, "https://github.com/Red-Blink/dune-docker-leadership/releases/download/v1.0.0/leadership-board.zip");
   assert.equal(manifest.permissions[0], "players:read");
+});
+
+test("normalizes addon permission arrays and structured permissions", () => {
+  assert.deepEqual(normalizeAddonPermissions(["players:read", "players:read"]), ["players:read"]);
+  assert.deepEqual(normalizeAddonPermissions({ database: ["read", "write"], server: ["status"] }), ["database:read", "database:write", "server:status"]);
+  assert.throws(() => normalizeAddonPermissions(["database:drop"]), /not supported/);
+  assert.throws(() => normalizeAddonPermissions({ database: "read" }), /must be an array/);
 });
 
 test("rejects unsafe addon manifests and zip entries", () => {
@@ -98,8 +138,11 @@ test("tracks installed addon enable disable and removal state", () => {
     }));
     const config = { repoRoot };
     assert.equal(listInstalledAddons(config).addons[0].status, "Disabled");
+    assert.throws(() => setInstalledAddonEnabled(config, "leadership-board-demo", true), /must be approved/);
+    writeFileSync(join(repoRoot, "runtime/addons/state.json"), JSON.stringify({ "leadership-board-demo": { approvedPermissions: ["players:read"] } }));
     assert.equal(setInstalledAddonEnabled(config, "leadership-board-demo", true).addon.status, "Enabled");
     assert.equal(listInstalledAddons(config).addons[0].enabled, true);
+    assert.equal(assertInstalledAddonPermission(config, "leadership-board-demo", "players:read").permission, "players:read");
     assert.equal(installedAddonContentPath(config, "leadership-board-demo", "web/index.html"), join(addonDir, "web/index.html"));
     assert.throws(() => installedAddonContentPath(config, "leadership-board-demo", "../addon.json"), /unsafe/);
     assert.equal(setInstalledAddonEnabled(config, "leadership-board-demo", false).addon.status, "Disabled");

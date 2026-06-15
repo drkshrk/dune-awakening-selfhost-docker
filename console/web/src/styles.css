@@ -481,10 +481,13 @@ main { padding: 22px; min-width: 0; }
 .addons-title-status { color: #8fffd2; font-size: .72em; font-weight: 700; }
 .addons-owner-copy { display: grid; gap: 6px; min-width: 0; }
 .addon-result-panel { margin-top: 12px; animation: addonNoticeFade 5s ease forwards; }
-.addons-table th:nth-child(5), .addons-table td:nth-child(5) { text-align: center; }
+.addons-table th:nth-child(6), .addons-table td:nth-child(6) { text-align: center; }
 .addon-status-cell { display: flex; justify-content: center; }
 .addon-status-toggle { min-width: 124px; }
 .addon-pin-column { text-align: center; }
+.addon-permissions-list { display: flex; flex-wrap: wrap; gap: 6px; max-width: 240px; }
+.addon-permission-chip { border: 1px solid #3a3127; border-radius: 999px; color: #cbbda8; background: rgba(255,255,255,.03); padding: 3px 8px; font-size: 12px; white-space: nowrap; text-transform: capitalize; }
+.addon-permission-chip.approved { border-color: rgba(61,139,98,.55); color: var(--success-text); background: rgba(61,139,98,.14); }
 .addon-pin-toggle { min-width: 0; min-height: 0; justify-content: center; border-color: transparent; background: transparent; padding: 0; color: inherit; }
 .addon-pin-toggle.enabled, .addon-pin-toggle.disabled, .addon-pin-toggle:hover { border-color: transparent; background: transparent; box-shadow: none; }
 .addon-pin-toggle .switch-state { min-width: 58px; padding: 9px 13px; font-size: 13px; font-weight: 900; }

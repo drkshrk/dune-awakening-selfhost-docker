@@ -9,6 +9,15 @@ const MAX_COMMUNITY_ADDONS = 200;
 const MAX_ADDON_ARCHIVE_BYTES = 50 * 1024 * 1024;
 const ADDON_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,63}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/i;
+const ALLOWED_ADDON_PERMISSIONS = new Set([
+  "players:read",
+  "database:read",
+  "database:write",
+  "server:status",
+  "server:restart",
+  "files:addon-data",
+  "broadcast:send"
+]);
 
 export async function fetchCommunityAddons(fetchImpl = globalThis.fetch, indexUrl = COMMUNITY_ADDONS_INDEX_URL) {
   if (typeof fetchImpl !== "function") throw new Error("Fetch is unavailable in this runtime.");
@@ -30,12 +39,12 @@ export async function fetchCommunityAddons(fetchImpl = globalThis.fetch, indexUr
 
 async function enrichCommunityAddonSourceUrls(index, fetchImpl, signal) {
   const addons = await Promise.all(index.addons.map(async (addon) => {
-    if (addon.sourceUrl) return addon;
+    if (addon.sourceUrl && addon.permissions.length) return addon;
     try {
       const response = await fetchImpl(addon.manifestUrl, { headers: { accept: "application/json" }, signal });
       if (!response?.ok) return addon;
       const manifest = normalizeCommunityAddonManifest(await response.json());
-      return manifest.id === addon.id ? { ...addon, sourceUrl: manifest.sourceUrl } : addon;
+      return manifest.id === addon.id ? { ...addon, sourceUrl: manifest.sourceUrl, permissions: manifest.permissions } : addon;
     } catch {
       return addon;
     }
@@ -67,7 +76,9 @@ export function listInstalledAddons(config) {
     .map((entry) => {
       try {
         const manifest = normalizeAddonManifest(JSON.parse(readFileSync(resolve(installedRoot, entry.name, "addon.json"), "utf8")));
-        const enabled = Boolean(state[manifest.id]?.enabled);
+        const addonState = state[manifest.id] || {};
+        const enabled = Boolean(addonState.enabled);
+        const approvedPermissions = approvedPermissionsForState(manifest, addonState);
         return {
           id: manifest.id,
           name: manifest.name,
@@ -78,7 +89,8 @@ export function listInstalledAddons(config) {
           status: enabled ? "Enabled" : "Disabled",
           enabled,
           entryPath: manifest.entry.path,
-          permissions: manifest.permissions
+          permissions: manifest.permissions,
+          approvedPermissions
         };
       } catch {
         return {
@@ -91,7 +103,8 @@ export function listInstalledAddons(config) {
           status: "Invalid",
           enabled: false,
           entryPath: "",
-          permissions: []
+          permissions: [],
+          approvedPermissions: []
         };
       }
     })
@@ -99,7 +112,11 @@ export function listInstalledAddons(config) {
   return { addons };
 }
 
-export async function installCommunityAddon(config, addonId, fetchImpl = globalThis.fetch) {
+export async function installCommunityAddon(config, addonId, options = {}, fetchImpl = globalThis.fetch) {
+  if (typeof options === "function") {
+    fetchImpl = options;
+    options = {};
+  }
   const requestedId = stringField(addonId, "id");
   if (!ADDON_ID_PATTERN.test(requestedId)) throw new Error("Invalid addon id.");
   const index = await fetchCommunityAddons(fetchImpl);
@@ -110,6 +127,8 @@ export async function installCommunityAddon(config, addonId, fetchImpl = globalT
   const remoteManifest = normalizeCommunityAddonManifest(await manifestResponse.json());
   if (remoteManifest.id !== summary.id) throw new Error("Addon manifest id does not match the community index entry.");
   if (remoteManifest.version !== summary.version) throw new Error("Addon manifest version does not match the community index entry.");
+  const approvedPermissions = normalizeAddonPermissions(options.approvedPermissions || []);
+  requireApprovedPermissions(remoteManifest.permissions, approvedPermissions);
   const archive = await downloadAddonArchive(fetchImpl, remoteManifest.downloadUrl);
   const actualSha = createHash("sha256").update(archive).digest("hex");
   if (actualSha.toLowerCase() !== remoteManifest.sha256.toLowerCase()) throw new Error("Addon archive SHA-256 does not match the community manifest.");
@@ -139,7 +158,12 @@ export async function installCommunityAddon(config, addonId, fetchImpl = globalT
   const destination = resolve(installedRoot, installedManifest.id);
   rmSync(destination, { recursive: true, force: true });
   renameSync(stagingRoot, destination);
-  setAddonEnabled(config, installedManifest.id, false);
+  setAddonState(config, installedManifest.id, {
+    enabled: false,
+    approvedPermissions,
+    installedAt: new Date().toISOString(),
+    sha256: actualSha
+  });
   return {
     ok: true,
     addon: {
@@ -152,7 +176,8 @@ export async function installCommunityAddon(config, addonId, fetchImpl = globalT
       status: "Disabled",
       enabled: false,
       entryPath: installedManifest.entry.path,
-      permissions: installedManifest.permissions
+      permissions: installedManifest.permissions,
+      approvedPermissions
     },
     sha256: actualSha
   };
@@ -163,6 +188,9 @@ export function setInstalledAddonEnabled(config, addonId, enabled) {
   const addonPath = resolve(addonsInstalledRoot(config), id, "addon.json");
   if (!existsSync(addonPath)) throw new Error(`Installed addon not found: ${id}`);
   const manifest = normalizeAddonManifest(JSON.parse(readFileSync(addonPath, "utf8")));
+  const addonState = readAddonState(config)[id] || {};
+  const approvedPermissions = approvedPermissionsForState(manifest, addonState);
+  if (enabled) requireApprovedPermissions(manifest.permissions, approvedPermissions);
   setAddonEnabled(config, id, enabled);
   return {
     ok: true,
@@ -176,7 +204,8 @@ export function setInstalledAddonEnabled(config, addonId, enabled) {
       status: enabled ? "Enabled" : "Disabled",
       enabled: Boolean(enabled),
       entryPath: manifest.entry.path,
-      permissions: manifest.permissions
+      permissions: manifest.permissions,
+      approvedPermissions
     }
   };
 }
@@ -203,6 +232,20 @@ export function installedAddonContentPath(config, addonId, contentPath) {
   return target;
 }
 
+export function assertInstalledAddonPermission(config, addonId, permission) {
+  const id = normalizeAddonId(addonId);
+  const requestedPermission = normalizeAddonPermission(permission);
+  const addonPath = resolve(addonsInstalledRoot(config), id, "addon.json");
+  if (!existsSync(addonPath)) throw new Error(`Installed addon not found: ${id}`);
+  const manifest = normalizeAddonManifest(JSON.parse(readFileSync(addonPath, "utf8")));
+  const state = readAddonState(config)[id] || {};
+  if (!state.enabled) throw new Error(`Installed addon is disabled: ${id}`);
+  if (!manifest.permissions.includes(requestedPermission)) throw new Error(`${manifest.name} did not request ${requestedPermission} permission.`);
+  const approvedPermissions = approvedPermissionsForState(manifest, state);
+  if (!approvedPermissions.includes(requestedPermission)) throw new Error(`${manifest.name} is not approved for ${requestedPermission} permission.`);
+  return { id, manifest, permission: requestedPermission };
+}
+
 export function normalizeCommunityAddonManifest(manifest) {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error("Addon manifest must be a JSON object.");
   if (Number(manifest.schemaVersion ?? 1) !== 1) throw new Error("Unsupported addon manifest schema version.");
@@ -210,7 +253,7 @@ export function normalizeCommunityAddonManifest(manifest) {
   if (!ADDON_ID_PATTERN.test(id)) throw new Error("Addon manifest id is invalid.");
   const type = stringField(manifest.type, "type");
   if (type !== "ui") throw new Error("Only ui addons are supported right now.");
-  const permissions = Array.isArray(manifest.permissions) ? manifest.permissions.map((permission) => stringField(permission, "permission")) : [];
+  const permissions = normalizeAddonPermissions(manifest.permissions || []);
   return {
     schemaVersion: 1,
     id,
@@ -234,7 +277,7 @@ export function normalizeAddonManifest(manifest) {
   const type = stringField(manifest.type, "type");
   if (type !== "ui") throw new Error("Only ui addons are supported right now.");
   const entry = manifest.entry && typeof manifest.entry === "object" && !Array.isArray(manifest.entry) ? manifest.entry : {};
-  const permissions = Array.isArray(manifest.permissions) ? manifest.permissions.map((permission) => stringField(permission, "permission")) : [];
+  const permissions = normalizeAddonPermissions(manifest.permissions || []);
   return {
     schemaVersion: 1,
     id,
@@ -272,8 +315,42 @@ function normalizeCommunityAddonSummary(addon, index, seen) {
     author: stringField(addon.author, "author", { optional: true }),
     version: stringField(addon.version, "version"),
     sourceUrl: addon.sourceUrl ? httpsUrl(addon.sourceUrl, "sourceUrl") : "",
-    manifestUrl: httpsUrl(addon.manifestUrl, "manifestUrl")
+    manifestUrl: httpsUrl(addon.manifestUrl, "manifestUrl"),
+    permissions: normalizeAddonPermissions(addon.permissions || [])
   };
+}
+
+export function normalizeAddonPermissions(value) {
+  const raw = [];
+  if (Array.isArray(value)) {
+    raw.push(...value);
+  } else if (value && typeof value === "object") {
+    for (const [category, actions] of Object.entries(value)) {
+      if (!Array.isArray(actions)) throw new Error(`Addon permissions.${category} must be an array.`);
+      for (const action of actions) raw.push(`${category}:${action}`);
+    }
+  } else if (value !== undefined && value !== null) {
+    throw new Error("Addon permissions must be an array or object.");
+  }
+  return Array.from(new Set(raw.map((permission) => normalizeAddonPermission(permission)))).sort();
+}
+
+function normalizeAddonPermission(value) {
+  const permission = stringField(value, "permission").toLowerCase();
+  if (!/^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*$/.test(permission)) throw new Error(`Addon permission is invalid: ${permission}`);
+  if (!ALLOWED_ADDON_PERMISSIONS.has(permission)) throw new Error(`Addon permission is not supported yet: ${permission}`);
+  return permission;
+}
+
+function requireApprovedPermissions(requested, approved) {
+  const approvedSet = new Set(normalizeAddonPermissions(approved));
+  const missing = normalizeAddonPermissions(requested).filter((permission) => !approvedSet.has(permission));
+  if (missing.length) throw new Error(`Addon permissions must be approved before install or enable: ${missing.join(", ")}`);
+}
+
+function approvedPermissionsForState(manifest, state = {}) {
+  if (Array.isArray(state.approvedPermissions)) return normalizeAddonPermissions(state.approvedPermissions);
+  return state.enabled ? normalizeAddonPermissions(manifest.permissions) : [];
 }
 
 function stringField(value, name, { optional = false } = {}) {
@@ -360,6 +437,12 @@ function writeAddonState(config, state) {
 function setAddonEnabled(config, addonId, enabled) {
   const state = readAddonState(config);
   state[addonId] = { ...(state[addonId] || {}), enabled: Boolean(enabled) };
+  writeAddonState(config, state);
+}
+
+function setAddonState(config, addonId, nextState) {
+  const state = readAddonState(config);
+  state[addonId] = { ...(state[addonId] || {}), ...nextState };
   writeAddonState(config, state);
 }
 

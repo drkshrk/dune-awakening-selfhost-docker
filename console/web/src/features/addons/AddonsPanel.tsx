@@ -44,11 +44,15 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
   }
 
   async function installAddon(addon: CommunityAddonSummary) {
-    if (!(await confirmAction(`Install ${addon.name}? The addon archive will be downloaded from the reviewed release URL and verified before extraction.`))) return;
+    const permissions = addon.permissions || [];
+    const permissionText = permissions.length
+      ? ` It requests: ${permissions.map(formatPermissionLabel).join(", ")}.`
+      : " It does not request console permissions.";
+    if (!(await confirmAction(`Install ${addon.name}? The addon archive will be downloaded, verified, and installed disabled.${permissionText}`))) return;
     setInstallingId(addon.id);
     setNotice(null);
     try {
-      const result = await addonsApi.installCommunity(addon.id);
+      const result = await addonsApi.installCommunity(addon.id, permissions);
       await load();
       setNotice({ title: "Addon Installed", message: `${result.addon.name} was installed successfully.`, tone: "ok" });
     } catch (err) {
@@ -140,10 +144,8 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
       if (!source) return;
       void (async () => {
         try {
-          if (request.action !== "leadership.players.list") throw new Error(`Unsupported addon action: ${request.action}`);
-          if (!activeAddon.permissions.includes("players:read")) throw new Error(`${activeAddon.name} does not have players:read permission.`);
-          const result = await addonsApi.leadershipPlayers();
-          source.postMessage({ type: "dune-addon-response", requestId: request.requestId, ok: true, result }, event.origin);
+          const response = await addonsApi.bridge(activeAddon.id, request.action, request.payload);
+          source.postMessage({ type: "dune-addon-response", requestId: request.requestId, ok: true, result: response.result }, event.origin);
         } catch (err) {
           source.postMessage({ type: "dune-addon-response", requestId: request.requestId, ok: false, error: formatAddonError(err) }, event.origin);
         }
@@ -170,11 +172,11 @@ export function AddonsPanel({ pinnedAddons, setPinnedAddons, selectedAddonId, cl
   }
 
   return <section className="panel">
-    <div className="panel-title"><h2>Addons <span className="addons-title-status">(Experimental: Read-Only)</span></h2><div className="addons-title-actions"><a className="button-link" href="https://github.com/Red-Blink/dune-docker-addons" target="_blank" rel="noreferrer">For Developers</a><button disabled={loading} onClick={() => void load()}>{loading ? "Refreshing..." : "Refresh Addons"}</button></div></div>
+    <div className="panel-title"><h2>Addons <span className="addons-title-status">(Experimental: Permissioned)</span></h2><div className="addons-title-actions"><a className="button-link" href="https://github.com/Red-Blink/dune-docker-addon-template" target="_blank" rel="noreferrer">For Developers</a><button disabled={loading} onClick={() => void load()}>{loading ? "Refreshing..." : "Refresh Addons"}</button></div></div>
     <section className="action-section info-panel addons-intro-panel">
       <h4>Community Addons</h4>
       <div className="addons-owner-copy">
-        <p>Add community-built tools to your Dune Docker Console. Install the addons you trust, turn them on when you need them, and keep your console focused on the features your server actually uses.</p>
+        <p>Add community-built tools to your Dune Docker Console. Install addons you trust, review what each addon can access, and turn them on only when you want them available.</p>
       </div>
     </section>
     {notice && <div className={`result-panel addon-result-panel result-${notice.tone}`}><strong>{notice.title}.</strong><p>{notice.message}</p></div>}
@@ -218,7 +220,7 @@ function AddonsTable({ rows, loading, installedById, pinnedAddons, installingId,
   toggleAddonPin: (addon: InstalledAddon, pinned: boolean) => void;
 }) {
   if (!rows.length) return <div className="empty">{loading ? "Loading community addons..." : "No community addons are listed yet."}</div>;
-  return <div className="table-wrap"><table className="addons-table"><thead><tr><th>Name</th><th>Description</th><th>Author</th><th>Version</th><th>Status</th><th className="backup-table-actions">Actions</th><th className="addon-pin-column">Sub-Menu</th></tr></thead><tbody>{rows.map((row) => {
+  return <div className="table-wrap"><table className="addons-table"><thead><tr><th>Name</th><th>Description</th><th>Author</th><th>Version</th><th>Permissions</th><th>Status</th><th className="backup-table-actions">Actions</th><th className="addon-pin-column">Sub-Menu</th></tr></thead><tbody>{rows.map((row) => {
     const installedAddon = installedById.get(row.id);
     const busy = busyAddonId === row.id;
     const pinned = Boolean(installedAddon && pinnedAddons.some((addon) => addon.id === installedAddon.id));
@@ -227,6 +229,7 @@ function AddonsTable({ rows, loading, installedById, pinnedAddons, installingId,
       <td><AddonDescriptionCell value={row.description} expanded={Boolean(expandedDescriptions[row.id])} onToggle={() => setExpandedDescriptions((current) => ({ ...current, [row.id]: !current[row.id] }))} /></td>
       <td>{row.author}</td>
       <td>{row.version}</td>
+      <td><PermissionList permissions={installedAddon?.permissions || row.permissions || []} approvedPermissions={installedAddon?.approvedPermissions || []} /></td>
       <td>{installedAddon ? <div className="addon-status-cell"><label className={`switch-checkbox addon-status-toggle ${installedAddon.enabled ? "enabled" : "disabled"}`}><input type="checkbox" disabled={busy} checked={installedAddon.enabled} onChange={(event) => void setAddonEnabled(installedAddon, event.target.checked)} /><span className="switch-label">{busy ? "Working" : installedAddon.enabled ? "Enabled" : "Disabled"}</span><strong className="switch-state">{installedAddon.enabled ? "ON" : "OFF"}</strong></label></div> : <div className="addon-status-cell"><StatusPill value="Available" /></div>}</td>
       <td className="backup-table-actions"><div className="service-actions">
         {!installedAddon && <button disabled={installingId === row.id} onClick={() => void installAddon(row)}>{installingId === row.id ? "Installing..." : "Install"}</button>}
@@ -238,6 +241,20 @@ function AddonsTable({ rows, loading, installedById, pinnedAddons, installingId,
         : <span className="muted">-</span>}</td>
     </tr>;
   })}</tbody></table></div>;
+}
+
+function PermissionList({ permissions, approvedPermissions }: { permissions: string[]; approvedPermissions: string[] }) {
+  if (!permissions.length) return <span className="muted">None</span>;
+  const approved = new Set(approvedPermissions);
+  return <div className="addon-permissions-list">{permissions.map((permission) => (
+    <span key={permission} className={`addon-permission-chip ${approved.has(permission) ? "approved" : ""}`}>{formatPermissionLabel(permission)}</span>
+  ))}</div>;
+}
+
+function formatPermissionLabel(permission: string) {
+  const [scope, action] = String(permission || "").split(":");
+  if (!scope || !action) return permission;
+  return `${scope.replaceAll("-", " ")} ${action.replaceAll("-", " ")}`;
 }
 
 function StatusPill({ value }: { value: unknown }) {
@@ -257,7 +274,8 @@ function normalizeAddonBridgeRequest(value: unknown) {
   const requestId = typeof record.requestId === "string" ? record.requestId : "";
   const action = typeof record.action === "string" ? record.action : "";
   if (!addonId || !requestId || !action) return null;
-  return { addonId, requestId, action };
+  const payload = record.payload && typeof record.payload === "object" && !Array.isArray(record.payload) ? record.payload as Record<string, unknown> : {};
+  return { addonId, requestId, action, payload };
 }
 
 function AddonDescriptionCell({ value, expanded, onToggle }: { value: unknown; expanded: boolean; onToggle: () => void }) {

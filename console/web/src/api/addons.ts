@@ -8,6 +8,7 @@ export type CommunityAddonSummary = {
   version: string;
   sourceUrl: string;
   manifestUrl: string;
+  permissions: string[];
 };
 
 export type CommunityAddonsIndex = {
@@ -28,6 +29,7 @@ export type InstalledAddon = {
   enabled: boolean;
   entryPath: string;
   permissions: string[];
+  approvedPermissions: string[];
 };
 
 export type LeadershipPlayer = {
@@ -45,9 +47,9 @@ export type LeadershipPlayer = {
 export const addonsApi = {
   community: () => api<CommunityAddonsIndex>("/api/addons/community"),
   installed: () => api<{ addons: InstalledAddon[] }>("/api/addons/installed"),
-  installCommunity: (id: string) => post<{ ok: boolean; addon: InstalledAddon; sha256: string }>("/api/addons/community/install", { id }),
+  installCommunity: (id: string, approvedPermissions: string[]) => post<{ ok: boolean; addon: InstalledAddon; sha256: string }>("/api/addons/community/install", { id, approvedPermissions }),
   enable: (id: string) => post<{ ok: boolean; addon: InstalledAddon }>(`/api/addons/installed/${encodeURIComponent(id)}/enable`),
   disable: (id: string) => post<{ ok: boolean; addon: InstalledAddon }>(`/api/addons/installed/${encodeURIComponent(id)}/disable`),
   remove: (id: string) => api<{ ok: boolean; id: string }>(`/api/addons/installed/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  leadershipPlayers: () => api<{ capabilities: Record<string, boolean>; rows: LeadershipPlayer[] }>("/api/addons/leadership/players")
+  bridge: (id: string, action: string, payload: Record<string, unknown> = {}) => post<{ ok: boolean; result: unknown }>(`/api/addons/installed/${encodeURIComponent(id)}/bridge`, { action, ...payload })
 };

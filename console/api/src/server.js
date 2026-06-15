@@ -18,7 +18,7 @@ import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerComm
 import { clearCarePackageHistory, enableCarePackage, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
 import { readJsonBody, readMultipartForm } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
-import { fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled } from "./addons.js";
+import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled } from "./addons.js";
 import { performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
@@ -303,11 +303,10 @@ async function handleApi(req, res) {
   if (path === "/api/admin/broadcast-shutdown" && req.method === "POST") return shutdownBroadcastRoute(req, res);
   if (path === "/api/addons/community") return json(res, 200, await fetchCommunityAddons());
   if (path === "/api/addons/installed") return json(res, 200, listInstalledAddons(config));
-  if (path === "/api/addons/leadership/players") return dbJson(res, () => duneDb.addonLeadershipPlayers(db));
   if (path === "/api/addons/community/install" && req.method === "POST") {
     const body = await readJson(req);
-    const result = await installCommunityAddon(config, body.id);
-    audit(config, req, "addons.install", { id: result.addon.id, version: result.addon.version, ok: true });
+    const result = await installCommunityAddon(config, body.id, { approvedPermissions: body.approvedPermissions || [] });
+    audit(config, req, "addons.install", { id: result.addon.id, version: result.addon.version, permissions: result.addon.permissions, approvedPermissions: result.addon.approvedPermissions, ok: true });
     return json(res, 200, result);
   }
   if (path.match(/^\/api\/addons\/installed\/[^/]+\/enable$/) && req.method === "POST") {
@@ -322,6 +321,7 @@ async function handleApi(req, res) {
     audit(config, req, "addons.disable", { id: result.addon.id, version: result.addon.version, ok: true });
     return json(res, 200, result);
   }
+  if (path.match(/^\/api\/addons\/installed\/[^/]+\/bridge$/) && req.method === "POST") return addonBridgeRoute(req, res, path);
   if (path.match(/^\/api\/addons\/installed\/[^/]+\/content\/.+$/) && req.method === "GET") return addonContentRoute(req, res, path);
   if (path.match(/^\/api\/addons\/installed\/[^/]+$/) && req.method === "DELETE") {
     const id = decodeURIComponent(path.split("/").pop());
@@ -436,6 +436,33 @@ async function handleApi(req, res) {
   if (path === "/api/settings") return json(res, 200, await setupState());
 
   return json(res, 404, { error: "Not found" });
+}
+
+async function addonBridgeRoute(req, res, path) {
+  const id = decodeURIComponent(path.split("/").at(-2));
+  const body = await readJson(req);
+  const action = String(body.action || "").trim();
+  if (action === "leadership.players.list") {
+    const addon = assertInstalledAddonPermission(config, id, "players:read");
+    const result = await duneDb.addonLeadershipPlayers(db);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  if (action === "database.query" || action === "database.execute") {
+    const query = String(body.query || "");
+    const readOnly = isReadOnlySql(query);
+    const requiredPermission = readOnly ? "database:read" : "database:write";
+    if (action === "database.query" && !readOnly) return json(res, 400, { error: "database.query accepts read-only SQL only. Use database.execute with database:write permission for write SQL." });
+    const addon = assertInstalledAddonPermission(config, id, requiredPermission);
+    if (!readOnly && !config.mockMode) {
+      await runDune(config, buildDuneArgs("backupCreate"), { env: { DB_BACKUP_ORIGIN: `addon-${addon.id}` } });
+    }
+    const result = await duneDb.runSql(db, query, !readOnly);
+    audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, readOnly, rowCount: result.rowCount, command: result.command, ok: true });
+    return json(res, 200, { ok: true, result });
+  }
+  audit(config, req, "addons.bridge", { id, action, ok: false, reason: "Unsupported addon action" });
+  return json(res, 400, { error: `Unsupported addon action: ${action || "unknown"}` });
 }
 
 function addonContentRoute(req, res, path) {
