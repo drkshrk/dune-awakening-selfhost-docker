@@ -1,3 +1,5 @@
+name: dune-awakening-selfhost-docker
+
 services:
   redblink-dune-docker-console:
     build:
@@ -34,7 +36,7 @@ services:
       DUNE_DB_PASSWORD: "${DUNE_DB_PASSWORD:-}"
       DUNE_COMMAND_AUTH_TOKEN: "${DUNE_COMMAND_AUTH_TOKEN:-}"
     volumes:
-      - ./:/repo
+      - "${DUNE_HOST_REPO_ROOT:-.}:/repo"
       # WARNING: mounting the Docker socket gives this container broad control
       # over the host Docker daemon. Expose the web admin only to trusted admins.
       - /var/run/docker.sock:/var/run/docker.sock

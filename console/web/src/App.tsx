@@ -334,7 +334,7 @@ export function App() {
       <main className="login-screen">
         <section className="login-panel">
           <h1>Dune Docker Console</h1>
-          <p>Please enter your admin password to continue</p>
+          <p>Spice Clearance Required</p>
           <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Admin Password" />
           <button onClick={() => safe(login)}>Sign In</button>
           {error && <p className="error">{error}</p>}

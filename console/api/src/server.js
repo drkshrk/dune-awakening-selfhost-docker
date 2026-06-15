@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { spawn } from "node:child_process";
 import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -285,6 +286,7 @@ async function handleApi(req, res) {
   if (path === "/api/database/export" && req.method === "POST") return databaseExport(req, res);
   if (path === "/api/database/password" && req.method === "POST") return databasePasswordRoute(req, res);
   if (path === "/api/settings/admin-password" && req.method === "POST") return adminPasswordRoute(req, res);
+  if (path === "/api/settings/web-port" && req.method === "POST") return webPortRoute(req, res);
 
   if (path === "/api/players") return dbJson(res, () => duneDb.listPlayers(db, { q: url.searchParams.get("q") || "" }));
   if (path === "/api/players/online") return dbJson(res, () => duneDb.listPlayers(db, { online: true }));
@@ -711,6 +713,104 @@ async function adminPasswordRoute(req, res) {
   config.adminPassword = password;
   audit(config, req, "settings.change-admin-password", { password: "<redacted>" });
   return json(res, 200, { ok: true });
+}
+
+async function webPortRoute(req, res) {
+  const body = await readJson(req);
+  const port = validateWebPort(body.port);
+  if (port !== config.port) await assertWebPortAvailable(port);
+  const host = webConsoleDisplayHost(req);
+  const url = `http://${host}:${port}`;
+  updateEnvFileValue("ADMIN_BIND_PORT", String(port));
+  process.env.ADMIN_BIND_PORT = String(port);
+  audit(config, req, "settings.change-web-port", { port });
+  json(res, 200, {
+    ok: true,
+    port,
+    url,
+    message: `Web Console port saved. The console is restarting now, and this page may disconnect. Open ${url} in about 10 seconds.`
+  });
+  if (port !== config.port) scheduleConsoleRestart(port);
+}
+
+function validateWebPort(value) {
+  const text = String(value || "").trim();
+  if (!/^\d+$/.test(text)) {
+    const error = new Error("Web Console port must be a number between 1 and 65535.");
+    error.statusCode = 400;
+    throw error;
+  }
+  const port = Number(text);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    const error = new Error("Web Console port must be a number between 1 and 65535.");
+    error.statusCode = 400;
+    throw error;
+  }
+  return port;
+}
+
+function webConsoleDisplayHost(req) {
+  const hostHeader = String(req.headers.host || "").trim();
+  const host = hostHeader.replace(/^\[/, "").replace(/\](:\d+)?$/, "").replace(/:\d+$/, "");
+  if (host && host !== "0.0.0.0") return host;
+  return config.host === "0.0.0.0" ? "127.0.0.1" : config.host;
+}
+
+function scheduleConsoleRestart(port) {
+  setTimeout(() => {
+    const helperName = `redblink-dune-console-restart-${Date.now()}`;
+    const hostRepoRoot = process.env.DUNE_HOST_REPO_ROOT || config.repoRoot;
+    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME || "dune-awakening-selfhost-docker";
+    const script = [
+      "set -eu",
+      "mkdir -p runtime/generated",
+      `echo "[$(date -Is)] Restarting Dune Docker Console on port ${port}" >> runtime/generated/console-restart.log`,
+      "docker compose -f docker-compose.web.yml build redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1",
+      "docker rm -f redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1 || true",
+      "docker compose -f docker-compose.web.yml up -d redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1",
+      `echo "[$(date -Is)] Dune Docker Console restart command finished" >> runtime/generated/console-restart.log`
+    ].join("\n");
+    const child = spawn("docker", [
+      "run",
+      "--rm",
+      "-d",
+      "--name", helperName,
+      "--network", "host",
+      "-v", `${hostRepoRoot}:/repo`,
+      "-v", "/var/run/docker.sock:/var/run/docker.sock",
+      "-e", `ADMIN_BIND_PORT=${port}`,
+      "-e", `DUNE_HOST_REPO_ROOT=${hostRepoRoot}`,
+      "-e", `COMPOSE_PROJECT_NAME=${composeProjectName}`,
+      "-e", `DUNE_COMPOSE_PROJECT_NAME=${composeProjectName}`,
+      "-w", "/repo",
+      "redblink-dune-docker-console:dev",
+      "sh", "-lc", script
+    ], {
+      cwd: config.repoRoot,
+      detached: true,
+      stdio: "ignore",
+      env: process.env
+    });
+    child.unref();
+  }, 750);
+}
+
+function assertWebPortAvailable(port) {
+  return new Promise((resolve, reject) => {
+    const server = createNetServer();
+    server.once("error", (error) => {
+      const message = error.code === "EADDRINUSE"
+        ? `Port ${port} is already in use. Choose another Web Console port.`
+        : `Port ${port} cannot be used: ${error.message}`;
+      const responseError = new Error(message);
+      responseError.statusCode = 400;
+      reject(responseError);
+    });
+    server.once("listening", () => {
+      server.close(() => resolve());
+    });
+    server.listen(port, config.host);
+  });
 }
 
 function validateAdminPassword(value) {

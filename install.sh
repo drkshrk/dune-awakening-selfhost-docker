@@ -194,6 +194,110 @@ public_ip() {
   fi
 }
 
+is_valid_port() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+port_in_use() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn "sport = :$port" 2>/dev/null | tail -n +2 | grep -q .
+    return
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"
+    return
+  fi
+  return 1
+}
+
+next_available_port() {
+  local port="${1:-8088}"
+  while [ "$port" -le 65535 ]; do
+    if ! port_in_use "$port"; then
+      printf '%s' "$port"
+      return
+    fi
+    port=$((port + 1))
+  done
+  return 1
+}
+
+existing_web_port() {
+  if [ -f .env ]; then
+    awk -F= '/^ADMIN_BIND_PORT=/ {print $2; exit}' .env | sed 's/[[:space:]"'\'']//g'
+  fi
+}
+
+persist_web_port() {
+  local env_file=".env"
+  if [ -f "$env_file" ] && grep -q '^ADMIN_BIND_PORT=' "$env_file"; then
+    sed -i "s/^ADMIN_BIND_PORT=.*/ADMIN_BIND_PORT=$WEB_PORT/" "$env_file"
+  else
+    printf '\nADMIN_BIND_PORT=%s\n' "$WEB_PORT" >> "$env_file"
+  fi
+}
+
+choose_web_port() {
+  local chosen prompt default_port
+  default_port="${ADMIN_BIND_PORT:-$(existing_web_port)}"
+  default_port="${default_port:-8088}"
+  if ! is_valid_port "$default_port"; then
+    default_port="8088"
+  fi
+
+  if [ -n "${ADMIN_BIND_PORT:-}" ]; then
+    if ! is_valid_port "$ADMIN_BIND_PORT"; then
+      echo "ADMIN_BIND_PORT must be a number between 1 and 65535."
+      exit 1
+    fi
+    WEB_PORT="$ADMIN_BIND_PORT"
+    persist_web_port
+    return
+  fi
+
+  step "Choosing the Web UI port."
+  if port_in_use "$default_port"; then
+    echo "Port $default_port is already in use."
+    prompt="Enter another port for the Web UI: "
+  else
+    prompt="Enter the Web UI port, or press Enter to use $default_port: "
+  fi
+
+  while true; do
+    if [ -t 0 ]; then
+      printf '%s' "$prompt"
+      read -r chosen
+    else
+      chosen="$(next_available_port "$default_port" || true)"
+      if [ -z "$chosen" ]; then
+        echo "No available Web UI port was found."
+        exit 1
+      fi
+      if [ "$chosen" != "$default_port" ]; then
+        echo "Port $default_port is already in use. Using available port $chosen."
+      fi
+    fi
+    chosen="${chosen:-$default_port}"
+    if ! is_valid_port "$chosen"; then
+      echo "Enter a number between 1 and 65535."
+      continue
+    fi
+    if port_in_use "$chosen"; then
+      echo "Port $chosen is already in use. Choose another port."
+      prompt="Enter another port for the Web UI: "
+      continue
+    fi
+    WEB_PORT="$chosen"
+    persist_web_port
+    echo "Web UI port set to $WEB_PORT."
+    return
+  done
+}
+
 start_console() {
   if [ ! -f "$WEB_COMPOSE" ]; then
     echo "The installer cannot find $WEB_COMPOSE."
@@ -202,7 +306,9 @@ start_console() {
   fi
 
   step "Starting the Web UI."
+  export ADMIN_BIND_PORT="$WEB_PORT"
   export DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
+  export COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
   "${DOCKER[@]}" compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
 }
 
@@ -271,5 +377,6 @@ start_docker
 ensure_docker_group_access
 ensure_compose
 install_cli_command
+choose_web_port
 start_console
 show_finish

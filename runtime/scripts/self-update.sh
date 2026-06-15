@@ -407,7 +407,9 @@ web_console_service_name() {
 
 rebuild_web_console_now() {
   local service="$1"
-  DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --build --force-recreate "$service"
+  COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml build "$service"
+  docker rm -f "$service" >/dev/null 2>&1 || true
+  COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d "$service"
 }
 
 rebuild_web_console_after_update() {
@@ -417,7 +419,7 @@ rebuild_web_console_after_update() {
     echo
     echo "Dune Docker Console rebuild was skipped because docker-compose.web.yml or Docker Compose is unavailable."
     echo "Run this manually after the update if you use the web panel:"
-    echo "  docker compose -f docker-compose.web.yml up -d --build --force-recreate redblink-dune-docker-console"
+    echo "  dune console restart"
     return 0
   fi
 

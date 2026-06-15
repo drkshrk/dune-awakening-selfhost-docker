@@ -17,10 +17,19 @@ export function SettingsPanel({ onPasswordChanged }: SettingsPanelProps) {
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordResult, setPasswordResult] = useState<SettingsTaskResult | null>(null);
+  const [webPortResult, setWebPortResult] = useState<SettingsTaskResult | null>(null);
   const [passwordSaving, setPasswordSaving] = useState(false);
+  const [webPortSaving, setWebPortSaving] = useState(false);
   const [loginPasswordOpen, setLoginPasswordOpen] = useState(false);
+  const [webPortOpen, setWebPortOpen] = useState(false);
+  const [webPort, setWebPort] = useState("");
+  const [webPortRedirectUrl, setWebPortRedirectUrl] = useState("");
+  const [webPortRedirectCountdown, setWebPortRedirectCountdown] = useState<number | null>(null);
   async function refresh() {
-    setSettings(await api<Record<string, unknown>>("/api/settings"));
+    const nextSettings = await api<Record<string, unknown>>("/api/settings");
+    setSettings(nextSettings);
+    const config = (nextSettings.config as Record<string, unknown> | undefined) || {};
+    setWebPort(String(config.port || "8088"));
   }
   useEffect(() => {
     refresh().catch(() => undefined);
@@ -30,6 +39,20 @@ export function SettingsPanel({ onPasswordChanged }: SettingsPanelProps) {
     const id = window.setTimeout(() => setPasswordResult(null), 5400);
     return () => window.clearTimeout(id);
   }, [passwordResult]);
+  useEffect(() => {
+    if (!webPortResult || webPortResult.status === "running" || webPortRedirectUrl) return;
+    const id = window.setTimeout(() => setWebPortResult(null), 9000);
+    return () => window.clearTimeout(id);
+  }, [webPortRedirectUrl, webPortResult]);
+  useEffect(() => {
+    if (!webPortRedirectUrl || webPortRedirectCountdown === null) return;
+    if (webPortRedirectCountdown <= 0) {
+      window.location.assign(webPortRedirectUrl);
+      return;
+    }
+    const id = window.setTimeout(() => setWebPortRedirectCountdown((value) => value === null ? null : value - 1), 1000);
+    return () => window.clearTimeout(id);
+  }, [webPortRedirectCountdown, webPortRedirectUrl]);
   const passwordChecks = adminPasswordChecks(newPassword);
   const passwordMeetsRequirements = passwordChecks.every((check) => check.passed);
   const passwordStarted = newPassword.length > 0;
@@ -63,12 +86,58 @@ export function SettingsPanel({ onPasswordChanged }: SettingsPanelProps) {
       setPasswordSaving(false);
     }
   }
+  async function changeWebPort() {
+    const port = Number(webPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setWebPortResult({ status: "failed", title: "Port Change Failed", message: "Enter a port number between 1 and 65535." });
+      return;
+    }
+    setWebPortSaving(true);
+    setWebPortRedirectUrl("");
+    setWebPortRedirectCountdown(null);
+    setWebPortResult({ status: "running", title: "Saving Web Console Port..." });
+    try {
+      const result = await post<{ ok: boolean; port: number; url: string; message?: string }>("/api/settings/web-port", { port });
+      setWebPort(String(result.port));
+      setWebPortRedirectUrl(result.url);
+      setWebPortRedirectCountdown(10);
+      setWebPortResult({
+        status: "succeeded",
+        title: "Web Console Port Saved",
+        message: result.message || `The console is restarting now. You will be redirected to ${result.url}.`
+      });
+    } catch (error) {
+      setWebPortRedirectUrl("");
+      setWebPortRedirectCountdown(null);
+      setWebPortResult({ status: "failed", title: "Port Change Failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setWebPortSaving(false);
+    }
+  }
   const config = (settings?.config as Record<string, unknown> | undefined) || {};
   const passwordEnvManaged = Boolean(config.adminPasswordEnvManaged);
+  const currentPort = String(config.port || "8088");
   return <section className="panel">
     <div className="panel-title"><h2>Settings</h2><button onClick={refresh}>Refresh</button></div>
     <div className="settings-section-stack">
       <RuntimeSettingsSummary settings={settings} />
+      <div className={`playerAdmin_toggle settings-web-port-toggle ${webPortOpen ? "open" : ""}`}>
+        <button className="playerAdmin_toggleHeader" aria-label={webPortOpen ? "Collapse Web Console Port" : "Expand Web Console Port"} onClick={() => setWebPortOpen(!webPortOpen)}>{webPortOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Web Console Port</span></button>
+        {webPortOpen && <div className="playerAdmin_toggleBody">
+          <p className="muted">Change the browser port used by this web console.</p>
+          <p className="attention-text">After saving, this page will stop responding on port {currentPort}. Open the new address shown in the result message.</p>
+          <div className="settings-password-grid settings-web-port-grid">
+            <label>Console Port<input disabled={webPortSaving} type="number" min="1" max="65535" step="1" value={webPort} onChange={(event) => setWebPort(event.target.value.replace(/[^\d]/g, "").slice(0, 5))} placeholder="8088" /></label>
+          </div>
+          <div className="action-row">
+            <button disabled={webPortSaving || Boolean(webPortRedirectUrl) || !webPort || webPort === currentPort} onClick={() => { void changeWebPort(); }}>{webPortSaving ? "Saving..." : "Save And Restart Console"}</button>
+            {webPortResult && <span className={`inline-task-result result-${webPortResult.status === "succeeded" ? "ok" : webPortResult.status === "failed" ? "fail" : "running"}`}>
+              <strong className={webPortResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(webPortResult.title, webPortResult.status === "running")}</strong>
+              <span className="inline-task-message">{formatWebPortResultMessage(webPortResult, webPortRedirectUrl, webPortRedirectCountdown)}</span>
+            </span>}
+          </div>
+        </div>}
+      </div>
       <div className={`playerAdmin_toggle settings-login-password-toggle ${loginPasswordOpen ? "open" : ""}`}>
         <button className="playerAdmin_toggleHeader" aria-label={loginPasswordOpen ? "Collapse Login Password" : "Expand Login Password"} onClick={() => setLoginPasswordOpen(!loginPasswordOpen)}>{loginPasswordOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}<span>Login Password</span></button>
         {loginPasswordOpen && <div className="playerAdmin_toggleBody">
@@ -104,6 +173,13 @@ function formatResultTitle(value: unknown, pending = false) {
 
 function formatResultMessage(value: unknown) {
   return formatUiSentence(value, false);
+}
+
+function formatWebPortResultMessage(result: SettingsTaskResult, redirectUrl: string, countdown: number | null) {
+  if (result.status === "succeeded" && redirectUrl && countdown !== null) {
+    return `The console is restarting now. Redirecting in ${countdown} second${countdown === 1 ? "" : "s"}.`;
+  }
+  return result.message ? formatResultMessage(result.message) : "";
 }
 
 function adminPasswordChecks(password: string) {

@@ -65,7 +65,11 @@ detect_web_console_ip() {
 }
 
 print_web_console_url() {
-  local port="${ADMIN_BIND_PORT:-8088}"
+  local port="${ADMIN_BIND_PORT:-}"
+  if [ -z "$port" ] && [ -f .env ]; then
+    port="$(awk -F= '/^ADMIN_BIND_PORT=/ {print $2; exit}' .env | tr -d '[:space:]"'\''' || true)"
+  fi
+  port="${port:-8088}"
   echo "Open Dune Docker Console in your browser:"
   echo "  http://$(detect_web_console_ip):$port"
 }
@@ -93,7 +97,7 @@ start_compose_service_if_available() {
   echo "Starting $service..."
   case "$env_prefix" in
     web)
-      DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" docker compose -f "$compose_file" up -d --build "$service"
+      COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" docker compose -f "$compose_file" up -d --build "$service"
       ;;
     *)
       docker compose -f "$compose_file" up -d --build "$service"
@@ -126,7 +130,7 @@ EOF
           print_web_console_url
         else
           echo "Starting Dune Docker Console..."
-          if DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" docker compose -f docker-compose.web.yml up -d --build "$service"; then
+          if COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" docker compose -f docker-compose.web.yml up -d --build "$service"; then
             echo "Dune Docker Console is running."
             print_web_console_url
           else
@@ -252,6 +256,11 @@ EOF
     esac
     ;;
 
+  console|web)
+    shift || true
+    runtime/scripts/console.sh "$@"
+    ;;
+
   update)
     shift || true
     set -a
@@ -338,6 +347,7 @@ Usage:
   dune ready
   dune logs <service> [--raw]
   dune restart <service>
+  dune console restart
   dune update [check|auto enable|auto disable|auto status|--yes]
   dune self-update [check|list|install [latest|previous|<tag>]]
   dune restart-schedule [enable <HH:MM> [notify-minutes]|disable|status]

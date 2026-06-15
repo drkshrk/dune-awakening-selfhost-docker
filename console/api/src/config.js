@@ -91,6 +91,8 @@ export function publicConfig(config) {
   return {
     appName: config.appName,
     repoRoot: config.repoRoot,
+    host: config.host,
+    port: config.port,
     authDisabled: config.authDisabled,
     adminPasswordEnvManaged: config.adminPasswordEnvManaged,
     secureCookies: config.secureCookies,
