@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { runDune, buildDuneArgs } from "./runner.js";
 
 export class TaskManager {
@@ -49,6 +50,11 @@ export class TaskManager {
     task.currentStep = "Running";
     this.emit(task, "Task started");
     try {
+      if (isSelfUpdateApplyOperation(task.operation)) {
+        await this.runSelfUpdateHelperTask(task, payload);
+        return;
+      }
+
       const operations = taskOperations(task.operation, payload);
       let lastCode = 0;
       for (const operation of operations) {
@@ -78,6 +84,47 @@ export class TaskManager {
     }
   }
 
+  async runSelfUpdateHelperTask(task, payload) {
+    const args = buildDuneArgs(task.operation, payload);
+    const helperName = `dune-web-self-update-${Date.now()}`;
+    const composeProjectName = process.env.DUNE_COMPOSE_PROJECT_NAME || process.env.COMPOSE_PROJECT_NAME || "dune-awakening-selfhost-docker";
+    const helperImage = process.env.DUNE_SYSTEMD_HELPER_IMAGE || "redblink-dune-docker-console:dev";
+    const logFile = "runtime/generated/web-self-update.log";
+    const command = [
+      "set -eu",
+      "mkdir -p runtime/generated",
+      `echo "[$(date -Is)] Starting Web UI stack update: runtime/scripts/dune ${args.map(shellQuote).join(" ")}" > ${shellQuote(logFile)}`,
+      `runtime/scripts/dune ${args.map(shellQuote).join(" ")} >> ${shellQuote(logFile)} 2>&1`,
+      `echo "[$(date -Is)] Web UI stack update finished" >> ${shellQuote(logFile)}`
+    ].join("\n");
+
+    task.currentStep = "Starting update helper";
+    this.emit(task, "Starting detached update helper");
+    const result = await runDockerCommand([
+      "run",
+      "--rm",
+      "-d",
+      "--name", helperName,
+      "--network", "host",
+      "-v", `${this.config.repoRoot}:/repo`,
+      "-v", "/var/run/docker.sock:/var/run/docker.sock",
+      "-e", `DUNE_HOST_REPO_ROOT=${this.config.repoRoot}`,
+      "-e", `COMPOSE_PROJECT_NAME=${composeProjectName}`,
+      "-e", `DUNE_COMPOSE_PROJECT_NAME=${composeProjectName}`,
+      "-w", "/repo",
+      helperImage,
+      "sh", "-lc", command
+    ], this.config.repoRoot);
+
+    this.append(task, `Update helper started: ${result.stdout.trim() || helperName}`, "stdout");
+    this.append(task, `Update log: ${logFile}`, "stdout");
+    task.status = "succeeded";
+    task.exitCode = 0;
+    task.currentStep = "Update helper started";
+    task.finishedAt = new Date().toISOString();
+    this.emit(task, "Update helper started. The Web UI may reconnect while the console restarts.");
+  }
+
   append(task, text, stream) {
     const lines = String(text).split(/\r?\n/).filter(Boolean).map((line) => ({ timestamp: new Date().toISOString(), stream, line }));
     task.logLines.push(...lines);
@@ -95,6 +142,33 @@ export class TaskManager {
     const all = this.list();
     for (const task of all.slice(this.config.taskRetention)) this.tasks.delete(task.id);
   }
+}
+
+function isSelfUpdateApplyOperation(operation) {
+  return operation === "selfUpdateApply" || operation === "selfUpdatePrevious";
+}
+
+function runDockerCommand(args, cwd) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("docker", args, { cwd, shell: false, env: { ...process.env } });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve({ code, stdout, stderr });
+      else reject(Object.assign(new Error(`docker ${args.join(" ")} failed with exit ${code}: ${stderr || stdout}`), { code, stdout, stderr }));
+    });
+  });
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
 export function taskTimeoutMs(config, operation) {

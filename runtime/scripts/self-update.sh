@@ -409,7 +409,26 @@ rebuild_web_console_now() {
   local service="$1"
   COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml build "$service"
   docker rm -f "$service" >/dev/null 2>&1 || true
-  COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d "$service"
+  COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="$HOST_ROOT_DIR" docker compose -f docker-compose.web.yml up -d --force-recreate "$service"
+}
+
+rebuild_web_console_with_helper() {
+  local service="$1"
+  local helper_name="dune-console-self-update-$(date +%s)"
+  local compose_project="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
+  local helper_image="${DUNE_SYSTEMD_HELPER_IMAGE:-redblink-dune-docker-console:dev}"
+
+  docker run --rm -d \
+    --name "$helper_name" \
+    --network host \
+    -v "$HOST_ROOT_DIR:/repo" \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -e "DUNE_HOST_REPO_ROOT=$HOST_ROOT_DIR" \
+    -e "COMPOSE_PROJECT_NAME=$compose_project" \
+    -e "DUNE_COMPOSE_PROJECT_NAME=$compose_project" \
+    -w /repo \
+    "$helper_image" \
+    sh -lc "sleep 2; runtime/scripts/self-update.sh rebuild-web-console '$service' >> runtime/generated/web-console-rebuild.log 2>&1"
 }
 
 rebuild_web_console_after_update() {
@@ -428,13 +447,13 @@ rebuild_web_console_after_update() {
   echo
   echo "Rebuilding Dune Docker Console container: $service"
   if [ -n "${DUNE_CONTAINER_REPO_ROOT:-}" ] || [ -f /.dockerenv ]; then
-    echo "The rebuild will continue in the background because this update is running from the web console."
+    echo "The rebuild will continue in a helper container because this update is running from the web console."
     echo "Rebuild log: $log_file"
-    (
-      sleep 2
-      cd "$ROOT_DIR"
-      rebuild_web_console_now "$service"
-    ) >"$log_file" 2>&1 &
+    rebuild_web_console_with_helper "$service" >"$log_file" 2>&1 || {
+      echo "Could not launch the Dune Docker Console rebuild helper."
+      echo "Run this from the server folder if the web panel does not return:"
+      echo "  dune console restart"
+    }
   else
     rebuild_web_console_now "$service"
     echo "Dune Docker Console was rebuilt successfully."
@@ -558,6 +577,19 @@ cmd="${1:-check}"
 tag="${2:-}"
 
 case "$cmd" in
+  rebuild-web-console)
+    service="${tag:-}"
+    if [ -z "$service" ]; then
+      service="$(web_console_service_name 2>/dev/null || true)"
+    fi
+    if [ -z "$service" ]; then
+      echo "Dune Docker Console service was not found in docker-compose.web.yml."
+      exit 2
+    fi
+    rebuild_web_console_now "$service"
+    echo "Dune Docker Console was rebuilt successfully."
+    ;;
+
   check|status)
     echo "Current stack version: $CURRENT_VERSION"
     set +e
