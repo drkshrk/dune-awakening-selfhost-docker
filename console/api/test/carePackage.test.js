@@ -127,20 +127,36 @@ test("care package manual repeat grants are allowed while automatic repeats stay
   }
 });
 
-test("care package eligibility is character-aware for new characters on the same account", async () => {
+test("care package first-online grants are player-aware across actor and character changes", async () => {
   const config = tempConfig();
   try {
     saveCarePackageConfig(config, { enabled: true, version: "care-package-v1", xp: 10, items: [] });
-    await grantCarePackage(config, "Account#1", { confirmation: "GRANT CARE PACKAGE", source: "auto", actorId: 101, characterName: "Existing" });
+    await grantCarePackage(config, "Account#1", {
+      confirmation: "GRANT CARE PACKAGE",
+      source: "auto",
+      actorId: 101,
+      accountId: "stable-account-1",
+      funcomId: "funcom-1",
+      flsId: "fls-1",
+      characterName: "Existing"
+    });
     const result = carePackageEligiblePlayers(config, [
       { actor_id: 101, character_name: "Existing", action_player_id: "Account#1", online_status: "Online" },
-      { actor_id: 102, character_name: "New Character", action_player_id: "Account#1", online_status: "Online" }
+      { actor_id: 102, account_id: "stable-account-1", funcom_id: "funcom-1", fls_id: "fls-1", character_name: "New Character", action_player_id: "Account#1", online_status: "Online" }
     ]);
     assert.equal(result.rows.find((row) => row.character_name === "Existing").eligible, false);
-    assert.equal(result.rows.find((row) => row.character_name === "New Character").eligible, true);
+    assert.equal(result.rows.find((row) => row.character_name === "New Character").eligible, false);
+    assert.match(result.rows.find((row) => row.character_name === "New Character").reason, /Already granted/);
     await assert.rejects(() => grantCarePackage(config, "Account#1", { confirmation: "GRANT CARE PACKAGE", source: "auto", actorId: 101, characterName: "Existing" }), /already granted/);
-    const nextCharacterGrant = await grantCarePackage(config, "Account#1", { confirmation: "GRANT CARE PACKAGE", source: "auto", actorId: 102, characterName: "New Character" });
-    assert.equal(nextCharacterGrant.status, "granted");
+    await assert.rejects(() => grantCarePackage(config, "Account#1", {
+      confirmation: "GRANT CARE PACKAGE",
+      source: "auto",
+      actorId: 102,
+      accountId: "stable-account-1",
+      funcomId: "funcom-1",
+      flsId: "fls-1",
+      characterName: "New Character"
+    }), /already granted/);
   } finally {
     rmSync(config.repoRoot, { recursive: true, force: true });
   }
