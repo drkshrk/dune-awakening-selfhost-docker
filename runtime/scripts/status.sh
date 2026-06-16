@@ -256,6 +256,7 @@ resolved_region="$(first_known_value \
   "$(container_env_value dune-server-gateway OnlineSubsystem_DatacenterId 2>/dev/null || true)" \
   || true)"
 resolved_server_ip="$(first_known_value \
+  "$(resolve_server_ip 2>/dev/null || true)" \
   "$(config_value .env SERVER_IP 2>/dev/null || true)" \
   "${SERVER_IP:-}" \
   "$(container_env_value dune-director HOST_DATACENTER_IP_ADDRESS 2>/dev/null || true)" \

@@ -257,6 +257,7 @@ PARTITION_ENGINE_FIELDS = {
 }
 
 PROTECTED_ENGINE_FIELDS = {"port", "igw_port", "server_display_name", "server_login_password"}
+REDACTED_PLACEHOLDERS = {"<redacted>", '"<redacted>"', "'<redacted>'"}
 PROFILE_HEADER_ORDER = {"Engine": 0, "Global": 1, "Map": 2, "Partition": 3}
 
 
@@ -522,6 +523,25 @@ def profile_remove_key(profile: dict, scope: str, section: str, key: str, map_na
                 continue
         out.append(raw)
     block["lines"] = out
+
+
+def preserve_redacted_engine_fields(incoming: dict, existing: dict) -> None:
+    for field_id in PROTECTED_ENGINE_FIELDS:
+        spec = ENGINE_FIELDS.get(field_id)
+        if not spec:
+            continue
+        section, key, _ = spec
+        if not section or not key:
+            continue
+
+        incoming_value = profile_get_key(incoming, "engine", section, key)
+        if incoming_value is None or incoming_value.strip() not in REDACTED_PLACEHOLDERS:
+            continue
+
+        profile_remove_key(incoming, "engine", section, key)
+        existing_value = profile_get_key(existing, "engine", section, key)
+        if existing_value is not None and existing_value.strip() not in REDACTED_PLACEHOLDERS:
+            profile_set_key(incoming, "engine", section, key, existing_value)
 
 
 def seed_profile_from_legacy_config() -> dict:
@@ -1461,7 +1481,9 @@ def profile_engine_write_encoded(encoded_content: str) -> int:
             "lines": block.get("lines", []),
         })
     profile = read_profile()
-    profile["sections"] = [block for block in profile.get("sections", []) if block.get("scope") != "Engine"] + engine_sections
+    incoming = {"preamble": [], "sections": engine_sections}
+    preserve_redacted_engine_fields(incoming, profile)
+    profile["sections"] = [block for block in profile.get("sections", []) if block.get("scope") != "Engine"] + incoming.get("sections", [])
     write_profile(profile)
     return 0
 
