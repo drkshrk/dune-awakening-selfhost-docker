@@ -44,6 +44,9 @@ const simpleOperations = {
   init: ["init"],
   restartScheduleStatus: ["restart-schedule", "status"],
   restartScheduleDisable: ["restart-schedule", "disable"],
+  ipChangeRestartStatus: ["ip-change-restart", "status"],
+  ipChangeRestartDisable: ["ip-change-restart", "disable"],
+  ipChangeRestartCheckNow: ["ip-change-restart", "check-now"],
   dbStatus: ["database", "status"],
   servers: ["servers"],
   mapsList: ["maps", "list"],
@@ -76,6 +79,8 @@ export function buildDuneArgs(operation, payload = {}) {
       return ["config", "title", validateServerTitle(payload.title), "--yes"];
     case "restartScheduleEnable":
       return ["restart-schedule", "enable", validateUpdateTime(payload.time || "05:00"), String(validateInteger(payload.notifyMinutes ?? 15, 1, 1440))];
+    case "ipChangeRestartEnable":
+      return ["ip-change-restart", "enable", String(validateInteger(payload.intervalMinutes ?? 5, 1, 1440)), String(validateInteger(payload.notifyMinutes ?? 1, 0, 60))];
     case "restartAll":
       return ["restart", "gateway"];
     case "logs":

@@ -279,6 +279,11 @@ EOF
     runtime/scripts/restart-schedule.sh "$@"
     ;;
 
+  ip-change-restart)
+    shift || true
+    runtime/scripts/ip-change-restart.sh "$@"
+    ;;
+
   version)
     runtime/scripts/version.sh
     ;;
@@ -351,6 +356,7 @@ Usage:
   dune update [check|auto enable|auto disable|auto status|--yes]
   dune self-update [check|list|install [latest|previous|<tag>]]
   dune restart-schedule [enable <HH:MM> [notify-minutes]|disable|status]
+  dune ip-change-restart [enable [interval-minutes] [notify-minutes]|disable|status|check-now]
   dune db backup [output-dir]
   dune db list
   dune db status

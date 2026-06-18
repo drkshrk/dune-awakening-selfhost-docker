@@ -237,6 +237,9 @@ async function handleApi(req, res) {
   }
   if (path === "/api/server/restart-schedule" && req.method === "POST") return restartScheduleRoute(req, res);
   if (path === "/api/server/restart-schedule") return safeCommandJson(res, "restartScheduleStatus");
+  if (path === "/api/server/ip-change-restart" && req.method === "POST") return ipChangeRestartRoute(req, res);
+  if (path === "/api/server/ip-change-restart/check" && req.method === "POST") return task(req, res, "server", "ipChangeRestartCheckNow", {});
+  if (path === "/api/server/ip-change-restart") return safeCommandJson(res, "ipChangeRestartStatus");
 
   if (path === "/api/logs/services") return json(res, 200, { services: await discoverServices(config) });
   if (path.startsWith("/api/logs/")) return logsRoute(req, res, path);
@@ -1077,6 +1080,12 @@ async function autoBackupRoute(req, res) {
 async function restartScheduleRoute(req, res) {
   const body = await readJson(req);
   const operation = body.enabled ? "restartScheduleEnable" : "restartScheduleDisable";
+  return task(req, res, "server", operation, body);
+}
+
+async function ipChangeRestartRoute(req, res) {
+  const body = await readJson(req);
+  const operation = body.enabled ? "ipChangeRestartEnable" : "ipChangeRestartDisable";
   return task(req, res, "server", operation, body);
 }
 

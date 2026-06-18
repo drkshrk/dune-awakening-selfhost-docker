@@ -470,6 +470,7 @@ main { padding: 22px; min-width: 0; }
 .danger-section { border-color: #6f3030; background: #1b1414; }
 .warning-panel { border-color: #a97932; background: #211b12; }
 .info-panel { border-color: #385067; background: #111922; }
+.section-divider { height: 1px; margin: 16px 0; background: rgba(232, 224, 205, 0.14); }
 .action-line { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
 .action-line label { flex: 0 1 180px; }
 .action-line label.compact-field { flex: 0 0 140px; }

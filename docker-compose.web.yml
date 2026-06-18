@@ -37,6 +37,7 @@ services:
       DUNE_COMMAND_AUTH_TOKEN: "${DUNE_COMMAND_AUTH_TOKEN:-}"
     volumes:
       - "${DUNE_HOST_REPO_ROOT:-.}:/repo"
+      - /etc/localtime:/etc/localtime:ro
       # WARNING: mounting the Docker socket gives this container broad control
       # over the host Docker daemon. Expose the web admin only to trusted admins.
       - /var/run/docker.sock:/var/run/docker.sock

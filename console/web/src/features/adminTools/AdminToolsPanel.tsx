@@ -30,6 +30,12 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const [restartTime, setRestartTime] = useState("05:00");
   const [restartNotifyMinutes, setRestartNotifyMinutes] = useState("15");
   const [scheduleResult, setScheduleResult] = useState<HomeTaskResult | null>(null);
+  const [ipChangeRestart, setIpChangeRestart] = useState<{ stdout?: string; stderr?: string; exitCode?: number } | null>(null);
+  const [ipChangeLoading, setIpChangeLoading] = useState(true);
+  const [ipChangeEnabled, setIpChangeEnabled] = useState(false);
+  const [ipChangeIntervalMinutes, setIpChangeIntervalMinutes] = useState("5");
+  const [ipChangeNotifyMinutes, setIpChangeNotifyMinutes] = useState("1");
+  const [ipChangeResult, setIpChangeResult] = useState<HomeTaskResult | null>(null);
   const [liveToolsOpen, setLiveToolsOpen] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [broadcastTitle, setBroadcastTitle] = useState("");
@@ -51,6 +57,15 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
   const scheduleDisplayActive = scheduleSaving ? restartEnabled : scheduleActive;
   const scheduleStatusLabel = !scheduleLoaded && !scheduleSaving ? "Checking" : scheduleDisplayActive ? "Enabled" : "Disabled";
   const scheduleDisplayTimerLabel = !scheduleLoaded && !scheduleSaving ? "Checking" : scheduleSaving ? restartEnabled ? "Activating" : "Deactivating" : restartEnabled ? scheduleTimerLabel : "Inactive";
+  const ipChangeValues = parseKeyValueText(ipChangeRestart?.stdout || "");
+  const ipChangeTimerValue = ipChangeValues.systemd_timer || "";
+  const ipChangeTimerLabel = ipChangeTimerValue ? formatTimerStatus(ipChangeTimerValue) : "Not Installed";
+  const ipChangeTimerActive = /^active$/i.test(ipChangeTimerValue);
+  const ipChangeSaving = ipChangeResult?.status === "running";
+  const ipChangeLoaded = Boolean(ipChangeRestart);
+  const ipChangeDisplayActive = ipChangeSaving ? ipChangeEnabled : ipChangeEnabled && ipChangeTimerActive;
+  const ipChangeStatusLabel = !ipChangeLoaded && !ipChangeSaving ? "Checking" : ipChangeDisplayActive ? "Enabled" : "Disabled";
+  const ipChangeDisplayTimerLabel = !ipChangeLoaded && !ipChangeSaving ? "Checking" : ipChangeSaving ? ipChangeEnabled ? "Activating" : "Deactivating" : ipChangeEnabled ? ipChangeTimerLabel : "Inactive";
 
   async function run(action: () => Promise<unknown>) {
     onError("");
@@ -151,11 +166,84 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     }
   }
 
+  async function loadIpChangeRestart() {
+    setIpChangeLoading(true);
+    try {
+      const result = await serverApi.ipChangeRestart();
+      setIpChangeRestart(result);
+      const values = parseKeyValueText(result.stdout || "");
+      const timerActive = /^active$/i.test(values.systemd_timer || "");
+      setIpChangeEnabled(/^true$/i.test(values.public_ip_change_restart_enabled || "") && timerActive);
+      const intervalMatch = String(values.check_interval || "").match(/\d+/);
+      if (intervalMatch) setIpChangeIntervalMinutes(intervalMatch[0]);
+      const notifyMatch = String(values.in_game_notice || "").match(/\d+/);
+      if (notifyMatch) setIpChangeNotifyMinutes(notifyMatch[0]);
+    } finally {
+      setIpChangeLoading(false);
+    }
+  }
+
+  async function saveIpChangeRestart(nextEnabled = ipChangeEnabled) {
+    const intervalMinutes = Number(ipChangeIntervalMinutes);
+    const notifyMinutes = Number(ipChangeNotifyMinutes);
+    if (nextEnabled && (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440)) {
+      setIpChangeResult({ status: "failed", title: "IP Monitor Save Failed", message: "Check interval must be between 1 and 1440 minutes." });
+      return;
+    }
+    if (nextEnabled && (!Number.isInteger(notifyMinutes) || notifyMinutes < 0 || notifyMinutes > 60)) {
+      setIpChangeResult({ status: "failed", title: "IP Monitor Save Failed", message: "In-game notice must be between 0 and 60 minutes." });
+      return;
+    }
+    setIpChangeIntervalMinutes(String(Number.isInteger(intervalMinutes) ? intervalMinutes : 5));
+    setIpChangeNotifyMinutes(String(Number.isInteger(notifyMinutes) ? notifyMinutes : 1));
+    setIpChangeResult({ status: "running", title: "Saving IP Monitor" });
+    const requestedEnabled = nextEnabled;
+    setIpChangeEnabled(requestedEnabled);
+    onError("");
+    try {
+      const final = await waitForTaskSilently((await serverApi.saveIpChangeRestart({ enabled: requestedEnabled, intervalMinutes, notifyMinutes })).task);
+      const details = taskTechnicalDetails(final);
+      const nextStatus = await serverApi.ipChangeRestart();
+      setIpChangeRestart(nextStatus);
+      const nextValues = parseKeyValueText(nextStatus.stdout || "");
+      const timerActive = /^active$/i.test(nextValues.systemd_timer || "");
+      const timerInactive = /^inactive$|^not installed$/i.test(nextValues.systemd_timer || "");
+      if (requestedEnabled && !timerActive) setIpChangeEnabled(false);
+      if (!requestedEnabled && timerInactive) setIpChangeEnabled(false);
+      const intervalMatch = String(nextValues.check_interval || "").match(/\d+/);
+      if (intervalMatch) setIpChangeIntervalMinutes(intervalMatch[0]);
+      const notifyMatch = String(nextValues.in_game_notice || "").match(/\d+/);
+      if (notifyMatch) setIpChangeNotifyMinutes(notifyMatch[0]);
+      setIpChangeResult(final.status === "succeeded" && (!requestedEnabled ? timerInactive : timerActive)
+        ? { status: "succeeded", title: "IP Monitor Saved Successfully", details }
+        : { status: "failed", title: requestedEnabled ? "IP Monitor Timer Failed" : "IP Monitor Save Failed", details: details || nextStatus.stdout || nextStatus.stderr || "" });
+    } catch (error) {
+      setIpChangeEnabled(!requestedEnabled);
+      setIpChangeResult({ status: "failed", title: "IP Monitor Save Failed", details: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  async function checkIpChangeNow() {
+    setIpChangeResult({ status: "running", title: "Checking Public IP" });
+    onError("");
+    try {
+      const final = await waitForTaskSilently((await serverApi.checkIpChangeRestartNow()).task);
+      const nextStatus = await serverApi.ipChangeRestart();
+      setIpChangeRestart(nextStatus);
+      setIpChangeResult(final.status === "succeeded"
+        ? { status: "succeeded", title: "Public IP Check Complete", details: taskTechnicalDetails(final) }
+        : { status: "failed", title: "Public IP Check Failed", details: taskTechnicalDetails(final) || final.errorMessage || "" });
+    } catch (error) {
+      setIpChangeResult({ status: "failed", title: "Public IP Check Failed", details: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   useEffect(() => {
     playersApi.list().then((result) => setPlayers(result.rows || [])).catch(() => undefined);
     loadMapChatOptions().catch(() => undefined);
     loadHistory().catch(() => undefined);
     loadRestartSchedule().catch((error) => onError(error instanceof Error ? error.message : String(error)));
+    loadIpChangeRestart().catch((error) => onError(error instanceof Error ? error.message : String(error)));
     return () => {
       if (resultTimer.current) window.clearTimeout(resultTimer.current);
     };
@@ -166,6 +254,12 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
     const id = window.setTimeout(() => setScheduleResult(null), 10400);
     return () => window.clearTimeout(id);
   }, [scheduleResult?.status, scheduleResult?.title]);
+
+  useEffect(() => {
+    if (!ipChangeResult || ipChangeResult.status === "running") return;
+    const id = window.setTimeout(() => setIpChangeResult(null), 10400);
+    return () => window.clearTimeout(id);
+  }, [ipChangeResult?.status, ipChangeResult?.title]);
 
   async function hydrateOnlinePlayers() {
     const response = await playersApi.online();
@@ -236,6 +330,23 @@ export function AdminToolsPanel({ onError, confirmAction }: AdminToolsPanelProps
           <button disabled={scheduleSaving || scheduleLoading} onClick={() => saveSchedule()}>Save Schedule</button>
           {scheduleResult && <span className={`inline-task-result result-${scheduleResult.status === "succeeded" ? "ok" : scheduleResult.status === "failed" ? "fail" : "running"}`}>
             <strong className={scheduleResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(scheduleResult.title, scheduleResult.status === "running")}</strong>
+          </span>}
+        </div>
+        <div className="section-divider" />
+        <div className="panel-title schedule-panel-title">
+          <h4>Restart On Public IP Change</h4>
+          <label className={`switch-checkbox ${ipChangeEnabled ? "enabled" : "disabled"}`}><input type="checkbox" disabled={ipChangeLoading || ipChangeSaving} checked={ipChangeEnabled} onChange={(event) => run(() => saveIpChangeRestart(event.target.checked))} /><span className="switch-label">IP Monitor</span><strong className="switch-state">{ipChangeEnabled ? "ON" : "OFF"}</strong></label>
+        </div>
+        <KeyValueGrid items={[["Current Status", ipChangeStatusLabel], ["Check Interval", `${ipChangeIntervalMinutes} minutes`], ["In-Game Notice", `${ipChangeNotifyMinutes} minutes`], ["Last Public IP", ipChangeValues.last_known_public_ip || "Unavailable"], ["Last Check", ipChangeValues.last_check || "Unavailable"], ["Last Restart", ipChangeValues.last_restart || "Unavailable"], ["Timer", ipChangeDisplayTimerLabel]]} />
+        {commandStatusSummary(ipChangeRestart).reason && <p className="danger-note">{commandStatusSummary(ipChangeRestart).reason}</p>}
+        <p className="muted">For public servers on dynamic IPs. When the public IP changes, the console updates SERVER_IP and restarts the stack so the new address is advertised.</p>
+        <div className="action-line schedule-action-line">
+          <label className="compact-select schedule-notify-field">Check Every (Min)<input type="number" min="1" max="1440" step="1" disabled={ipChangeSaving} value={ipChangeIntervalMinutes} onChange={(event) => setIpChangeIntervalMinutes(event.target.value)} /></label>
+          <label className="compact-select schedule-notify-field">In-Game Notice (Min)<input type="number" min="0" max="60" step="1" disabled={ipChangeSaving} value={ipChangeNotifyMinutes} onChange={(event) => setIpChangeNotifyMinutes(event.target.value)} /></label>
+          <button disabled={ipChangeSaving || ipChangeLoading} onClick={() => saveIpChangeRestart()}>Save IP Monitor</button>
+          <button disabled={ipChangeSaving || ipChangeLoading} onClick={() => checkIpChangeNow()}>Check Now</button>
+          {ipChangeResult && <span className={`inline-task-result result-${ipChangeResult.status === "succeeded" ? "ok" : ipChangeResult.status === "failed" ? "fail" : "running"}`}>
+            <strong className={ipChangeResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(ipChangeResult.title, ipChangeResult.status === "running")}</strong>
           </span>}
         </div>
       </div>}
