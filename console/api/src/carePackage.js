@@ -152,6 +152,7 @@ export async function grantEligibleCarePackages(config, players = [], body = {},
       results.push(await grantCarePackage(config, player.action_player_id, {
         confirmation: "GRANT CARE PACKAGE",
         source: "bulk",
+        grantWhen: kit.grantWhen,
         characterName: player.character_name,
         actorId: player.actor_id,
         accountId: player.account_id,
@@ -199,6 +200,7 @@ export async function runCarePackageAutoScan(config, players = [], source = "aut
           confirmation: "GRANT CARE PACKAGE",
           source,
           kitId: kit.id,
+          grantWhen: kit.grantWhen,
           characterName: player.character_name,
           actorId: player.actor_id,
           accountId: player.account_id,
@@ -224,6 +226,15 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
   const kit = selectedKit(kitConfig, body.kitId || (source === "manual" ? kitConfig.activeKitId : kitConfig.autoGrantKitId));
   validatePlayerTarget(playerId);
   if (!kit.items.length && !kit.xp) throw new Error("Care Package has no configured items or XP");
+  if (source !== "manual" && body.grantWhen === "first_online" && hasSuccessfulFirstOnlineGrant(carePackageHistory(config, 500).rows, {
+    action_player_id: playerId,
+    actor_id: body.actorId || "",
+    account_id: body.accountId || body.account_id || "",
+    funcom_id: body.funcomId || body.funcom_id || "",
+    fls_id: body.flsId || body.fls_id || ""
+  })) {
+    throw new Error(`A first-online Care Package was already granted to ${playerId}`);
+  }
   if (source !== "manual" && hasSuccessfulGrant(config, playerId, kit.id, body.actorId, body)) {
     throw new Error(`Care Package ${kit.name} was already granted to ${playerId}`);
   }
@@ -311,6 +322,7 @@ export async function grantCarePackage(config, playerId, body = {}, context = {}
     version: kit.id,
     kitId: kit.id,
     kitName: kit.name,
+    grantWhen: body.grantWhen || kit.grantWhen || "",
     status: aggregate.status,
     ok: aggregate.ok,
     summary: aggregate.summary,
@@ -359,6 +371,9 @@ function eligibilityForPlayer(kit, history, player, options = {}) {
   if (!player.action_player_id) return { ...player, eligible: false, reason: "Missing admin action ID" };
   if (kit.grantWhen === "first_online" && String(player.online_status || "").toLowerCase() !== "online") {
     return { ...player, eligible: false, reason: "Not currently online" };
+  }
+  if (kit.grantWhen === "first_online" && hasSuccessfulFirstOnlineGrant(history, player)) {
+    return { ...player, eligible: false, reason: "Already received first-online Care Package" };
   }
   if (kit.grantWhen === "last_seen") {
     if (options.requireOnline && String(player.online_status || "").toLowerCase() !== "online") {
@@ -436,6 +451,16 @@ function grantMatchesPlayer(row, player) {
   const rowActorId = String(row.actor_id || row.actorId || "").trim();
   const playerActorId = String(player.actor_id || player.player_pawn_id || "").trim();
   return Boolean(rowActorId && playerActorId && rowActorId === playerActorId);
+}
+
+function hasSuccessfulFirstOnlineGrant(history, player) {
+  return history.some((row) => isSuccessfulGrant(row) && isFirstOnlineGrantRow(row) && grantMatchesPlayer(row, player));
+}
+
+function isFirstOnlineGrantRow(row = {}) {
+  const grantWhen = String(row.grantWhen || "").trim();
+  if (grantWhen) return grantWhen === "first_online";
+  return ["auto", "bulk"].includes(String(row.source || "").trim());
 }
 
 function stableIdentityValues(entity = {}) {
