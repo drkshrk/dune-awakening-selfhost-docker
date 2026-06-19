@@ -161,6 +161,30 @@ test("database faction writes sync reputation component", async () => {
   assert.ok(calls.some((call) => String(call.text).includes("FactionPlayerComponent")));
 });
 
+test("database player faction writes pledge guild admin allegiance", async () => {
+  const calls = [];
+  let factionSnapshot = 0;
+  const db = {
+    query: async (text, values = []) => {
+      calls.push({ text, values });
+      if (text.includes("to_regclass")) return { rows: [{ exists: true }] };
+      if (text.includes("to_regprocedure")) return { rows: [{ exists: true }] };
+      if (text.includes("from dune.player_faction") && text.includes("order by actor_id")) {
+        factionSnapshot += 1;
+        return { rows: [{ actor_id: "4", faction_id: factionSnapshot === 1 ? "3" : "1", utc_time_faction_change: "2026-06-19 15:00:00" }] };
+      }
+      if (text.includes("from dune.guild_members gm") && text.includes("join dune.guilds")) {
+        return { rows: [{ guild_id: "1", guild_faction: 3 }] };
+      }
+      return { fields: [], rows: [], rowCount: 1, command: "UPDATE" };
+    }
+  };
+  const result = await runSql(db, "update dune.player_faction set faction_id = 1 where actor_id = 4", true);
+  assert.equal(result.rowCount, 1);
+  assert.ok(calls.some((call) => String(call.text).includes("dune.change_player_faction") && call.values[0] === "4" && call.values[1] === 1));
+  assert.ok(calls.some((call) => String(call.text).includes("dune.pledge_guild_allegiance") && call.values[0] === "1" && call.values[1] === "4"));
+});
+
 test("database writes replay known tutorial journey tag and item functions", async () => {
   const calls = [];
   let tutorialSnapshot = 0;

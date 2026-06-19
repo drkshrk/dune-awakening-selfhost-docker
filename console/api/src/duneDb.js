@@ -591,11 +591,36 @@ async function playerFactionSnapshot(db) {
   }]));
 }
 
+async function pledgeGuildAdminFactionIfNeeded(db, actorId, factionId) {
+  if (Number(factionId) === 3) return;
+  try {
+    if (!(await tableExists(db, "guild_members")) ||
+        !(await tableExists(db, "guilds")) ||
+        !(await functionExists(db, "dune.pledge_guild_allegiance(bigint,bigint,smallint)"))) {
+      return;
+    }
+    const result = await db.query(`
+      select gm.guild_id::text as guild_id,
+             coalesce(g.guild_faction, 3)::int as guild_faction
+      from dune.guild_members gm
+      join dune.guilds g on g.guild_id = gm.guild_id
+      where gm.player_id = $1::bigint
+        and gm.role_id = 100`, [actorId]);
+    for (const row of result.rows) {
+      if (Number(row.guild_faction) === Number(factionId)) continue;
+      await db.query("select dune.pledge_guild_allegiance($1::bigint, $2::bigint, 3::smallint)", [row.guild_id, actorId]);
+    }
+  } catch {
+    // Older schemas can still refresh faction membership without guild allegiance support.
+  }
+}
+
 async function syncChangedPlayerFaction(db, before, after) {
   for (const [actorId, next] of after) {
     const previous = before.get(actorId);
     if (previous && previous.factionId === next.factionId && previous.changedAt === next.changedAt) continue;
     await db.query("select dune.change_player_faction($1::bigint, $2::smallint, 3::smallint, coalesce($3::timestamp, now()::timestamp))", [next.actorId, next.factionId, next.changedAt || null]);
+    await pledgeGuildAdminFactionIfNeeded(db, next.actorId, next.factionId);
   }
   for (const [actorId, previous] of before) {
     if (after.has(actorId)) continue;
