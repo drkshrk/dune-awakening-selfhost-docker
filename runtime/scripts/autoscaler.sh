@@ -128,7 +128,7 @@ replay_hagga_travel_handoff() {
 
   origin_id="$(hub_origin_id_for_map "$source_map" 2>/dev/null || true)"
   [ -n "$origin_id" ] || return 0
-  origin_server_id="$(hub_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
+  origin_server_id="$(origin_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
   [ -n "$origin_server_id" ] || return 0
 
   director_log_file="$(mktemp)"
@@ -676,7 +676,7 @@ from datetime import datetime, timedelta, timezone
 
 target = json.loads(os.environ["TARGET_JSON"])
 log_file = os.environ["LOG_FILE"]
-response_re = re.compile(r'Notified player\(s\) "([^"]+)" of travel response (SH_Arrakeen3|SH_HarkoVillage4): (\{.*\})')
+response_re = re.compile(r'Notified player\(s\) "([^"]+)" of travel response (SH_Arrakeen3|SH_HarkoVillage4|Overmap2): (\{.*\})')
 
 with open(log_file, encoding="utf-8", errors="replace") as f:
     for line in f:
@@ -689,7 +689,7 @@ with open(log_file, encoding="utf-8", errors="replace") as f:
             payload = json.loads(match.group(3))
         except json.JSONDecodeError:
             continue
-        if payload.get("Code") != 1:
+        if payload.get("Code") not in (1, 8):
             continue
         if payload.get("MapName") != "Survival_1":
             continue
@@ -732,7 +732,7 @@ PY
     hub_travel_seen "$flow_id" && continue
 
     local response_json grant_json origin_server_id
-    origin_server_id="$(hub_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
+    origin_server_id="$(origin_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
     [ -n "$origin_server_id" ] || continue
 
     response_json="$(python3 - "$payload_json" <<'PY'
@@ -771,7 +771,7 @@ if not target_json:
     raise SystemExit(0)
 
 target = json.loads(target_json)
-response_re = re.compile(r'Notified player\(s\) "([^"]+)" of travel response (SH_Arrakeen3|SH_HarkoVillage4): (\{.*\})')
+response_re = re.compile(r'Notified player\(s\) "([^"]+)" of travel response (SH_Arrakeen3|SH_HarkoVillage4|Overmap2): (\{.*\})')
 
 for line in sys.stdin:
     match = response_re.search(line)
@@ -783,7 +783,7 @@ for line in sys.stdin:
         payload = json.loads(match.group(3))
     except json.JSONDecodeError:
         continue
-    if payload.get("Code") != 1:
+    if payload.get("Code") not in (1, 8):
         continue
     if payload.get("MapName") != "Survival_1":
         continue
@@ -820,7 +820,7 @@ PY
       hub_travel_seen "$flow_id" && continue
 
       local response_json grant_json origin_server_id
-      origin_server_id="$(hub_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
+      origin_server_id="$(origin_server_id_for_origin_id "$origin_id" 2>/dev/null || true)"
       [ -n "$origin_server_id" ] || continue
 
       response_json="$(python3 - "$payload_json" <<'PY'
