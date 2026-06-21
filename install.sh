@@ -241,6 +241,13 @@ persist_web_port() {
   fi
 }
 
+prepare_docker_socket_gid() {
+  if [ -z "${DOCKER_SOCKET_GID:-}" ] && [ -S /var/run/docker.sock ] && command -v stat >/dev/null 2>&1; then
+    DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
+  fi
+  export DOCKER_SOCKET_GID="${DOCKER_SOCKET_GID:-0}"
+}
+
 choose_web_port() {
   local chosen prompt default_port
   default_port="${ADMIN_BIND_PORT:-$(existing_web_port)}"
@@ -309,6 +316,7 @@ start_console() {
   export ADMIN_BIND_PORT="$WEB_PORT"
   export DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}"
   export COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
+  prepare_docker_socket_gid
   "${DOCKER[@]}" compose -f "$WEB_COMPOSE" up -d --build "$WEB_SERVICE"
 }
 

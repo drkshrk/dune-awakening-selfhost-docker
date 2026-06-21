@@ -74,6 +74,13 @@ print_web_console_url() {
   echo "  http://$(detect_web_console_ip):$port"
 }
 
+prepare_docker_socket_gid() {
+  if [ -z "${DOCKER_SOCKET_GID:-}" ] && [ -S /var/run/docker.sock ] && command -v stat >/dev/null 2>&1; then
+    DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
+  fi
+  export DOCKER_SOCKET_GID="${DOCKER_SOCKET_GID:-0}"
+}
+
 start_compose_service_if_available() {
   local compose_file="$1"
   local service="$2"
@@ -97,6 +104,7 @@ start_compose_service_if_available() {
   echo "Starting $service..."
   case "$env_prefix" in
     web)
+      prepare_docker_socket_gid
       COMPOSE_PROJECT_NAME="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}" DUNE_HOST_REPO_ROOT="${DUNE_HOST_REPO_ROOT:-$(pwd -P)}" docker compose -f "$compose_file" up -d --build "$service"
       ;;
     *)
@@ -122,6 +130,7 @@ The interactive CLI manager has moved to Dune Docker Console.
 Use dune --help to see available CLI commands for automation and troubleshooting.
 EOF
     if [ -f docker-compose.web.yml ] && command -v docker >/dev/null 2>&1; then
+      prepare_docker_socket_gid
       service="$(docker compose -f docker-compose.web.yml config --services 2>/dev/null | grep -E '^redblink-dune-docker-console$' | head -n1 || true)"
       if [ -n "$service" ]; then
         echo

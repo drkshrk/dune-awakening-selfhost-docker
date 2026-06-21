@@ -477,6 +477,20 @@ running_console_env_value() {
     2>/dev/null | awk -F= -v key="$key" '$1 == key {print $2; exit}'
 }
 
+prepare_docker_socket_gid() {
+  if [ -z "${DOCKER_SOCKET_GID:-}" ]; then
+    DOCKER_SOCKET_GID="$(read_env_file_value DOCKER_SOCKET_GID 2>/dev/null || true)"
+  fi
+  if [ -z "${DOCKER_SOCKET_GID:-}" ]; then
+    DOCKER_SOCKET_GID="$(running_console_env_value DOCKER_SOCKET_GID 2>/dev/null || true)"
+  fi
+  if [ -z "${DOCKER_SOCKET_GID:-}" ] && [ -S /var/run/docker.sock ] && command -v stat >/dev/null 2>&1; then
+    DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock 2>/dev/null || true)"
+  fi
+  export DOCKER_SOCKET_GID="${DOCKER_SOCKET_GID:-0}"
+  persist_env_file_value DOCKER_SOCKET_GID "$DOCKER_SOCKET_GID"
+}
+
 prepare_web_console_rebuild_env() {
   local port
   port="${ADMIN_BIND_PORT:-}"
@@ -490,6 +504,7 @@ prepare_web_console_rebuild_env() {
     export ADMIN_BIND_PORT="$port"
     persist_env_file_value ADMIN_BIND_PORT "$port"
   fi
+  prepare_docker_socket_gid
 }
 
 rebuild_web_console_now() {
@@ -506,6 +521,8 @@ rebuild_web_console_with_helper() {
   local compose_project="${DUNE_COMPOSE_PROJECT_NAME:-dune-awakening-selfhost-docker}"
   local helper_image="${DUNE_SYSTEMD_HELPER_IMAGE:-redblink-dune-docker-console:dev}"
 
+  prepare_web_console_rebuild_env
+
   docker run --rm -d \
     --name "$helper_name" \
     --network host \
@@ -514,6 +531,7 @@ rebuild_web_console_with_helper() {
     -e "DUNE_HOST_REPO_ROOT=$HOST_ROOT_DIR" \
     -e "COMPOSE_PROJECT_NAME=$compose_project" \
     -e "DUNE_COMPOSE_PROJECT_NAME=$compose_project" \
+    -e "DOCKER_SOCKET_GID=${DOCKER_SOCKET_GID:-0}" \
     -w /repo \
     "$helper_image" \
     sh -lc "sleep 2; runtime/scripts/self-update.sh rebuild-web-console '$service' >> runtime/generated/web-console-rebuild.log 2>&1"

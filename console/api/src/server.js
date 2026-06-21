@@ -810,6 +810,7 @@ function scheduleConsoleRestart(port) {
     const script = [
       "set -eu",
       "mkdir -p runtime/generated",
+      "export DOCKER_SOCKET_GID=\"${DOCKER_SOCKET_GID:-$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 0)}\"",
       `echo "[$(date -Is)] Restarting Dune Docker Console on port ${port}" >> runtime/generated/console-restart.log`,
       "docker compose -f docker-compose.web.yml build redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1",
       "docker rm -f redblink-dune-docker-console >> runtime/generated/console-restart.log 2>&1 || true",
@@ -828,6 +829,7 @@ function scheduleConsoleRestart(port) {
       "-e", `DUNE_HOST_REPO_ROOT=${hostRepoRoot}`,
       "-e", `COMPOSE_PROJECT_NAME=${composeProjectName}`,
       "-e", `DUNE_COMPOSE_PROJECT_NAME=${composeProjectName}`,
+      "-e", `DOCKER_SOCKET_GID=${process.env.DOCKER_SOCKET_GID || ""}`,
       "-w", "/repo",
       "redblink-dune-docker-console:dev",
       "sh", "-lc", script
