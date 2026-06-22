@@ -27,6 +27,9 @@ import { createMemoryBalancer } from "./services/memoryBalancer.js";
 import { updateEnvFileValue as updateEnvValue } from "./services/envFile.js";
 import { funcomAuthMismatchDetected, matchingFuncomAuthLines, saveFuncomTokenValue as writeFuncomToken, validDockerSince } from "./services/funcomAuth.js";
 import { readCharacterTransferSettings, saveCharacterTransferSettings } from "./services/characterTransferSettings.js";
+import { handleDiscordAdapterRoute, isDiscordAdapterRoute } from "./services/discordAdapter.js";
+import { primeMessageOfTheDayOnlineState, readMessageOfTheDay, restoreMessageOfTheDay, runMessageOfTheDayScan, saveMessageOfTheDay } from "./services/messageOfTheDay.js";
+import { primePlayerAnnouncementOnlineState, readPlayerAnnouncements, restorePlayerAnnouncements, runPlayerAnnouncementScan, savePlayerAnnouncements } from "./services/playerAnnouncements.js";
 
 const config = loadConfig();
 const auth = createAuth(config);
@@ -35,6 +38,10 @@ const tasks = new TaskManager(config);
 let db = createDb(config);
 let carePackageAutoRunning = false;
 let carePackageAutoLastRun = 0;
+let messageOfTheDayAutoRunning = false;
+let messageOfTheDayAutoLastRun = 0;
+let playerAnnouncementsAutoRunning = false;
+let playerAnnouncementsAutoLastRun = 0;
 const journeyTagsData = loadJourneyTagsData();
 const memoryBalancer = createMemoryBalancer(config);
 
@@ -58,6 +65,8 @@ createServer(async (req, res) => {
 
 setInterval(() => {
   void carePackageAutoTick();
+  void messageOfTheDayAutoTick();
+  void playerAnnouncementsAutoTick();
 }, 10000).unref?.();
 
 setInterval(() => {
@@ -205,6 +214,9 @@ async function handleApi(req, res) {
     audit(config, req, "auth.logout");
     return json(res, 200, { ok: true });
   }
+  if (isDiscordAdapterRoute(path)) {
+    return handleDiscordAdapterRoute({ req, res, path, config, readJson, json });
+  }
 
   const session = auth.requireAuth(req, res);
   if (!session) return;
@@ -305,6 +317,8 @@ async function handleApi(req, res) {
   if (path === "/api/admin/history") return commandJson(res, "adminHistory");
   if (path === "/api/admin/history/clear" && req.method === "POST") return clearAdminHistoryRoute(req, res);
   if (path === "/api/admin/character-transfer-settings") return characterTransferSettingsRoute(req, res);
+  if (path === "/api/admin/message-of-the-day") return messageOfTheDayRoute(req, res);
+  if (path === "/api/admin/player-announcements") return playerAnnouncementsRoute(req, res);
   if (path === "/api/admin/broadcast" && req.method === "POST") return broadcastRoute(req, res);
   if (path === "/api/admin/map-chat" && req.method === "POST") return mapChatRoute(req, res);
   if (path === "/api/admin/broadcast-shutdown" && req.method === "POST") return shutdownBroadcastRoute(req, res);
@@ -952,6 +966,58 @@ async function characterTransferSettingsRoute(req, res) {
     return json(res, 202, { ok: true, settings: result.settings, path: result.path, task: tasks.create("server", "restartService", payload) });
   } catch (error) {
     return json(res, error.statusCode || 500, { error: redact(error.message || error) });
+  }
+}
+
+async function messageOfTheDayRoute(req, res) {
+  if (req.method === "GET") return json(res, 200, readMessageOfTheDay(config));
+  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+  const body = await readJson(req);
+  try {
+    const result = body.restoreDefaults ? restoreMessageOfTheDay(config) : saveMessageOfTheDay(config, body.settings || body);
+    if (result.settings.enabled) {
+      const players = await duneDb.listPlayers(db, { online: true }).catch(() => ({ rows: [] }));
+      primeMessageOfTheDayOnlineState(config, players.rows || []);
+    }
+    audit(config, req, "admin.message-of-the-day.save", { restoreDefaults: Boolean(body.restoreDefaults), enabled: result.settings.enabled });
+    recordAdminHistory(config, {
+      command: "web-message-of-the-day",
+      target: "login",
+      friendly: "Message of the Day",
+      path: "runtime/generated/message-of-the-day.json",
+      result: "saved",
+      message: result.settings.enabled ? result.settings.message : "disabled"
+    });
+    return json(res, 200, { ok: true, ...result });
+  } catch (error) {
+    audit(config, req, "admin.message-of-the-day.save", { supported: false, error: redact(error.message || error) });
+    return json(res, error.statusCode || 400, { error: redact(error.message || error) });
+  }
+}
+
+async function playerAnnouncementsRoute(req, res) {
+  if (req.method === "GET") return json(res, 200, readPlayerAnnouncements(config));
+  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+  const body = await readJson(req);
+  try {
+    const result = body.restoreDefaults ? restorePlayerAnnouncements(config) : savePlayerAnnouncements(config, body.settings || body);
+    if (result.settings.joinEnabled || result.settings.leaveEnabled) {
+      const players = await duneDb.listPlayers(db, { online: true }).catch(() => ({ rows: [] }));
+      primePlayerAnnouncementOnlineState(config, players.rows || []);
+    }
+    audit(config, req, "admin.player-announcements.save", { restoreDefaults: Boolean(body.restoreDefaults), joinEnabled: result.settings.joinEnabled, leaveEnabled: result.settings.leaveEnabled });
+    recordAdminHistory(config, {
+      command: "web-player-announcements",
+      target: "online-status",
+      friendly: "Join Leave Announcements",
+      path: "runtime/generated/player-announcements.json",
+      result: "saved",
+      message: result.settings.joinEnabled || result.settings.leaveEnabled ? "enabled" : "disabled"
+    });
+    return json(res, 200, { ok: true, ...result });
+  } catch (error) {
+    audit(config, req, "admin.player-announcements.save", { supported: false, error: redact(error.message || error) });
+    return json(res, error.statusCode || 400, { error: redact(error.message || error) });
   }
 }
 
@@ -1638,6 +1704,50 @@ async function carePackageAutoTick() {
     console.error(`Care Package auto-grant scan failed: ${redact(error.message || error)}`);
   } finally {
     carePackageAutoRunning = false;
+  }
+}
+
+async function messageOfTheDayAutoTick() {
+  if (messageOfTheDayAutoRunning) return;
+  if (Date.now() - messageOfTheDayAutoLastRun < 10000) return;
+  messageOfTheDayAutoRunning = true;
+  messageOfTheDayAutoLastRun = Date.now();
+  try {
+    const players = await duneDb.listPlayers(db, { online: true });
+    if (players.capabilities?.players === false) return;
+    const result = await runMessageOfTheDayScan(config, players.rows || [], { db });
+    if (result.sent || result.failed) {
+      console.log(`Message of the Day scan: sent=${result.sent || 0} failed=${result.failed || 0}`);
+      audit(config, null, "message-of-the-day.auto-scan", { supported: true, sent: result.sent || 0, failed: result.failed || 0 });
+    }
+  } catch (error) {
+    const message = String(error.message || error);
+    if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED/i.test(message)) return;
+    console.error(`Message of the Day scan failed: ${redact(message)}`);
+  } finally {
+    messageOfTheDayAutoRunning = false;
+  }
+}
+
+async function playerAnnouncementsAutoTick() {
+  if (playerAnnouncementsAutoRunning) return;
+  if (Date.now() - playerAnnouncementsAutoLastRun < 10000) return;
+  playerAnnouncementsAutoRunning = true;
+  playerAnnouncementsAutoLastRun = Date.now();
+  try {
+    const players = await duneDb.listPlayers(db, { online: true });
+    if (players.capabilities?.players === false) return;
+    const result = await runPlayerAnnouncementScan(config, players.rows || []);
+    if (result.sent || result.failed) {
+      console.log(`Player announcement scan: joined=${result.joined || 0} left=${result.left || 0} sent=${result.sent || 0} failed=${result.failed || 0}`);
+      audit(config, null, "player-announcements.auto-scan", { supported: true, joined: result.joined || 0, left: result.left || 0, sent: result.sent || 0, failed: result.failed || 0 });
+    }
+  } catch (error) {
+    const message = String(error.message || error);
+    if (/connect|database|relation|container|rabbitmq|docker|ECONNREFUSED/i.test(message)) return;
+    console.error(`Player announcement scan failed: ${redact(message)}`);
+  } finally {
+    playerAnnouncementsAutoRunning = false;
   }
 }
 
