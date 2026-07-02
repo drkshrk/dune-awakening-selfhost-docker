@@ -41,6 +41,62 @@ function parseColumnEqualityFilter(term: string): { column: string; value: strin
   return match ? { column: match[1], value: match[2] } : null;
 }
 
+function stripOuterQuotes(term: string): string {
+  const match = term.match(/^(['"])([\s\S]*)\1$/);
+  return match ? match[2] : term;
+}
+
+function splitTopLevelKeyword(term: string, keyword: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  let i = 0;
+  while (i < term.length) {
+    const ch = term[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === "'" || ch === "\"") {
+      quote = ch;
+      current += ch;
+      i += 1;
+      continue;
+    }
+    const slice = term.slice(i, i + keyword.length).toLowerCase();
+    const before = i === 0 ? " " : term[i - 1];
+    const after = term[i + keyword.length] || " ";
+    if (slice === keyword && /\s/.test(before) && /\s/.test(after)) {
+      parts.push(current.trim());
+      current = "";
+      i += keyword.length;
+      continue;
+    }
+    current += ch;
+    i += 1;
+  }
+  parts.push(current.trim());
+  return parts.filter((part) => part.length > 0);
+}
+
+function rowMatchesColumnQuery(row: Record<string, unknown>, previewColumns: string[], query: string): boolean {
+  const orGroups = splitTopLevelKeyword(query, "or");
+  return orGroups.some((group) => {
+    const andTerms = splitTopLevelKeyword(group, "and");
+    return andTerms.every((rawTerm) => {
+      const filter = parseColumnEqualityFilter(rawTerm);
+      if (filter) {
+        const matchedColumn = previewColumns.find((column) => column.toLowerCase() === filter.column.toLowerCase());
+        return matchedColumn ? String(row[matchedColumn] ?? "").toLowerCase() === filter.value.toLowerCase() : false;
+      }
+      const needle = stripOuterQuotes(rawTerm).toLowerCase();
+      return previewColumns.some((column) => String(row[column] ?? "").toLowerCase().includes(needle));
+    });
+  });
+}
+
 function loadDatabasePasswordState(): DatabasePasswordState {
   if (typeof window === "undefined") return { result: null };
   try {
@@ -300,15 +356,10 @@ export function DatabasePanel() {
   const filteredColumnsMeta = columnSearchTerm
     ? columns.filter((column) => String(column.name || "").toLowerCase().includes(columnSearchTerm))
     : columns;
-  const columnEqualityFilter = columnSearch.trim() ? parseColumnEqualityFilter(columnSearch.trim()) : null;
-  const filteredPreviewRows = columnEqualityFilter
-    ? previewRows.filter((row) => {
-        const matchedColumn = previewColumns.find((column) => column.toLowerCase() === columnEqualityFilter.column.toLowerCase());
-        return matchedColumn ? String(row[matchedColumn] ?? "").toLowerCase() === columnEqualityFilter.value.toLowerCase() : false;
-      })
-    : columnSearchTerm
-      ? previewRows.filter((row) => previewColumns.some((column) => String(row[column] ?? "").toLowerCase().includes(columnSearchTerm)))
-      : previewRows;
+  const columnSearchQuery = columnSearch.trim();
+  const filteredPreviewRows = columnSearchQuery
+    ? previewRows.filter((row) => rowMatchesColumnQuery(row, previewColumns, columnSearchQuery))
+    : previewRows;
   return <section className="panel">
     <h2>Database Browser</h2>
     <p className="database-browser-note">
@@ -358,7 +409,7 @@ export function DatabasePanel() {
         {previewIsTruncated ? ` Full preview is capped at ${DATABASE_PREVIEW_MAX_ROWS.toLocaleString()} rows to keep the browser responsive.` : ""}
       </p>}
       {!previewLoading && !previewError && <div className="action-row database-table-search-row">
-        <input value={columnSearch} onChange={(event) => setColumnSearch(event.target.value)} placeholder="Search columns, or column='value'" />
+        <input value={columnSearch} onChange={(event) => setColumnSearch(event.target.value)} placeholder="Search columns, or column='value' and/or ..." />
         {columnSearch && <button onClick={() => setColumnSearch("")}>Clear</button>}
       </div>}
       <details className="technical-details">
