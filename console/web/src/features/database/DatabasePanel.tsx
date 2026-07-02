@@ -36,6 +36,11 @@ function isTerminalTask(status: string) {
   return ["succeeded", "failed", "cancelled"].includes(status);
 }
 
+function parseColumnEqualityFilter(term: string): { column: string; value: string } | null {
+  const match = term.match(/^['"]?([^'"=\s]+)['"]?\s*=\s*['"]?(.*?)['"]?$/);
+  return match ? { column: match[1], value: match[2] } : null;
+}
+
 function loadDatabasePasswordState(): DatabasePasswordState {
   if (typeof window === "undefined") return { result: null };
   try {
@@ -107,6 +112,7 @@ export function DatabasePanel() {
   const [databasePasswordConfirm, setDatabasePasswordConfirm] = useState("");
   const [databasePasswordState, setDatabasePasswordState] = useState<DatabasePasswordState>(() => loadDatabasePasswordState());
   const [tableSearch, setTableSearch] = useState("");
+  const [columnSearch, setColumnSearch] = useState("");
   const [search, setSearch] = useState("");
   const [searchRows, setSearchRows] = useState<Record<string, unknown>[]>([]);
   const [searchRan, setSearchRan] = useState(false);
@@ -168,6 +174,7 @@ export function DatabasePanel() {
     setColumns([]);
     setCount("");
     setPreviewError("");
+    setColumnSearch("");
     await refreshTablePreview(table);
     window.setTimeout(() => previewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   }
@@ -289,6 +296,19 @@ export function DatabasePanel() {
   const filteredTables = tableSearchTerm
     ? tables.filter((table) => `${String(table.schema || "")}.${String(table.name || "")}`.toLowerCase().includes(tableSearchTerm))
     : tables;
+  const columnSearchTerm = columnSearch.trim().toLowerCase();
+  const filteredColumnsMeta = columnSearchTerm
+    ? columns.filter((column) => String(column.name || "").toLowerCase().includes(columnSearchTerm))
+    : columns;
+  const columnEqualityFilter = columnSearch.trim() ? parseColumnEqualityFilter(columnSearch.trim()) : null;
+  const filteredPreviewRows = columnEqualityFilter
+    ? previewRows.filter((row) => {
+        const matchedColumn = previewColumns.find((column) => column.toLowerCase() === columnEqualityFilter.column.toLowerCase());
+        return matchedColumn ? String(row[matchedColumn] ?? "").toLowerCase() === columnEqualityFilter.value.toLowerCase() : false;
+      })
+    : columnSearchTerm
+      ? previewRows.filter((row) => previewColumns.some((column) => String(row[column] ?? "").toLowerCase().includes(columnSearchTerm)))
+      : previewRows;
   return <section className="panel">
     <h2>Database Browser</h2>
     <p className="database-browser-note">
@@ -337,11 +357,19 @@ export function DatabasePanel() {
         Showing {previewRows.length.toLocaleString()} of {previewRowCount.toLocaleString()} rows.
         {previewIsTruncated ? ` Full preview is capped at ${DATABASE_PREVIEW_MAX_ROWS.toLocaleString()} rows to keep the browser responsive.` : ""}
       </p>}
+      {!previewLoading && !previewError && <div className="action-row database-table-search-row">
+        <input value={columnSearch} onChange={(event) => setColumnSearch(event.target.value)} placeholder="Search columns, or column='value'" />
+        {columnSearch && <button onClick={() => setColumnSearch("")}>Clear</button>}
+      </div>}
       <details className="technical-details">
         <summary>Columns</summary>
-        <DataTable rows={columns} />
+        <DataTable rows={filteredColumnsMeta} emptyMessage={columnSearchTerm ? "No matching columns found." : "No columns found."} />
       </details>
-      {!previewLoading && !previewError && (previewRows.length ? <DataTable rows={previewRows} columns={previewColumns} action={(row) => <button onClick={(event) => { event.stopPropagation(); startEdit(row); }}>Edit</button>} actionClassName="backup-table-actions" tableClassName="backup-table" /> : <div className="empty database-empty">This table has no rows to preview.</div>)}
+      {!previewLoading && !previewError && (previewRows.length
+        ? (filteredPreviewRows.length
+            ? <DataTable rows={filteredPreviewRows} columns={previewColumns} action={(row) => <button onClick={(event) => { event.stopPropagation(); startEdit(row); }}>Edit</button>} actionClassName="backup-table-actions" tableClassName="backup-table" />
+            : <div className="empty database-empty">No matching rows found.</div>)
+        : <div className="empty database-empty">This table has no rows to preview.</div>)}
       {!editRow && editResult && <section className={`result-panel ${editResult.status === "running" ? "" : "transient-result"} ${editResult.status === "succeeded" ? "result-ok" : editResult.status === "failed" ? "result-fail" : "result-running"}`}>
         <div className="panel-title"><strong>{formatResultTitle(editResult.title, editResult.status === "running")}</strong><StatusPill value={editResult.status === "succeeded" ? "Saved" : editResult.status === "failed" ? "Failed" : "Saving"} /></div>
         {editResult.message && <p>{formatResultMessage(editResult.message)}</p>}
