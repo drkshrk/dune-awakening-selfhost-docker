@@ -1436,7 +1436,11 @@ export async function playerInventory(db, id) {
            i.position_index,
            i.inventory_id,
            coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'CurrentDurability'), null) as current_durability,
-           coalesce((i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'), null) as max_durability,
+           coalesce(
+             (i.stats->'FItemStackAndDurabilityStats'->1->>'MaxDurability'),
+             (i.stats->'FItemStackAndDurabilityStats'->1->>'DecayedMaxDurability'),
+             null
+           ) as max_durability,
            i.stats
     from dune.items i
     join dune.inventories inv on i.inventory_id = inv.id
