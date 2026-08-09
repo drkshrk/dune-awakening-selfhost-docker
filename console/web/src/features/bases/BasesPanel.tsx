@@ -263,6 +263,13 @@ function withCoordinates(row: Record<string, unknown>): BaseRow {
 // Columns narrow enough to ellipsize; a title keeps the full value readable.
 const TOOLTIP_COLUMNS = new Set(["base_type", "owner_name", "coordinates"]);
 
+/**
+ * Renders the table cell content for a base row and column.
+ *
+ * @param row - The base data used to populate the cell.
+ * @param column - The table column whose value should be rendered.
+ * @param instanceNames - Optional map of partition keys to resolved instance names.
+ */
 function renderBaseCell(row: Record<string, unknown>, column: string, instanceNames?: Map<string, string>) {
   if (column === "map") {
     const mapId = String(row.map || "");
@@ -337,6 +344,13 @@ function renderBaseCell(row: Record<string, unknown>, column: string, instanceNa
   );
 }
 
+/**
+ * Renders a paginated, searchable, and sortable interface for managing bases.
+ *
+ * @param onError - Reports errors displayed outside the panel
+ * @param confirmAction - Requests confirmation for destructive or state-changing actions
+ * @param formatMutationResult - Formats mutation responses for display
+ */
 export function BasesPanel({ onError, confirmAction, formatMutationResult }: BasesPanelProps) {
   const [q, setQ] = useState(() => basesCache?.q ?? "");
   const [submittedQ, setSubmittedQ] = useState(() => basesCache?.q ?? "");

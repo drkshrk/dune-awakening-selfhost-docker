@@ -68,6 +68,13 @@ export function itemIsRankedSchematic(item = {}, grade = 0) {
   return itemIsSchematic(item) && Number.isInteger(value) && value > 0 && value <= 5;
 }
 
+/**
+ * Converts a catalog item into a standardized item object.
+ * @param {Object} item - The catalog item to normalize.
+ * @param {string} [repoRoot=""] - The repository root used to resolve the item image.
+ * @returns {Object} The normalized item with identifiers, display fields, source, category, and image path.
+ * @throws {Error} If the item ID is empty or contains invalid characters.
+ */
 function normalizeItem(item, repoRoot = "") {
   const id = String(item.id || "").trim();
   if (!/^[A-Za-z0-9_./:-]{1,240}$/.test(id)) throw new Error("Invalid resolved item id");
@@ -98,7 +105,12 @@ const itemImagePathCache = new Map();
 // is NOT baked into the image -- docker-compose.web.yml bind-mounts the host
 // checkout at /repo and points DUNE_DOCKER_DIR at it, so the files are live on
 // disk. What makes the stale window harmless is that updating the checkout
-// restarts the console container, not that the files cannot change.
+/**
+ * Resolves the image path for a catalog item.
+ * @param {string} repoRoot - The repository root used to locate the item image.
+ * @param {string} id - The catalog item identifier.
+ * @return {string} The item image path, or the fallback path when the image is unavailable.
+ */
 export function itemImagePath(repoRoot, id) {
   if (!repoRoot) return "/images/items/image-unavailable.png";
   let byId = itemImagePathCache.get(repoRoot);

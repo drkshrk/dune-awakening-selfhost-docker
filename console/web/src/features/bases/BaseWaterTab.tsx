@@ -31,6 +31,13 @@ function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Displays water storage levels and auto-refill controls for a base.
+ *
+ * @param baseId - The base whose water storage is displayed
+ * @param autoRefill - Auto-refill state and actions for the base
+ * @param refreshToken - Value that triggers a water data refresh when changed
+ */
 export function BaseWaterTab({ baseId, autoRefill, refreshToken }: BaseWaterTabProps) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");

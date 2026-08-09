@@ -20,13 +20,25 @@ export type SietchRow = {
 // send that index as a partition id and land on whichever partition happens to
 // carry the same number, so renaming dimension 1 would rename partition 1.
 // Reads are unaffected -- a fallback row still renders, it just cannot be
-// written to.
+/**
+ * Determines whether a sietch row is a writable target.
+ *
+ * @returns `true` if the partition ID came from `--ids`, `false` otherwise.
+ */
 export function isSietchWriteTarget(row: SietchRow) {
   return row.partitionIdFromIds;
 }
 
 export const SIETCH_PASSWORD_MASK = "********";
 
+/**
+ * Determines whether a touched password draft changes the row's password.
+ *
+ * @param row - The sietch row whose password is being edited
+ * @param draft - The current password draft
+ * @param touched - Whether the password field has been edited
+ * @returns `true` if the touched draft changes the password, `false` otherwise.
+ */
 export function sietchPasswordDraftChanged(row: SietchRow, draft: { password: string }, touched = false) {
   if (!touched) return false;
   if (row.passwordSet) return draft.password !== SIETCH_PASSWORD_MASK;
@@ -36,7 +48,14 @@ export function sietchPasswordDraftChanged(row: SietchRow, draft: { password: st
 // The draft a row is being edited with, plus which of its fields differ from
 // what the server reported. One definition, shared by the code that builds
 // sietch write actions and the code that refuses to build them, so the two can
-// never disagree about what "edited" means.
+/**
+ * Compares a partition's draft values with its current values.
+ *
+ * @param row - The partition whose changes are being evaluated
+ * @param drafts - Draft values keyed by partition ID
+ * @param passwordTouched - Tracks whether each password field has been edited
+ * @returns The draft values and flags indicating whether the display name or password changed
+ */
 export function sietchDraftChanges(
   row: SietchRow,
   drafts: Record<string, { displayName: string; password: string }>,
@@ -58,7 +77,15 @@ export function sietchDraftChanges(
 // dirty the Save does nothing at all, and with the active-sietch count also
 // dirty that unrelated change still runs and the save reports success while the
 // edited fields are discarded. Callers refuse the whole save instead, matching
-// what the per-sietch Save and Restart already do.
+/**
+ * Identifies edited sietch rows whose partition IDs cannot be safely written.
+ *
+ * @param rows - The sietch rows to inspect
+ * @param drafts - Draft display names and passwords keyed by partition ID
+ * @param passwordTouched - Tracks password fields that have been edited
+ * @param partitionId - Optional partition ID used to limit the result
+ * @returns The rows with unsaved name or password changes that are not write targets
+ */
 export function blockedSietchEdits(
   rows: SietchRow[],
   drafts: Record<string, { displayName: string; password: string }>,
@@ -83,7 +110,17 @@ export function blockedSietchEdits(
 // Display names are operator-chosen and arbitrary -- "Awesome Map" and
 // "The Kulon Show" are real -- so nothing here may assume a "Sietch " prefix.
 // Lives in its own module rather than in MapsPanel so the Bases panel can label
-// map instances without pulling that whole lazily-loaded chunk in with it.
+/**
+ * Parses sietch command output into normalized rows.
+ *
+ * Associates rows with partition IDs from `idsText` by row order when available,
+ * falls back to parsed identifiers, removes duplicate partition IDs while
+ * preferring IDs sourced from `idsText`, and sorts the results by dimension.
+ *
+ * @param text - Sietch output containing partition details.
+ * @param idsText - Optional newline-delimited partition IDs.
+ * @returns Parsed, deduplicated sietch rows sorted by dimension.
+ */
 export function parseSietchRows(text: string, idsText = ""): SietchRow[] {
   const rows: SietchRow[] = [];
   const ids = idsText.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line));

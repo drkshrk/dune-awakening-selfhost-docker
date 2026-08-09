@@ -349,6 +349,12 @@ function dockerPsNames() {
   });
 }
 
+/**
+ * Routes API requests for authentication, server administration, database access, and game management.
+ * Authenticates protected requests and writes the corresponding JSON or streamed response.
+ * @param {IncomingMessage} req - The incoming HTTP request.
+ * @param {ServerResponse} res - The HTTP response to populate.
+ */
 async function handleApi(req, res) {
   const url = new URL(req.url, "http://localhost");
   const path = url.pathname;
@@ -2282,6 +2288,12 @@ async function baseAutoRefillToggleRoute(req, res, path) {
   }
 }
 
+/**
+ * Retrieve the water status for a base.
+ * @param {http.ServerResponse} res - The HTTP response.
+ * @param {string} path - The request path containing the base ID.
+ * @return {void} Sends the base water status or an error response.
+ */
 async function baseWaterRoute(res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });
@@ -2294,7 +2306,12 @@ async function baseWaterRoute(res, path) {
 }
 
 // Read-only, so no directDbMutation wrapper and no confirmation phrase.
-// repoRoot is passed through only to resolve each item's catalog icon.
+/**
+ * Retrieves inventory items for a base, including catalog icon information.
+ * @param {object} res - The HTTP response object.
+ * @param {string} path - The request path containing the base ID.
+ * @return {Promise<object>} The base inventory or an error response.
+ */
 async function baseInventoryRoute(res, path) {
   const baseId = Number(decodeURIComponent(path.split("/")[3]));
   if (!Number.isFinite(baseId) || baseId < 1) return json(res, 400, { error: "Invalid base ID" });

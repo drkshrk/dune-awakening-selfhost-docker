@@ -19,16 +19,32 @@ const ITEM_PREVIEW_LIMIT = 25;
 type GroupFilter = BaseInventoryGroupKey | "all";
 type ViewMode = "items" | "containers";
 
+/**
+ * Converts an unknown error value into readable text.
+ *
+ * @param error - The error value to convert
+ * @returns The error message or string representation of `error`
+ */
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
 // Falls back to the type when a placeable has never been renamed in-game --
-// the backend returns "" rather than the game's '##'-prefixed default.
+/**
+ * Resolves a container's display label, using its type and ID when it has no name.
+ *
+ * @param container - The container whose label is being resolved.
+ * @returns The container name, or a fallback label composed of its type and placeable ID.
+ */
 function containerLabel(container: { name: string; typeName: string; placeableId: string }) {
   return container.name || `${container.typeName} #${container.placeableId}`;
 }
 
+/**
+ * Displays read-only inventory for a base, with filtering, item and container views, and container contents.
+ *
+ * @param baseId - The identifier of the base whose inventory is displayed.
+ */
 export function BaseInventoryTab({ baseId }: BaseInventoryTabProps) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");

@@ -3425,6 +3425,18 @@ const BASE_NAME_SQL = `case
   else 'Unnamed Base'
 end`;
 
+/**
+ * Lists bases with filtering, pagination, location, ownership, sharing, inventory counts, and capability information.
+ * @param {object} db - Database connection.
+ * @param {object} [options] - Query and response options.
+ * @param {string} [options.q=""] - Text used to search base names, types, or owners.
+ * @param {number} [options.page=0] - Zero-based page number.
+ * @param {number} [options.pageSize=50] - Number of bases per page.
+ * @param {string} [options.sortColumn="name"] - Field used to sort the results.
+ * @param {string} [options.sortDirection="asc"] - Sort direction, either `asc` or `desc`.
+ * @param {boolean} [options.includeGenerators=true] - Whether to include generator fuel and runtime data.
+ * @returns {Promise<object>} The paginated base list, aggregate counts, generator data, and supported base-management capabilities.
+ */
 export async function listBases(db, { q = "", page = 0, pageSize = 50, sortColumn = "name", sortDirection = "asc", includeGenerators = true } = {}) {
   const requiredTables = ["buildings", "building_instances", "actor_fgl_entities", "actors"];
   // One round-trip each and none of them depends on another, so probe them
@@ -6286,7 +6298,11 @@ export async function refillBaseWater(db, baseId) {
 //
 // lowestPercent is null for a base with no recognised devices, not 0 --
 // "nothing to measure" must not read as "empty" to a caller deciding whether
-// to refill.
+/**
+ * Reports stored water levels for all water devices at a base.
+ * @param {number|string} baseId - The base identifier.
+ * @return {Object} Water device levels, total device count, and the lowest fill percentage.
+ */
 export async function baseWaterFuelLevels(db, baseId) {
   const target = intParam(baseId, "base id", 1);
   const devices = await baseWaterDevices(db, target);
@@ -6439,7 +6455,10 @@ const BASE_INVENTORY_TRIPLES = BASE_INVENTORY_GROUP_ORDER.flatMap((group) =>
   Object.entries(BASE_INVENTORY_TYPES[group].buildingTypes).map(
     ([buildingType, typeName]) => [group, buildingType, typeName]));
 
-// Shaped for unnest() so a building_type is never interpolated into the SQL.
+/**
+ * Builds parameter arrays for classifying base inventory building types.
+ * @return {Array<Array<string>>} The grouped inventory categories, building types, and type names.
+ */
 function baseInventoryTypeParams() {
   return [
     BASE_INVENTORY_TRIPLES.map(([group]) => group),
@@ -6456,7 +6475,11 @@ function baseInventoryTypeParams() {
 // channel carries them, there are no triggers on dune.items or
 // dune.inventories, and the RMQ command bus addresses items by template name
 // while every id here is a row id -- so an edit could not reach a running map
-// without a relog or a map restart.
+/**
+ * Summarize the contents of a base's classified inventory containers.
+ * @param {number|string} baseId - The base identifier.
+ * @return {Object} Inventory groups, containers, item aggregates, slot usage, and support status.
+ */
 export async function baseInventory(db, baseId, { repoRoot = "" } = {}) {
   const target = intParam(baseId, "base id", 1);
   // Independent probes, so one round-trip rather than three in series.

@@ -19,17 +19,30 @@ const TTL_MS = 5 * 60 * 1000;
 let cache: { key: string; names: Map<string, string>; at: number } | null = null;
 
 // Callers hold a list of partition maps; the cache key must not depend on the
-// order they happened to appear in.
+/**
+ * Creates a stable cache key from a collection of map names.
+ *
+ * @param maps - Map names whose order and duplicates do not affect the key
+ * @returns A comma-separated key containing the unique map names in sorted order
+ */
 function cacheKey(maps: string[]) {
   return [...new Set(maps)].sort().join(",");
 }
 
 // Call after any sietch mutation. Also the reset hook for tests, whose module
-// scope outlives an individual case.
+/**
+ * Clears the cached instance names.
+ */
 export function invalidateInstanceNames() {
   cache = null;
 }
 
+/**
+ * Retrieves cached instance names for a matching, unexpired set of maps.
+ *
+ * @param maps - The partition maps used to identify the cached resolution
+ * @returns The cached instance names, or `null` when no matching unexpired cache entry exists
+ */
 export function cachedInstanceNames(maps: string[]) {
   if (!cache || cache.key !== cacheKey(maps)) return null;
   return Date.now() - cache.at < TTL_MS ? cache.names : null;
@@ -38,7 +51,12 @@ export function cachedInstanceNames(maps: string[]) {
 // Resolves every map in parallel and returns null when nothing could be read,
 // so callers keep whatever fallback they already show. Failures are swallowed
 // on purpose: these endpoints are absent on a console-only install, and a
-// missing instance name must never take the caller's list down with it.
+/**
+ * Resolves display names for partitions across the specified maps.
+ *
+ * @param maps - The maps whose partition names should be resolved
+ * @returns A map of map-and-partition keys to display names, or `null` when no names are resolved
+ */
 export async function resolveInstanceNames(maps: string[]) {
   const resolved = new Map<string, string>();
   await Promise.all(maps.map(async (map) => {

@@ -267,6 +267,15 @@ function friendlySettingName(key: string) {
   return key.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+/**
+ * Calculates the maximum parallelism allowed for Always-On startup.
+ *
+ * @param settings - Runtime memory settings used to determine physical memory and the default parallelism.
+ * @param protectionEnabled - Whether host-memory protection is enabled.
+ * @param reserveMode - Whether to use the automatic or custom host-memory reserve.
+ * @param reserveValue - Custom host-memory reserve in GiB when `reserveMode` is `"custom"`.
+ * @returns The permitted startup parallelism, capped between 1 and 16.
+ */
 function alwaysOnParallelismLimit(settings: MapRuntimeSettings | null, protectionEnabled: boolean, reserveMode: "automatic" | "custom", reserveValue: string) {
   if (!protectionEnabled) return 16;
   const physical = settings?.physicalMemoryGiB || 0;
@@ -278,7 +287,12 @@ function alwaysOnParallelismLimit(settings: MapRuntimeSettings | null, protectio
 // Every sietch mutation goes through here so the Bases panel's cached instance
 // names cannot outlive a rename. Routed through one wrapper rather than five
 // call sites because a missed one is invisible until someone notices a stale
-// label on another tab.
+/**
+ * Updates Sietch configuration and invalidates cached instance names after a successful update.
+ *
+ * @param body - The Sietch update payload.
+ * @returns The update result.
+ */
 function updateSietches(body: Record<string, unknown>) {
   return mapsApi.updateSietches(body).then((result) => {
     invalidateInstanceNames();
@@ -286,6 +300,15 @@ function updateSietches(body: Record<string, unknown>) {
   });
 }
 
+/**
+ * Provides the Maps & Sietches panel for monitoring maps, managing map and Sietch settings, and configuring runtime and gameplay modifiers.
+ *
+ * @param onError - Reports errors encountered while loading data or applying changes
+ * @param confirmAction - Requests confirmation for map and runtime operations
+ * @param confirmSettingsRestart - Requests confirmation before saving settings that require a restart
+ * @param waitForTaskWithUpdates - Waits for an asynchronous task while reporting progress updates
+ * @param taskTechnicalDetails - Formats technical task status details for display
+ */
 export function MapsPanel({ onError, confirmAction, confirmSettingsRestart, waitForTaskWithUpdates, taskTechnicalDetails }: MapsPanelProps) {
   const [mapsText, setMapsText] = useState("");
   const [memoryText, setMemoryText] = useState("");
@@ -2176,6 +2199,14 @@ function SettingInput({ field, value, inputId, onChange }: { field: UserSettingF
         : <input id={inputId} value={value} onChange={(event) => onChange(event.target.value)} />;
 }
 
+/**
+ * Displays a map's RAM usage, optionally including swap usage.
+ *
+ * @param row - Live memory usage data for the map, or `null` when unavailable
+ * @param fallback - Text displayed when memory usage data is unavailable
+ * @param configuredLimit - Optional configured RAM limit
+ * @param swapEnabled - Whether supported swap usage should be included
+ */
 export function MemoryUsageBar({ row, fallback, configuredLimit, swapEnabled = false }: { row: LiveMapMemoryRow | null; fallback: string; configuredLimit?: unknown; swapEnabled?: boolean }) {
   if (!row) return <span className="muted">{fallback}</span>;
   const configuredLimitBytes = memoryValueToBytes(String(configuredLimit || ""));
@@ -2206,6 +2237,13 @@ export function MemoryUsageBar({ row, fallback, configuredLimit, swapEnabled = f
   </div>;
 }
 
+/**
+ * Determines whether a Sietch has a configured password.
+ *
+ * @param row - The Sietch row containing its current password state
+ * @param draft - Optional password draft to consider
+ * @returns `true` if the Sietch has a configured password, `false` otherwise
+ */
 function sietchHasPassword(row: SietchRow | null | undefined, draft?: { password: string }) {
   return Boolean(row?.passwordSet || row?.password || (draft?.password && draft.password !== SIETCH_PASSWORD_MASK));
 }
@@ -2397,6 +2435,14 @@ export function changedKeys(original: Record<string, string>, draft: Record<stri
     .map((field) => field.id);
 }
 
+/**
+ * Collects draft values for settings that differ from their original values.
+ *
+ * @param original - The initial setting values keyed by field ID
+ * @param draft - The current setting values keyed by field ID
+ * @param fields - The setting fields to compare
+ * @returns An object containing changed field IDs and their draft values
+ */
 export function valuesForDirtyFields(original: Record<string, string>, draft: Record<string, string>, fields: UserSettingField[]) {
   return Object.fromEntries(fields
     .filter((field) => settingValueChanged(field, String(original[field.id] ?? ""), String(draft[field.id] ?? "")))
@@ -2409,6 +2455,14 @@ export function valuesForDirtyFields(original: Record<string, string>, draft: Re
 const SIETCH_PARTITION_IDS_UNREADABLE =
   "Sietch partition IDs could not be read from the server, so this change cannot be applied to the right Sietch. Reload the Maps tab and try again.";
 
+/**
+ * Finds the live memory record associated with a map or partition.
+ *
+ * @param rows - Live memory records to search
+ * @param map - Map name used to identify the matching record
+ * @param row - Optional map row containing a partition identifier
+ * @returns The matching live memory record, or `null` when no record matches
+ */
 function memoryForMap(rows: LiveMapMemoryRow[], map: string, row?: Record<string, unknown>) {
   const normalized = normalizeMapKey(map);
   const partitionId = String(row?.partitionId || row?.partition || "").trim();
