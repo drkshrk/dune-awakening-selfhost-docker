@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { AlertTriangle, ChevronDown, ChevronUp, Download, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Download, Droplet, Fuel, Grid2X2, Info, List, Lock, RotateCcw } from "lucide-react";
 import { mapsApi, type ChoamTerminalOverview, type ChoamTradeCenter, type LiveMapMemoryRow, type MapCombatStateResult, type MapRuntimeSettings, type MemoryBalancerState, type MemorySwapState, type PartitionCombatStateRow, type SpicefieldTypeRow, type UserSettingField, type UserSettingsSchema } from "../../api/maps";
 import { runGatedRestart, type RestartGate, type RestartGateChoice } from "../server/restartQueueGuard";
 import { serverApi, type RestartQueueTarget } from "../../api/server";
@@ -9,7 +9,7 @@ import { InfoTooltip, KeyValueGrid, StatusPill, TechnicalDetails } from "../../c
 import { firstDefined, formatUiSentence, stripAnsi, summarizeCommandText, titleCase } from "../../lib/display";
 import { refreshServerPorts } from "../../api/serverPorts";
 import { titleCaseWords } from "../players/playerAdminUtils";
-import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills } from "../../lib/usePendingRefills";
+import { pendingRefillCountForMap, pendingRefillCountForPartition, usePendingRefills, usePendingWaterRefills } from "../../lib/usePendingRefills";
 import type { PendingRefills } from "../../api/bases";
 import { friendlyMapName, hasFriendlyMapName } from "./mapNames";
 import { invalidateInstanceNames } from "./instanceNames";
@@ -28,14 +28,21 @@ import {
   type SietchRow
 } from "./sietchRows";
 
-// Taking a partition down is when any generator refill queued for a base on it
-// gets written, so every control that does so says what is waiting on it.
-function PendingRefillBadge({ count }: { count: number }) {
-  if (!count) return null;
-  return <span className="pending-refill-badge" title="Queued generator refills are written while this is down">
-    <Fuel size={12} aria-hidden="true" />
-    {count.toLocaleString()} refill{count === 1 ? "" : "s"} pending
-  </span>;
+// Taking a partition down is when any queued generator or water-container
+// refill for a base on it gets written, so every control that does so says
+// what is waiting on it -- both resources, not just fuel.
+function PendingRefillBadge({ fuelCount, waterCount }: { fuelCount: number; waterCount: number }) {
+  if (!fuelCount && !waterCount) return null;
+  return <>
+    {fuelCount > 0 && <span className="pending-refill-badge pending-refill-badge-fuel" title="Queued generator refills are written while this is down">
+      <Fuel size={12} aria-hidden="true" />
+      {fuelCount.toLocaleString()} fuel refill{fuelCount === 1 ? "" : "s"} pending
+    </span>}
+    {waterCount > 0 && <span className="pending-refill-badge pending-refill-badge-water" title="Queued water refills are written while this is down">
+      <Droplet size={12} aria-hidden="true" />
+      {waterCount.toLocaleString()} water refill{waterCount === 1 ? "" : "s"} pending
+    </span>}
+  </>;
 }
 
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string; warnings?: string[] };
@@ -390,6 +397,7 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
   const [mapsResultTarget, setMapsResultTarget] = useState("");
   const [mapsTaskQueueStates, setMapsTaskQueueStates] = useState<Record<string, MapsTaskQueueState>>({});
   const { pending: pendingRefills } = usePendingRefills();
+  const { pending: pendingWaterRefills } = usePendingWaterRefills();
   const mapsLoadRef = useRef<Promise<void> | null>(null);
   const mapsRuntimeRefreshRef = useRef<Promise<void> | null>(null);
   const mapsDisplayedTerminalTaskRef = useRef<Set<string>>(new Set());
@@ -1985,8 +1993,14 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
                     primary partition; every other map only respawns whole, so
                     show everything queued anywhere on it. */}
                 {isSurvivalRow && primarySurvivalSietch?.active
-                  ? <PendingRefillBadge count={pendingRefillCountForPartition(pendingRefills, Number(primarySurvivalSietch.partitionId))} />
-                  : <PendingRefillBadge count={pendingRefillCountForMap(pendingRefills, rowName)} />}
+                  ? <PendingRefillBadge
+                      fuelCount={pendingRefillCountForPartition(pendingRefills, Number(primarySurvivalSietch.partitionId))}
+                      waterCount={pendingRefillCountForPartition(pendingWaterRefills, Number(primarySurvivalSietch.partitionId))}
+                    />
+                  : <PendingRefillBadge
+                      fuelCount={pendingRefillCountForMap(pendingRefills, rowName)}
+                      waterCount={pendingRefillCountForMap(pendingWaterRefills, rowName)}
+                    />}
                 {isSurvivalRow && primarySurvivalSietch?.active && <button disabled={Boolean(rowTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(primarySurvivalSietch, rowTarget))}>{rowTaskQueueState?.phase === "queued" ? "Queued" : rowTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
                 {/* Only offered while the map is up -- a stopped map wants Force
                     Spawn, not a despawn+spawn cycle. */}
@@ -2091,7 +2105,10 @@ export function MapsPanel({ onError, confirmAction, restartGate, confirmSettings
                   <label>Name<input value={draft.displayName} placeholder="Default name" onChange={(event) => setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, displayName: event.target.value } })} /></label>
                   <label>Password<SecretInput value={sietchPasswordInputValue(sietch, draft, Boolean(sietchPasswordTouched[sietch.partitionId]))} placeholder={passwordPlaceholder(sietchHasPassword(sietch, draft))} onFocus={(event) => { if (!sietchPasswordTouched[sietch.partitionId] && sietch.passwordSet) event.currentTarget.select(); }} onChange={(event) => { setSietchPasswordTouched({ ...sietchPasswordTouched, [sietch.partitionId]: true }); setSietchDrafts({ ...sietchDrafts, [sietch.partitionId]: { ...draft, password: event.target.value } }); }} /></label>
                   <button disabled={!childDirty || Boolean(childTaskQueueState)} onClick={() => run(() => saveSietchSettings(sietch))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Saving..." : "Save Sietch Settings"}</button>
-                  {sietch.active && <PendingRefillBadge count={pendingRefillCountForPartition(pendingRefills, Number(sietch.partitionId))} />}
+                  {sietch.active && <PendingRefillBadge
+                    fuelCount={pendingRefillCountForPartition(pendingRefills, Number(sietch.partitionId))}
+                    waterCount={pendingRefillCountForPartition(pendingWaterRefills, Number(sietch.partitionId))}
+                  />}
                   {sietch.active && <button disabled={Boolean(childTaskQueueState)} title="Restart only this Sietch" onClick={() => run(() => restartSietch(sietch, childTarget))}>{childTaskQueueState?.phase === "queued" ? "Queued" : childTaskQueueState?.phase === "running" ? "Restarting..." : "Restart"}</button>}
                   {childMapSettingsResultActive && mapsResult ? <span className={`inline-task-result map-action-result result-${inlineTaskResultClass(mapsResult)}`}>
                     <strong className={mapsResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(mapsResult.title, mapsResult.status === "running")}</strong>

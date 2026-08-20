@@ -1775,6 +1775,8 @@ body.debug .technical-details { display: block; }
   font-size: 11px;
   white-space: nowrap;
 }
+.pending-refill-badge-fuel { background: rgba(198, 139, 74, .18); color: var(--accent); }
+.pending-refill-badge-water { background: rgba(74, 144, 198, .18); color: #7fb2df; }
 /* inline-task-result is built for the flex action rows in Maps/Server; this one
    stands alone under the banner, so drop the flex sizing it assumes. Its
    result-ok rule animates "fade-result" and retires itself; result-fail does

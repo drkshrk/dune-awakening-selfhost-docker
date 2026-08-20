@@ -39,6 +39,7 @@ vi.mock("../../api/setup", () => ({ setupApi: new Proxy({} as Record<string, unk
 }) }));
 vi.mock("../../lib/usePendingRefills", () => ({
   usePendingRefills: () => ({ pending: null, refresh: () => {} }),
+  usePendingWaterRefills: () => ({ pending: null, refresh: () => {} }),
   pendingRefillCountForMap: () => 0,
   pendingRefillCountForPartition: () => 0
 }));
