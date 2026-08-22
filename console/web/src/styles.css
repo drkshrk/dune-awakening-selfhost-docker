@@ -2552,10 +2552,10 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   .memory-info-box, .bases-auto-refill .memory-info-box { position: fixed; top: auto; right: 14px; bottom: 14px; left: 14px; width: auto; }
 }
 .live-map-layer-list { display: grid; gap: 8px; }
-.live-map-layer { justify-content: flex-start; width: 100%; min-height: 34px; color: #d9c8aa; }
+.live-map-layer { justify-content: flex-start; width: 100%; min-height: 40px; color: #d9c8aa; }
 .live-map-layer input { width: auto; margin: 0; accent-color: #c68b4a; }
 .live-map-layer .muted { margin-left: auto; }
-.live-map-legend-dot { width: 12px; height: 12px; border: 2px solid #090b0d; border-radius: 999px; box-shadow: 0 0 4px rgba(0, 0, 0, .35); flex: 0 0 auto; }
+.live-map-legend-dot { width: 24px; height: 24px; border: 2px solid #090b0d; border-radius: 999px; box-shadow: 0 0 4px rgba(0, 0, 0, .35); flex: 0 0 auto; }
 .live-map-frame {
   position: relative;
   width: 100%;
@@ -2589,19 +2589,118 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
   overflow: visible;
 }
 .live-map-marker:hover { width: 16px; height: 16px; z-index: 4; }
-.live-map-marker.marker-player { color: #ef4444; background: #ef4444; border-radius: 3px; }
+.live-map-marker.marker-player, .live-map-legend-dot.marker-player { background: url("/images/maps/Characters.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
 .live-map-marker.marker-player { cursor: grab; }
 .live-map-marker.marker-player.dragging { cursor: grabbing; z-index: 6; width: 18px; height: 18px; }
-.live-map-marker.marker-player.offline { color: #ef4444; background: #101316; border-color: #ef4444; box-shadow: 0 0 0 2px rgba(239, 68, 68, .2), 0 0 5px rgba(0, 0, 0, .45); }
-.live-map-marker.marker-player.online { color: #ef4444; background: #ef4444; border-color: #090b0d; }
+.live-map-marker.marker-player.offline { filter: grayscale(1) brightness(.65); }
 .live-map-marker.marker-player.teleport-preview { z-index: 5; width: 18px; height: 18px; box-shadow: 0 0 0 3px rgba(255, 208, 138, .28), 0 0 18px rgba(255, 208, 138, .42); }
-.live-map-marker.marker-vehicle { color: #7bd56f; background: #7bd56f; }
-.live-map-marker.marker-base { color: #d6a444; background: #d6a444; }
+.live-map-marker.marker-base, .live-map-legend-dot.marker-base { background: url("/images/maps/Base.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
 .live-map-marker.marker-storage { color: #c084fc; background: #c084fc; }
-.live-map-legend-dot.marker-player { color: #ef4444; background: #ef4444; border-radius: 3px; }
-.live-map-legend-dot.marker-vehicle { color: #7bd56f; background: #7bd56f; }
-.live-map-legend-dot.marker-base { color: #d6a444; background: #d6a444; }
+.live-map-marker.marker-spice, .live-map-marker.marker-spice_active { width: 48px; height: 48px; }
+.live-map-marker.marker-spice:hover, .live-map-marker.marker-spice_active:hover { width: 60px; height: 60px; }
+.live-map-marker.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; opacity: .55; }
+.live-map-marker.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: 0 0 10px 3px rgba(232, 135, 30, .75); }
+/* Active/pool spice markers are sized by tier (subtype) -- the base
+   marker-spice/marker-spice_active rules above are the Large tier's size;
+   these modifiers step Medium/Small down so a whole bloom's yield reads at
+   a glance instead of every tier plotting identically. */
+.live-map-marker.marker-spice.spice-size-medium, .live-map-marker.marker-spice_active.spice-size-medium { width: 34px; height: 34px; }
+.live-map-marker.marker-spice.spice-size-medium:hover, .live-map-marker.marker-spice_active.spice-size-medium:hover { width: 44px; height: 44px; }
+.live-map-marker.marker-spice.spice-size-small, .live-map-marker.marker-spice_active.spice-size-small { width: 24px; height: 24px; }
+.live-map-marker.marker-spice.spice-size-small:hover, .live-map-marker.marker-spice_active.spice-size-small:hover { width: 32px; height: 32px; }
+.live-map-marker.marker-flour_sand, .live-map-legend-dot.marker-flour_sand { background: url("/images/maps/floursand.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
+.live-map-marker.marker-flour_sand { width: 24px; height: 24px; }
+.live-map-marker.marker-flour_sand:hover { width: 32px; height: 32px; }
+.live-map-marker.marker-ore { color: #9ca3af; background: #9ca3af; }
+.live-map-marker.marker-scrap { color: #b45309; background: #b45309; }
+.live-map-marker.marker-flora, .live-map-legend-dot.marker-flora { background: url("/images/maps/plantfiber.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
+.live-map-marker.marker-poi { color: #60a5fa; background: #60a5fa; }
+.live-map-marker.marker-hazard { color: #eab308; background: #eab308; }
+.live-map-marker.marker-enemy { color: #f97316; background: #f97316; }
+.live-map-marker.marker-vehicle, .live-map-legend-dot.marker-vehicle { background: url("/images/maps/vehiclebike.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
 .live-map-legend-dot.marker-storage { color: #c084fc; background: #c084fc; }
+.live-map-legend-dot.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; opacity: .55; }
+.live-map-legend-dot.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: 0 0 6px 1px rgba(232, 135, 30, .65); }
+.live-map-legend-dot.marker-ore { color: #9ca3af; background: #9ca3af; }
+.live-map-legend-dot.marker-scrap { color: #b45309; background: #b45309; }
+.live-map-legend-dot.marker-poi { color: #60a5fa; background: #60a5fa; }
+.live-map-legend-dot.marker-hazard { color: #eab308; background: #eab308; }
+.live-map-legend-dot.marker-enemy { color: #f97316; background: #f97316; }
+
+/* Per-item icons for specific ore/scrap/poi marker_types (matched by the
+   generic subtype-<lowercased marker_type> class -- see LiveMapPanel.tsx).
+   Anything without a rule here keeps its category's plain colored dot.
+   Excludes spice/spice_active, which size themselves via spice-size-*. */
+.live-map-marker[class*="subtype-"]:not(.marker-spice):not(.marker-spice_active) { border: none; border-radius: 0; box-shadow: none; width: 20px; height: 20px; }
+.live-map-marker[class*="subtype-"]:not(.marker-spice):not(.marker-spice_active):hover { width: 26px; height: 26px; z-index: 4; }
+.live-map-legend-dot[class*="subtype-"]:not(.marker-spice):not(.marker-spice_active) { border: none; border-radius: 0; box-shadow: none; }
+
+.live-map-marker.subtype-azuriteore, .live-map-legend-dot.subtype-azuriteore { background: url("/images/maps/azuriteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-basaltore, .live-map-legend-dot.subtype-basaltore { background: url("/images/maps/basaltore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-bauxiteore, .live-map-legend-dot.subtype-bauxiteore { background: url("/images/maps/bauxiteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-dolomiterock, .live-map-legend-dot.subtype-dolomiterock { background: url("/images/maps/dolomiterock.webp") center / contain no-repeat; }
+.live-map-marker.subtype-erythriteore, .live-map-legend-dot.subtype-erythriteore { background: url("/images/maps/erythriteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-jasmiumore, .live-map-legend-dot.subtype-jasmiumore { background: url("/images/maps/jasmiumore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-magnetiteore, .live-map-legend-dot.subtype-magnetiteore { background: url("/images/maps/magnetiteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-rhyoliteore, .live-map-legend-dot.subtype-rhyoliteore { background: url("/images/maps/rhyoliteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-stravidiumore, .live-map-legend-dot.subtype-stravidiumore { background: url("/images/maps/stravidiumore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-titaniumore, .live-map-legend-dot.subtype-titaniumore { background: url("/images/maps/titaniumore.webp") center / contain no-repeat; }
+
+/* Pickup markers reuse their material's Ore/Rock icon (no separate Pickup
+   art) but render smaller, so a bloom's node vs. its harvested drop stay
+   visually distinct at a glance. */
+.live-map-marker.subtype-azuritepickup, .live-map-legend-dot.subtype-azuritepickup { background: url("/images/maps/azuriteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-basaltpickup, .live-map-legend-dot.subtype-basaltpickup { background: url("/images/maps/basaltore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-bauxitepickup, .live-map-legend-dot.subtype-bauxitepickup { background: url("/images/maps/bauxiteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-dolomitepickup, .live-map-legend-dot.subtype-dolomitepickup { background: url("/images/maps/dolomiterock.webp") center / contain no-repeat; }
+.live-map-marker.subtype-erythritepickup, .live-map-legend-dot.subtype-erythritepickup { background: url("/images/maps/erythriteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-magnetitepickup, .live-map-legend-dot.subtype-magnetitepickup { background: url("/images/maps/magnetiteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-rhyolitepickup, .live-map-legend-dot.subtype-rhyolitepickup { background: url("/images/maps/rhyoliteore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-stravidiumpickup, .live-map-legend-dot.subtype-stravidiumpickup { background: url("/images/maps/stravidiumore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-titaniumpickup, .live-map-legend-dot.subtype-titaniumpickup { background: url("/images/maps/titaniumore.webp") center / contain no-repeat; }
+.live-map-marker.subtype-azuritepickup, .live-map-marker.subtype-basaltpickup, .live-map-marker.subtype-bauxitepickup, .live-map-marker.subtype-dolomitepickup, .live-map-marker.subtype-erythritepickup, .live-map-marker.subtype-magnetitepickup, .live-map-marker.subtype-rhyolitepickup, .live-map-marker.subtype-stravidiumpickup, .live-map-marker.subtype-titaniumpickup { width: 14px; height: 14px; }
+.live-map-marker.subtype-azuritepickup:hover, .live-map-marker.subtype-basaltpickup:hover, .live-map-marker.subtype-bauxitepickup:hover, .live-map-marker.subtype-dolomitepickup:hover, .live-map-marker.subtype-erythritepickup:hover, .live-map-marker.subtype-magnetitepickup:hover, .live-map-marker.subtype-rhyolitepickup:hover, .live-map-marker.subtype-stravidiumpickup:hover, .live-map-marker.subtype-titaniumpickup:hover { width: 18px; height: 18px; }
+
+.live-map-marker.subtype-cave, .live-map-legend-dot.subtype-cave { background: url("/images/maps/cave.webp") center / contain no-repeat; }
+.live-map-marker.subtype-sietch, .live-map-legend-dot.subtype-sietch { background: url("/images/maps/sietch.webp") center / contain no-repeat; }
+.live-map-marker.subtype-ecolab, .live-map-legend-dot.subtype-ecolab { background: url("/images/maps/ecolab.webp") center / contain no-repeat; }
+.live-map-marker.subtype-enemycamp, .live-map-legend-dot.subtype-enemycamp { background: url("/images/maps/enemycamp.webp") center / contain no-repeat; }
+.live-map-marker.subtype-enemylaboroutpost, .live-map-legend-dot.subtype-enemylaboroutpost { background: url("/images/maps/enemylaboroutpost.webp") center / contain no-repeat; }
+.live-map-marker.subtype-enemyoutpost, .live-map-legend-dot.subtype-enemyoutpost { background: url("/images/maps/enemyoutpost.webp") center / contain no-repeat; }
+.live-map-marker.subtype-atreidesfortress, .live-map-legend-dot.subtype-atreidesfortress { background: url("/images/maps/atreidesfortress.webp") center / contain no-repeat; }
+.live-map-marker.subtype-harkonnenfortress, .live-map-legend-dot.subtype-harkonnenfortress { background: url("/images/maps/harkonnenfortress.webp") center / contain no-repeat; }
+.live-map-marker.subtype-tradingpost, .live-map-legend-dot.subtype-tradingpost { background: url("/images/maps/tradingpost.webp") center / contain no-repeat; }
+.live-map-marker.subtype-taxiservice, .live-map-legend-dot.subtype-taxiservice { background: url("/images/maps/taxiservice.webp") center / contain no-repeat; }
+.live-map-marker.subtype-trainerbenegesserit, .live-map-legend-dot.subtype-trainerbenegesserit { background: url("/images/maps/trainerbenegesserit.webp") center / contain no-repeat; }
+.live-map-marker.subtype-trainermentat, .live-map-legend-dot.subtype-trainermentat { background: url("/images/maps/trainermentat.webp") center / contain no-repeat; }
+.live-map-marker.subtype-trainerplanetologist, .live-map-legend-dot.subtype-trainerplanetologist { background: url("/images/maps/trainerplanetologist.webp") center / contain no-repeat; }
+.live-map-marker.subtype-trainerswordmaster, .live-map-legend-dot.subtype-trainerswordmaster { background: url("/images/maps/trainerswordmaster.webp") center / contain no-repeat; }
+.live-map-marker.subtype-trainertrooper, .live-map-legend-dot.subtype-trainertrooper { background: url("/images/maps/trainertrooper.webp") center / contain no-repeat; }
+.live-map-marker.subtype-shipwreck, .live-map-legend-dot.subtype-shipwreck { background: url("/images/maps/shipwreck.webp") center / contain no-repeat; }
+
+.live-map-marker.subtype-fuelcellwreckage, .live-map-legend-dot.subtype-fuelcellwreckage { background: url("/images/maps/fuelcellwreckage.webp") center / contain no-repeat; }
+.live-map-marker.subtype-scrapmetalwreckage, .live-map-legend-dot.subtype-scrapmetalwreckage { background: url("/images/maps/scrapmetalwreckage.webp") center / contain no-repeat; }
+/* Part markers reuse their matching Wreckage's icon (no separate Part art)
+   but render smaller, same Ore/Pickup-style size distinction between a
+   wreck and the loose part harvested from it. */
+.live-map-marker.subtype-fuelcellpart, .live-map-legend-dot.subtype-fuelcellpart { background: url("/images/maps/fuelcellwreckage.webp") center / contain no-repeat; }
+.live-map-marker.subtype-scrapmetalpart, .live-map-legend-dot.subtype-scrapmetalpart { background: url("/images/maps/scrapmetalwreckage.webp") center / contain no-repeat; }
+.live-map-marker.subtype-fuelcellpart, .live-map-marker.subtype-scrapmetalpart { width: 14px; height: 14px; }
+.live-map-marker.subtype-fuelcellpart:hover, .live-map-marker.subtype-scrapmetalpart:hover { width: 18px; height: 18px; }
+.live-map-layer-group-header { margin: 6px 0 -2px; color: #ceb894; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.live-map-layer-group-header-toggle { display: flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%; background: transparent; border: none; padding: 0; font: inherit; color: #ceb894; text-transform: uppercase; letter-spacing: .05em; cursor: pointer; text-align: left; }
+.live-map-layer-group-header-toggle:hover { color: #ffd08a; }
+.live-map-layer-group-header-toggle .live-map-layer-expand { pointer-events: none; }
+.live-map-layer-section-item { margin-left: 14px; padding-left: 8px; border-left: 1px solid #302b25; }
+.live-map-layer-disabled { opacity: .5; cursor: default; }
+.live-map-layer-disabled input { cursor: default; }
+.live-map-layer-group { display: grid; gap: 4px; }
+.live-map-layer-expand { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 20px; height: 20px; padding: 0; margin: 0; line-height: 1; background: transparent; border: 1px solid #514232; border-radius: 4px; color: #d9c8aa; font-size: 13px; cursor: pointer; }
+.live-map-layer-expand:hover { border-color: #c68b4a; color: #ffd08a; }
+.live-map-layer-sublist { display: grid; gap: 4px; margin-left: 22px; padding-left: 8px; border-left: 1px solid #302b25; }
+.live-map-layer-sub { min-height: 32px; font-size: 12px; color: #bda986; margin-left: 14px; }
+.live-map-layer-subgroup-block { display: grid; gap: 4px; }
+.live-map-layer-subgroup { min-height: 30px; font-size: 12px; color: #d9c8aa; }
 .live-map-target {
   position: absolute;
   width: 22px;

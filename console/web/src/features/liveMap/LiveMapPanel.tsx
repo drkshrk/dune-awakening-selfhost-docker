@@ -6,6 +6,69 @@ import { KeyValueGrid, TechnicalDetails } from "../../components/common/DisplayP
 import { firstDefined, formatUiSentence, titleCase } from "../../lib/display";
 import { friendlyInlineError } from "../players/playerAdminUtils";
 
+// Layer keys whose visibility is capability-gated -- hidden from the legend
+// entirely when the backend reports no data source for them (missing
+// archive, table not present, etc). Player/vehicle/base/storage are not
+// gated this way; they've always just shown with a zero count instead.
+const GATED_LAYER_KEYS = new Set(["spice", "spice_active", "flour_sand", "ore", "scrap", "flora", "poi", "hazard", "enemy"]);
+
+// Categories that expand into individual sub-types (e.g. Ores & Metals ->
+// RhyoliteOre/AzuriteOre/...; Active Spice Blows -> Small/Medium/Large).
+// Sub-type lists are derived dynamically from whatever `subtype` values are
+// actually present in the loaded markers -- not curated -- so a new
+// game-added resource type shows up with zero maintenance.
+const EXPANDABLE_KEYS = new Set(["spice", "spice_active", "ore", "scrap", "flora", "poi", "hazard", "enemy"]);
+// Zoom was capped at 100% (1 map-pixel-unit == 1 CSS pixel), too tight for
+// precise marker/teleport placement.
+const MAX_LIVE_MAP_ZOOM = 4;
+// Minimum zoom is exactly the "contain" fit (the whole map visible, no
+// scrollbar) -- 1 means no extra shrink past that; see liveMapMinimumZoom.
+const MIN_ZOOM_FIT_FACTOR = 1;
+const SPICE_TIER_TYPES = new Set(["spice", "spice_active"]);
+
+// Optional third tier within an expanded category's sublist -- a function
+// from subtype name to { group, label } (label is what renders instead of
+// the raw subtype -- e.g. stripping a group's own name back off so it
+// isn't repeated). Returning null leaves that subtype rendered flat,
+// alongside the parent category's other ungrouped items -- "ore" groups
+// every subtype (all Ore/Pickup), "poi" only groups the House
+// Representative/Trainer subsets and leaves Cave/TradingPost/etc. flat.
+const SUBGROUP_RESOLVERS: Record<string, (subtype: string) => { group: string; label: string } | null> = {
+  ore: (subtype) => ({ group: subtype.endsWith("Pickup") ? "Pickup" : "Ore", label: subtype }),
+  scrap: (subtype) => {
+    if (subtype.endsWith("Wreckage")) return { group: "Wreckage", label: subtype };
+    if (subtype.endsWith("Part")) return { group: "Part", label: subtype };
+    return null;
+  },
+  poi: (subtype) => {
+    if (subtype.startsWith("HouseRepresentative")) return { group: "House Representative", label: subtype.slice("HouseRepresentative".length) };
+    if (subtype.startsWith("Trainer")) return { group: "Trainer", label: subtype.slice("Trainer".length) };
+    return null;
+  }
+};
+const SUBGROUP_ORDER = ["Ore", "Pickup", "Wreckage", "Part"];
+
+type LegendItem =
+  | { header: string }
+  | { key: string }
+  | { placeholder: string; label: string; note: string };
+
+// Static layout for the Layers legend: existing live-actor types stay
+// ungrouped at top, then themed clusters matching the naming/grouping of
+// https://lafamilia-gaming.eu/livemap. Sandworms has no live data source at
+// all (no persistent actor rows, only 5 historical Shai-Hulud events ever
+// logged) so it renders as a disabled placeholder, not a real filter.
+const LEGEND_LAYOUT: LegendItem[] = [
+  { key: "player" }, { key: "vehicle" }, { key: "base" }, { key: "storage" },
+  { header: "Spice & Resources" },
+  { key: "spice" }, { key: "spice_active" }, { key: "flour_sand" },
+  { key: "ore" }, { key: "scrap" }, { key: "flora" },
+  { header: "Wildlife" },
+  { placeholder: "sandworm", label: "Sandworms", note: "(no live source yet)" },
+  { header: "World" },
+  { key: "poi" }, { key: "hazard" }, { key: "enemy" }
+];
+
 type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 type ConfirmAction = (message: string, options?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean; details?: { label: string; value: string; tone?: "danger" | "success" | "accent" }[] }) => Promise<boolean>;
 type LiveMapPanelProps = {
@@ -21,6 +84,16 @@ function formatResultTitle(value: unknown, pending = false) {
 
 function formatResultMessage(value: unknown) {
   return formatUiSentence(value, false);
+}
+
+// HTML checkboxes have no declarative `indeterminate` prop -- it has to be
+// set imperatively on the DOM node.
+function IndeterminateCheckbox({ checked, indeterminate, onChange }: { checked: boolean; indeterminate: boolean; onChange: () => void }) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return <input ref={ref} type="checkbox" checked={checked} onChange={onChange} />;
 }
 
 function HomeTaskResultCard({ result }: { result: HomeTaskResult }) {
@@ -40,8 +113,22 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const [partitionId, setPartitionId] = useState("");
   const [markers, setMarkers] = useState<LiveMapMarker[]>([]);
   const [overlays, setOverlays] = useState<Record<string, string>>({});
+  const [capabilities, setCapabilities] = useState<Record<string, unknown>>({});
   const [selected, setSelected] = useState<LiveMapMarker | null>(null);
-  const [filters, setFilters] = useState<Record<string, boolean>>({ player: true, vehicle: true, base: true, storage: true });
+  const [filters, setFilters] = useState<Record<string, boolean>>({
+    player: true, vehicle: true, base: true, storage: true,
+    spice: true, spice_active: true, flour_sand: true, ore: true, scrap: true, flora: true,
+    poi: true, hazard: true
+  });
+  const [coriolisSeed, setCoriolisSeed] = useState("");
+  const [subtypeFilters, setSubtypeFilters] = useState<Record<string, Record<string, boolean>>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [expandedSubgroups, setExpandedSubgroups] = useState<Record<string, Record<string, boolean>>>({});
+  // Section headers (Spice & Resources / Wildlife / World) default to
+  // expanded -- unlike category/sub-group expand state, which defaults to
+  // collapsed -- so nothing vanishes on first load. A missing entry means
+  // "expanded", not "collapsed".
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [zoom, setZoom] = useState(0.16);
   const [target, setTarget] = useState<{ x: number; y: number } | null>(null);
@@ -61,11 +148,28 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
     setLoading(true);
     try {
       const result = await liveMapApi.markers(mapKey);
-      setMarkers(applyPendingPlayerTeleports(result.rows || []));
+      const rows = result.rows || [];
+      setMarkers(applyPendingPlayerTeleports(rows));
+      // Merge newly-seen subtypes in (default visible) -- never clobber a
+      // subtype the user has already toggled off.
+      setSubtypeFilters((prev) => {
+        const next: Record<string, Record<string, boolean>> = {};
+        for (const key of Object.keys(prev)) next[key] = { ...prev[key] };
+        for (const marker of rows) {
+          const type = String(marker.type);
+          const subtype = typeof marker.subtype === "string" ? marker.subtype : null;
+          if (!EXPANDABLE_KEYS.has(type) || !subtype) continue;
+          if (!next[type]) next[type] = {};
+          if (!(subtype in next[type])) next[type][subtype] = true;
+        }
+        return next;
+      });
       setOverlays(result.overlays || {});
+      setCapabilities(result.capabilities || {});
       setMapConfig(result.map || null);
       setMaps(result.maps || {});
       setPartitions(result.partitions || []);
+      setCoriolisSeed(result.coriolisSeed || "");
       if (!partitionId && result.map?.defaultPartitionId) setPartitionId(String(result.map.defaultPartitionId));
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
@@ -129,18 +233,28 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   }, [activeMap?.key]);
   const mapOptions = Object.values(maps);
   const partitionOptions = partitions.filter((row) => row.map === (activeMap?.actorMap || activeMap?.key));
-  const visible = markers
-    .filter((marker) => filters[String(marker.type)] !== false)
-    .filter((marker) => !partitionId || String(marker.partition_id || "") === partitionId);
+  // Partition-filtered but not yet subtype-filtered -- the base population
+  // subtype counts are measured against, so a sub-item's own count doesn't
+  // change/disappear just because the user unchecked it.
+  const partitionFiltered = markers
+    // Static-pool spice and POI markers have no partition_id at all (they're
+    // not tied to a specific live dimension), so a marker without one should
+    // never be dropped by the partition filter. spice_active markers do
+    // carry a real partition_id and filter normally.
+    .filter((marker) => !partitionId || marker.partition_id == null || String(marker.partition_id) === partitionId);
+  const topLevelVisible = partitionFiltered.filter((marker) => filters[String(marker.type)] !== false);
+  const visible = topLevelVisible.filter((marker) => !marker.subtype || subtypeFilters[String(marker.type)]?.[marker.subtype] !== false);
   const plotted = visible.filter((marker) => Number.isFinite(Number(marker.x)) && Number.isFinite(Number(marker.y)));
   const displayRows = visible.map((marker) => ({ ...marker, display_name: friendlyMarkerName(marker), raw_name: marker.name || marker.id }));
   const markerCounts = countMarkers(visible);
+  const subtypeCounts = countBySubtype(topLevelVisible);
   const inBounds = activeMap ? plotted.map((marker) => ({ marker, point: worldToLiveMapPoint(marker, activeMap) })).filter((item) => item.point?.inBounds) as { marker: LiveMapMarker; point: LiveMapPoint }[] : [];
   const targetPoint = target && activeMap ? worldToLiveMapPoint({ x: target.x, y: target.y }, activeMap) : null;
   const minimumZoom = liveMapMinimumZoom(activeMap, frameRef.current);
   const zoomMinPercent = Math.round(minimumZoom * 100);
+  const zoomMaxPercent = Math.round(MAX_LIVE_MAP_ZOOM * 100);
   const zoomValuePercent = Math.round(zoom * 100);
-  const zoomProgressPercent = Math.max(0, Math.min(100, ((zoomValuePercent - zoomMinPercent) / Math.max(1, 100 - zoomMinPercent)) * 100));
+  const zoomProgressPercent = Math.max(0, Math.min(100, ((zoomValuePercent - zoomMinPercent) / Math.max(1, zoomMaxPercent - zoomMinPercent)) * 100));
   const zoomDisplayPercent = Math.round(zoomProgressPercent);
   function chooseMap(nextKey: string) {
     const nextMap = maps[nextKey];
@@ -369,11 +483,110 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             <div className="key-value-item"><span>Visible</span><strong>{visible.length}</strong></div>
             <div className="key-value-item"><span>In Bounds</span><strong>{inBounds.length}</strong></div>
             <div className="key-value-item"><span>Zoom</span><strong>{zoomDisplayPercent}%</strong></div>
+            {coriolisSeed && <div className="key-value-item"><span>Coriolis Seed</span><strong>{coriolisSeedNumber(coriolisSeed)}</strong></div>}
           </div>
         </section>
         <section className="action-section">
           <h4>Layers</h4>
-          <div className="live-map-layer-list">{Object.keys(filters).map((key) => <label key={key} className="checkbox-row live-map-layer"><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /><span>{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /></label>)}</div>
+          <div className="live-map-layer-list">{(() => {
+            let currentSection = "";
+            return LEGEND_LAYOUT.map((item, index) => {
+            if ("header" in item) {
+              const sectionName = item.header;
+              currentSection = sectionName;
+              const sectionExpanded = expandedSections[sectionName] !== false;
+              return <button key={`header-${index}`} type="button" className="live-map-layer-group-header live-map-layer-group-header-toggle" onClick={() => setExpandedSections({ ...expandedSections, [sectionName]: !sectionExpanded })}>
+                <span className="live-map-layer-expand" aria-hidden="true">{sectionExpanded ? "−" : "+"}</span>
+                {sectionName}
+              </button>;
+            }
+            if (expandedSections[currentSection] === false) return null;
+            const indent = (node: React.ReactNode, keyValue: React.Key) =>
+              currentSection ? <div key={keyValue} className="live-map-layer-section-item">{node}</div> : node;
+            if ("placeholder" in item) return indent(<label className="checkbox-row live-map-layer live-map-layer-disabled"><span>{item.label}</span><span className="muted">{item.note}</span><input type="checkbox" disabled /></label>, item.placeholder);
+            const key = item.key;
+            if (GATED_LAYER_KEYS.has(key) && capabilities[key] === false) return null;
+            const subtypes = EXPANDABLE_KEYS.has(key) ? Object.keys(subtypeFilters[key] || {}).sort() : [];
+            if (subtypes.length === 0) {
+              return indent(<label className="checkbox-row live-map-layer"><span>{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /></label>, key);
+            }
+            const checkedCount = subtypes.filter((subtype) => subtypeFilters[key][subtype] !== false).length;
+            const allChecked = checkedCount === subtypes.length;
+            const noneChecked = checkedCount === 0;
+            const expanded = Boolean(expandedGroups[key]);
+            function toggleParent() {
+              const nextValue = !allChecked;
+              setFilters((prevFilters) => ({ ...prevFilters, [key]: nextValue }));
+              setSubtypeFilters((prev) => ({ ...prev, [key]: Object.fromEntries(subtypes.map((subtype) => [subtype, nextValue])) }));
+            }
+            return indent(<div className="live-map-layer-group">
+              <label className="checkbox-row live-map-layer">
+                <button type="button" className="live-map-layer-expand" aria-label={expanded ? "Collapse" : "Expand"} onClick={() => setExpandedGroups({ ...expandedGroups, [key]: !expanded })}>{expanded ? "−" : "+"}</button>
+                <span>{friendlyMarkerType(key)}</span>
+                <span className="muted">{markerCounts[key] || 0}</span>
+                <IndeterminateCheckbox checked={allChecked} indeterminate={!allChecked && !noneChecked} onChange={toggleParent} />
+              </label>
+              {expanded && <div className="live-map-layer-sublist">{(() => {
+                const renderSubtypeRow = (subtype: string, label: string = subtype) => {
+                  const checked = subtypeFilters[key][subtype] !== false;
+                  return <label key={subtype} className="checkbox-row live-map-layer live-map-layer-sub">
+                    <span>{label}</span>
+                    <span className="muted">{subtypeCounts[key]?.[subtype] || 0}</span>
+                    <span className={`live-map-legend-dot marker-${key} subtype-${subtype.toLowerCase()}`} />
+                    <input type="checkbox" checked={checked} onChange={() => {
+                      const nextSubtypeState = { ...subtypeFilters[key], [subtype]: !checked };
+                      setSubtypeFilters({ ...subtypeFilters, [key]: nextSubtypeState });
+                      setFilters((prevFilters) => ({ ...prevFilters, [key]: Object.values(nextSubtypeState).some(Boolean) }));
+                    }} />
+                  </label>;
+                };
+                const resolveSubgroup = SUBGROUP_RESOLVERS[key];
+                if (!resolveSubgroup) return subtypes.map((subtype) => renderSubtypeRow(subtype));
+
+                const ungrouped: string[] = [];
+                const subtypesByGroup = new Map<string, { subtype: string; label: string }[]>();
+                for (const subtype of subtypes) {
+                  const resolved = resolveSubgroup(subtype);
+                  if (!resolved) { ungrouped.push(subtype); continue; }
+                  if (!subtypesByGroup.has(resolved.group)) subtypesByGroup.set(resolved.group, []);
+                  subtypesByGroup.get(resolved.group)!.push({ subtype, label: resolved.label });
+                }
+                const groupNames = [...subtypesByGroup.keys()].sort((a, b) => {
+                  const orderA = SUBGROUP_ORDER.indexOf(a);
+                  const orderB = SUBGROUP_ORDER.indexOf(b);
+                  if (orderA === -1 && orderB === -1) return a.localeCompare(b);
+                  if (orderA === -1) return 1;
+                  if (orderB === -1) return -1;
+                  return orderA - orderB;
+                });
+                const groupBlocks = groupNames.map((group) => {
+                  const groupItems = subtypesByGroup.get(group)!;
+                  const groupSubtypes = groupItems.map((item) => item.subtype);
+                  const groupCheckedCount = groupSubtypes.filter((subtype) => subtypeFilters[key][subtype] !== false).length;
+                  const groupAllChecked = groupCheckedCount === groupSubtypes.length;
+                  const groupNoneChecked = groupCheckedCount === 0;
+                  const groupCount = groupSubtypes.reduce((sum, subtype) => sum + (subtypeCounts[key]?.[subtype] || 0), 0);
+                  const groupExpanded = Boolean(expandedSubgroups[key]?.[group]);
+                  return <div key={group} className="live-map-layer-subgroup-block">
+                    <label className="checkbox-row live-map-layer live-map-layer-subgroup">
+                      <button type="button" className="live-map-layer-expand" aria-label={groupExpanded ? "Collapse" : "Expand"} onClick={() => setExpandedSubgroups({ ...expandedSubgroups, [key]: { ...expandedSubgroups[key], [group]: !groupExpanded } })}>{groupExpanded ? "−" : "+"}</button>
+                      <span>{group}</span>
+                      <span className="muted">{groupCount}</span>
+                      <IndeterminateCheckbox checked={groupAllChecked} indeterminate={!groupAllChecked && !groupNoneChecked} onChange={() => {
+                        const nextValue = !groupAllChecked;
+                        const nextSubtypeState = { ...subtypeFilters[key], ...Object.fromEntries(groupSubtypes.map((subtype) => [subtype, nextValue])) };
+                        setSubtypeFilters({ ...subtypeFilters, [key]: nextSubtypeState });
+                        setFilters((prevFilters) => ({ ...prevFilters, [key]: Object.values(nextSubtypeState).some(Boolean) }));
+                      }} />
+                    </label>
+                    {groupExpanded && groupItems.map(({ subtype, label }) => renderSubtypeRow(subtype, label))}
+                  </div>;
+                });
+                return [...ungrouped.map((subtype) => renderSubtypeRow(subtype)), ...groupBlocks];
+              })()}</div>}
+            </div>, key);
+            });
+          })()}</div>
         </section>
         <section className="action-section">
           <h4>Coordinates</h4>
@@ -385,7 +598,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
           <button onClick={() => setZoomAround(zoom * 1.18)}>Zoom In</button>
           <button onClick={() => setZoomAround(zoom * 0.84)}>Zoom Out</button>
           <button onClick={fitLiveMapView}>Fit Map</button>
-          <label>Zoom<input className="live-map-zoom-range" type="range" min={zoomMinPercent} max="100" value={zoomValuePercent} style={{ "--zoom-progress": `${zoomProgressPercent}%` } as React.CSSProperties} onChange={(event) => setZoomAround(Number(event.target.value) / 100)} /></label>
+          <label>Zoom<input className="live-map-zoom-range" type="range" min={zoomMinPercent} max={zoomMaxPercent} value={zoomValuePercent} style={{ "--zoom-progress": `${zoomProgressPercent}%` } as React.CSSProperties} onChange={(event) => setZoomAround(Number(event.target.value) / 100)} /></label>
           <span className="muted">Drag to Pan. Mouse Wheel Zooms.</span>
         </div>
         {teleportResult && <HomeTaskResultCard result={teleportResult} />}
@@ -406,7 +619,9 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 const isDraggingThisPlayer = Boolean(playerDrag && String(playerDrag.marker.id) === String(marker.id) && String(playerDrag.marker.type) === String(marker.type));
                 const isPreviewingThisPlayer = Boolean(playerTeleportPreview && String(playerTeleportPreview.marker.id) === String(marker.id) && String(playerTeleportPreview.marker.type) === String(marker.type));
                 const renderPoint = isDraggingThisPlayer ? playerDrag!.point : isPreviewingThisPlayer ? playerTeleportPreview!.point : point;
-                return <button key={`${marker.type}-${marker.id}-${index}`} className={`live-map-marker marker-${marker.type} ${playerStatus} ${isDraggingThisPlayer ? "dragging" : ""} ${isPreviewingThisPlayer ? "teleport-preview" : ""}`} title={`${friendlyMarkerType(String(marker.type))}: ${friendlyMarkerName(marker)}`} onMouseDown={(event) => {
+                const spiceSizeClass = SPICE_TIER_TYPES.has(String(marker.type)) && typeof marker.subtype === "string" ? `spice-size-${marker.subtype.toLowerCase()}` : "";
+                const subtypeClass = typeof marker.subtype === "string" ? `subtype-${marker.subtype.toLowerCase()}` : "";
+                return <button key={`${marker.type}-${marker.id}-${index}`} className={`live-map-marker marker-${marker.type} ${spiceSizeClass} ${subtypeClass} ${playerStatus} ${isDraggingThisPlayer ? "dragging" : ""} ${isPreviewingThisPlayer ? "teleport-preview" : ""}`} title={`${friendlyMarkerType(String(marker.type))}: ${friendlyMarkerName(marker)}`} onMouseDown={(event) => {
                   if (!isPlayer) return;
                   event.stopPropagation();
                   event.preventDefault();
@@ -465,18 +680,34 @@ function liveMapPixelsToWorld(px: number, py: number, config: LiveMapConfig) {
 
 function liveMapMinimumZoom(config: LiveMapConfig | null | undefined, frame: HTMLElement | null) {
   if (!config || !frame) return 0.16;
-  return Math.max(0.05, frame.clientWidth / config.width, frame.clientHeight / config.height);
+  // Math.min, not Math.max -- this needs to be a "contain" fit (the whole
+  // map visible, letterboxed on the shorter axis) so the fully-zoomed-out
+  // view never overflows the frame and forces a scrollbar. Math.max would
+  // "cover" the frame instead, cropping whichever axis has the smaller
+  // required ratio.
+  const fitRatio = Math.min(frame.clientWidth / config.width, frame.clientHeight / config.height);
+  return Math.max(0.02, fitRatio * MIN_ZOOM_FIT_FACTOR);
 }
 
 function clampLiveMapZoom(value: number, minimum = 0.16) {
   if (!Number.isFinite(value)) return minimum;
-  return Math.max(minimum, Math.min(1, value));
+  return Math.max(minimum, Math.min(MAX_LIVE_MAP_ZOOM, value));
 }
 
 function countMarkers(markers: LiveMapMarker[]) {
   return markers.reduce<Record<string, number>>((acc, marker) => {
     const key = String(marker.type || "unknown");
     acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function countBySubtype(markers: LiveMapMarker[]) {
+  return markers.reduce<Record<string, Record<string, number>>>((acc, marker) => {
+    if (!marker.subtype) return acc;
+    const type = String(marker.type || "unknown");
+    if (!acc[type]) acc[type] = {};
+    acc[type][marker.subtype] = (acc[type][marker.subtype] || 0) + 1;
     return acc;
   }, {});
 }
@@ -495,13 +726,27 @@ function friendlyMarkerName(marker: LiveMapMarker) {
   return raw.replace(/^\/Game\/.*\//, "").replace(/^BP_/, "").replace(/_C$/, "").replaceAll("_", " ");
 }
 
+function coriolisSeedNumber(coriolisSeed: string) {
+  const match = coriolisSeed.match(/^cor-(\d+)$/);
+  return match ? match[1] : coriolisSeed;
+}
+
 function friendlyMarkerType(type: string) {
   return {
     player: "Player",
     vehicle: "Vehicle",
     base: "Base",
     storage: "Storage",
-    service: "Service"
+    service: "Service",
+    spice: "Static Spice Spawns",
+    spice_active: "Active Spice Blows",
+    flour_sand: "Flour Sand",
+    ore: "Ores & Metals",
+    scrap: "Scrap & Wrecks",
+    flora: "Plants & Fibers",
+    poi: "Places, Caves & POIs",
+    hazard: "Hazard Zones",
+    enemy: "Enemy Camp/Outpost"
   }[type.toLowerCase()] || titleCase(type.replaceAll("_", " "));
 }
 
