@@ -2599,7 +2599,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker.marker-spice, .live-map-marker.marker-spice_active { width: 48px; height: 48px; }
 .live-map-marker.marker-spice:hover, .live-map-marker.marker-spice_active:hover { width: 60px; height: 60px; }
 .live-map-marker.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; opacity: .55; }
-.live-map-marker.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: 0 0 10px 3px rgba(232, 135, 30, .75); }
+.live-map-marker.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 5px rgba(232, 135, 30, .85)); }
 /* Active/pool spice markers are sized by tier (subtype) -- the base
    marker-spice/marker-spice_active rules above are the Large tier's size;
    these modifiers step Medium/Small down so a whole bloom's yield reads at
@@ -2620,7 +2620,7 @@ label.exchange-category-select, label.exchange-owner-select { display: flex; fle
 .live-map-marker.marker-vehicle, .live-map-legend-dot.marker-vehicle { background: url("/images/maps/vehiclebike.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; }
 .live-map-legend-dot.marker-storage { color: #c084fc; background: #c084fc; }
 .live-map-legend-dot.marker-spice { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; opacity: .55; }
-.live-map-legend-dot.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: 0 0 6px 1px rgba(232, 135, 30, .65); }
+.live-map-legend-dot.marker-spice_active { background: url("/images/maps/spicefieldlarge.webp") center / contain no-repeat; border: none; border-radius: 0; box-shadow: none; filter: drop-shadow(0 0 3px rgba(232, 135, 30, .75)); }
 .live-map-legend-dot.marker-ore { color: #9ca3af; background: #9ca3af; }
 .live-map-legend-dot.marker-scrap { color: #b45309; background: #b45309; }
 .live-map-legend-dot.marker-poi { color: #60a5fa; background: #60a5fa; }
