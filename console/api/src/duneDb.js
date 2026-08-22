@@ -3289,6 +3289,139 @@ export async function mapCombatPartitionRows(db, map) {
   return { capabilities: { combatState: true, farmState: hasFarm }, rows: result.rows };
 }
 
+// dune.resourcefield_state.map ("DeepDesert"/"HaggaBasin") and
+// dune.world_partition.map ("DeepDesert_1"/"Survival_1") are different
+// namespaces -- same mismatch documented at partitionRestartTargets below --
+// so the join has to translate the friendly map name into world_partition's
+// internal instance-name convention rather than comparing them directly.
+const RESOURCE_FIELD_PARTITION_JOIN = `
+    left join dune.world_partition wp
+      on lower(wp.map) = case lower(rfs.map)
+           when 'deepdesert' then 'deepdesert_1'
+           when 'haggabasin' then 'survival_1'
+           else lower(rfs.map)
+         end
+      and wp.dimension_index = rfs.dimension_index`;
+
+// Currently-active spice fields of any size for the live map's "Active
+// Spice Blows" layer. field_kind_id=1 is spice; value_remaining tiers are
+// 5,000/150,000/2,500,000 for Small/Medium/Large -- `size` is computed by
+// threshold (not exact match), so a field mid-harvest still classifies as
+// its spawned tier until it drops below that tier's own floor (a known,
+// accepted imprecision, same class of edge case the original Large-only
+// threshold already had). Left join, not inner, since a dimension can
+// still lack a world_partition row (confirmed live) -- partition_id stays
+// null rather than a sentinel in that case.
+export async function liveMapSpiceFieldRows(db, map = "") {
+  if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
+    return unsupportedMap("spiceActive", ["dune.resourcefield_state", "dune.world_partition"]);
+  }
+  const values = [];
+  const where = mapFilterClause(map, values, "rfs");
+  const result = await db.query(`
+    select rfs.field_id::text as field_id,
+           rfs.map,
+           wp.partition_id,
+           rfs.value_remaining,
+           case
+             when rfs.value_remaining > 150000 then 'Large'
+             when rfs.value_remaining > 5000 then 'Medium'
+             else 'Small'
+           end as size
+    from dune.resourcefield_state rfs
+    ${RESOURCE_FIELD_PARTITION_JOIN}
+    where rfs.field_kind_id = 1 ${where}
+    order by rfs.field_id`, values);
+  return {
+    capabilities: { spiceActive: true },
+    rows: result.rows.map((row) => ({ ...row, partition_id: row.partition_id == null ? null : Number(row.partition_id), value_remaining: Number(row.value_remaining) }))
+  };
+}
+
+// Currently-active flour sand fields (field_kind_id=0) -- a single fixed
+// tier (60,000), not size-classed like spice, so no value threshold needed.
+export async function liveMapFlourSandFieldRows(db, map = "") {
+  if (!(await tableExists(db, "resourcefield_state")) || !(await tableExists(db, "world_partition"))) {
+    return unsupportedMap("flourSand", ["dune.resourcefield_state", "dune.world_partition"]);
+  }
+  const values = [];
+  const where = mapFilterClause(map, values, "rfs");
+  const result = await db.query(`
+    select rfs.field_id::text as field_id,
+           rfs.map,
+           wp.partition_id,
+           rfs.value_remaining
+    from dune.resourcefield_state rfs
+    ${RESOURCE_FIELD_PARTITION_JOIN}
+    where rfs.field_kind_id = 0 ${where}
+    order by rfs.field_id`, values);
+  return {
+    capabilities: { flourSand: true },
+    rows: result.rows.map((row) => ({ ...row, partition_id: row.partition_id == null ? null : Number(row.partition_id), value_remaining: Number(row.value_remaining) }))
+  };
+}
+
+// dune.markers is the static-POI atlas (23,413+ entries on a full server --
+// caves, ore veins, scrap wrecks, vendors, hazards, etc). `marker` is a
+// composite type with real named fields (marker_type, x, y, z, payload_type)
+// -- confirmed live, no need for the text-parsing SPLIT_PART approach some
+// third-party docs use. One generic, parameterized query serves every
+// category: add a pattern-table entry for a new category and it works with
+// no new SQL.
+// Suffix-only (no leading %) -- a substring match on "%ore%" was sweeping in
+// HarkoRecustomization (an unrelated NPC/customization POI, confirmed live)
+// because "HarkoRecustomization" contains "kore" -> "ore". All real resource
+// marker_types follow a strict {Material}{Ore|Pickup|Rock} suffix, so
+// matching the suffix instead both fixes that false positive and is what
+// the live map's Ore/Pickup sub-grouping keys off of.
+const POI_CATEGORY_PATTERNS = {
+  ore: ["%Ore", "%Pickup", "%Rock"],
+  scrap: ["%scrap%", "%fuelcell%"],
+  flora: ["%bush%", "%primrose%", "%saguaro%"],
+  hazard: ["%hazard%"],
+  // Split out of "poi" into its own category -- confirmed live these are
+  // the only 3 marker_types that ever matched the old %camp%/%outpost%
+  // patterns, so pulling them out doesn't leave any other POI uncovered.
+  enemy: ["EnemyCamp", "EnemyLaborOutpost", "EnemyOutpost"],
+  poi: [
+    "%cave%", "%ecolab%", "%sietch%", "%fortress%",
+    "%trainer%", "%dojo%", "%vendor%", "%choam%", "%bank%", "%tradingpost%",
+    "%taxi%", "%houserepresentative%", "%imperialconsulate%", "%shipwreck%"
+  ]
+};
+
+export async function liveMapPoiMarkers(db, map, category) {
+  const patterns = POI_CATEGORY_PATTERNS[category];
+  if (!patterns) throw new Error(`Unknown POI category: ${category}`);
+  if (!(await tableExists(db, "markers")) || !(await tableExists(db, "map_names"))) {
+    return unsupportedMap(category, ["dune.markers", "dune.map_names"]);
+  }
+  const values = [patterns];
+  let where = "";
+  if (map) {
+    const safe = validateMapName(map);
+    if (safe) {
+      values.push(safe);
+      where = ` and mn.map_name = $${values.length}`;
+    }
+  }
+  const result = await db.query(`
+    select m.marker_hash_id::text as id,
+           (m.marker).marker_type as marker_type,
+           (m.marker).x as x,
+           (m.marker).y as y,
+           (m.marker).z as z,
+           coalesce(mn.map_name, '') as map
+    from dune.markers m
+    join dune.map_names mn on mn.map_name_id = m.map_name_id
+    where (m.marker).marker_type ilike any($1) and (m.marker).marker_type not ilike 'NoIcon' ${where}
+    order by m.marker_hash_id`, values);
+  return {
+    capabilities: { [category]: true },
+    rows: result.rows.map((row) => ({ ...row, x: Number(row.x), y: Number(row.y), z: Number(row.z) }))
+  };
+}
+
 export async function liveMapMarkers(db, map = "") {
   const [players, vehicles, bases, storage] = await Promise.all([
     liveMapPlayers(db, map),
