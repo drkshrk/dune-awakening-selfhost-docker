@@ -3032,21 +3032,45 @@ export function liveMapConfigPayload(selected = "") {
   };
 }
 
+// Driven by world_partition, not actors -- a freshly spun-up partition
+// (e.g. a second Hagga Basin instance nobody has spawned into yet) is a
+// real, selectable partition the instant it's registered, even with zero
+// actors placed in it. The old actors-inner-join version only ever
+// listed a partition once something existed inside it, so a brand-new
+// instance was invisible in the Partition dropdown (confirmed live: a
+// second Hagga Basin partition with 0 actors never appeared at all).
 export async function liveMapPartitions(db) {
-  if (!(await tableExists(db, "actors"))) return { rows: [] };
-  const hasWorldPartition = await tableExists(db, "world_partition");
+  if (!(await tableExists(db, "world_partition"))) {
+    if (!(await tableExists(db, "actors"))) return { rows: [] };
+    const result = await db.query(`
+      select coalesce(a.map, '') as map,
+             coalesce(a.partition_id, 0) as partition_id,
+             'Partition ' || coalesce(a.partition_id, 0)::text as name,
+             count(*)::int as marker_count
+      from dune.actors a
+      where a.transform is not null and coalesce(a.partition_id, 0) > 0
+      group by a.map, a.partition_id
+      order by map, partition_id`);
+    return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
+  }
+  const hasActors = await tableExists(db, "actors");
   const result = await db.query(`
-    select coalesce(a.map, '') as map,
-           coalesce(a.partition_id, 0) as partition_id,
-           ${hasWorldPartition ? "coalesce(nullif(wp.label, ''), nullif(wp.map, ''), 'Partition ' || coalesce(a.partition_id, 0)::text)" : "'Partition ' || coalesce(a.partition_id, 0)::text"} as name,
-           count(*)::int as marker_count
-    from dune.actors a
-    ${hasWorldPartition ? "join dune.world_partition wp on wp.partition_id = a.partition_id" : ""}
-    where a.transform is not null
-      and coalesce(a.partition_id, 0) > 0
-      ${hasWorldPartition ? "and nullif(wp.server_id, '') is not null" : ""}
-    group by a.map, a.partition_id${hasWorldPartition ? ", wp.label, wp.map" : ""}
-    order by map, partition_id`);
+    select
+      -- wp.map is the internal instance name ("DeepDesert_1"/"Survival_1"),
+      -- but the frontend's Partition dropdown filters by the friendly game
+      -- map name actors report (see RESOURCE_FIELD_PARTITION_JOIN above for
+      -- the same translation in the other direction) -- without this, a
+      -- partition sourced from world_partition would never match either
+      -- map tab.
+      coalesce(case lower(wp.map) when 'deepdesert_1' then 'DeepDesert' when 'survival_1' then 'HaggaBasin' else wp.map end, '') as map,
+      wp.partition_id,
+      coalesce(nullif(wp.label, ''), nullif(wp.map, ''), 'Partition ' || wp.partition_id::text) as name,
+      ${hasActors ? "count(a.id) filter (where a.transform is not null)::int" : "0"} as marker_count
+    from dune.world_partition wp
+    ${hasActors ? "left join dune.actors a on a.partition_id = wp.partition_id" : ""}
+    where wp.partition_id > 0 and nullif(wp.server_id, '') is not null
+    group by wp.partition_id, wp.map, wp.label
+    order by map, wp.partition_id`);
   return { rows: result.rows.map((row) => ({ ...row, partition_id: Number(row.partition_id || 0), marker_count: Number(row.marker_count || 0) })) };
 }
 
