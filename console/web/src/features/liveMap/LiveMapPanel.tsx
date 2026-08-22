@@ -25,6 +25,10 @@ const MAX_LIVE_MAP_ZOOM = 4;
 // scrollbar) -- 1 means no extra shrink past that; see liveMapMinimumZoom.
 const MIN_ZOOM_FIT_FACTOR = 1;
 const SPICE_TIER_TYPES = new Set(["spice", "spice_active"]);
+// The bottom data table only lists actor types -- resource/POI types
+// (ore, poi, etc.) can number in the thousands and would flood a flat
+// table with rows nobody's looking to scroll through there.
+const TABLE_MARKER_TYPES = new Set(["player", "vehicle", "base", "storage"]);
 
 // Optional third tier within an expanded category's sublist -- a function
 // from subtype name to { group, label } (label is what renders instead of
@@ -245,7 +249,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
   const topLevelVisible = partitionFiltered.filter((marker) => filters[String(marker.type)] !== false);
   const visible = topLevelVisible.filter((marker) => !marker.subtype || subtypeFilters[String(marker.type)]?.[marker.subtype] !== false);
   const plotted = visible.filter((marker) => Number.isFinite(Number(marker.x)) && Number.isFinite(Number(marker.y)));
-  const displayRows = visible.map((marker) => ({ ...marker, display_name: friendlyMarkerName(marker), raw_name: marker.name || marker.id }));
+  const displayRows = visible.filter((marker) => TABLE_MARKER_TYPES.has(String(marker.type))).map((marker) => ({ ...marker, display_name: friendlyMarkerName(marker), raw_name: marker.name || marker.id }));
   const markerCounts = countMarkers(visible);
   const subtypeCounts = countBySubtype(topLevelVisible);
   const inBounds = activeMap ? plotted.map((marker) => ({ marker, point: worldToLiveMapPoint(marker, activeMap) })).filter((item) => item.point?.inBounds) as { marker: LiveMapMarker; point: LiveMapPoint }[] : [];
