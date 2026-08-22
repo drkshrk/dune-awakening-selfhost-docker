@@ -508,12 +508,12 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             // otherwise their label starts to the left of every expandable
             // sibling's label under the same section header.
             const chevronSpacer = currentSection ? <span className="live-map-layer-expand-spacer" aria-hidden="true" /> : null;
-            if ("placeholder" in item) return indent(<label className="checkbox-row live-map-layer live-map-layer-disabled">{chevronSpacer}<span>{item.label}</span><span className="muted">{item.note}</span><input type="checkbox" disabled /></label>, item.placeholder);
+            if ("placeholder" in item) return indent(<label className="checkbox-row live-map-layer live-map-layer-disabled">{chevronSpacer}<span className="live-map-layer-label">{item.label}</span><span className="muted">{item.note}</span><input type="checkbox" disabled /></label>, item.placeholder);
             const key = item.key;
             if (GATED_LAYER_KEYS.has(key) && capabilities[key] === false) return null;
             const subtypes = EXPANDABLE_KEYS.has(key) ? Object.keys(subtypeFilters[key] || {}).sort() : [];
             if (subtypes.length === 0) {
-              return indent(<label className="checkbox-row live-map-layer">{chevronSpacer}<span>{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /></label>, key);
+              return indent(<label className="checkbox-row live-map-layer">{chevronSpacer}<span className="live-map-layer-label">{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /></label>, key);
             }
             const checkedCount = subtypes.filter((subtype) => subtypeFilters[key][subtype] !== false).length;
             const allChecked = checkedCount === subtypes.length;
@@ -527,7 +527,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             return indent(<div className="live-map-layer-group">
               <label className="checkbox-row live-map-layer">
                 <button type="button" className="live-map-layer-expand" aria-label={expanded ? "Collapse" : "Expand"} onClick={() => setExpandedGroups({ ...expandedGroups, [key]: !expanded })}>{expanded ? "−" : "+"}</button>
-                <span>{friendlyMarkerType(key)}</span>
+                <span className="live-map-layer-label">{friendlyMarkerType(key)}</span>
                 <span className="muted">{markerCounts[key] || 0}</span>
                 <IndeterminateCheckbox checked={allChecked} indeterminate={!allChecked && !noneChecked} onChange={toggleParent} />
               </label>
@@ -535,7 +535,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                 const renderSubtypeRow = (subtype: string, label: string = subtype) => {
                   const checked = subtypeFilters[key][subtype] !== false;
                   return <label key={subtype} className="checkbox-row live-map-layer live-map-layer-sub">
-                    <span>{label}</span>
+                    <span className="live-map-layer-label">{label}</span>
                     <span className="muted">{subtypeCounts[key]?.[subtype] || 0}</span>
                     <span className={`live-map-legend-dot marker-${key} subtype-${subtype.toLowerCase()}`} />
                     <input type="checkbox" checked={checked} onChange={() => {
@@ -575,7 +575,7 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
                   return <div key={group} className="live-map-layer-subgroup-block">
                     <label className="checkbox-row live-map-layer live-map-layer-subgroup">
                       <button type="button" className="live-map-layer-expand" aria-label={groupExpanded ? "Collapse" : "Expand"} onClick={() => setExpandedSubgroups({ ...expandedSubgroups, [key]: { ...expandedSubgroups[key], [group]: !groupExpanded } })}>{groupExpanded ? "−" : "+"}</button>
-                      <span>{group}</span>
+                      <span className="live-map-layer-label">{group}</span>
                       <span className="muted">{groupCount}</span>
                       <IndeterminateCheckbox checked={groupAllChecked} indeterminate={!groupAllChecked && !groupNoneChecked} onChange={() => {
                         const nextValue = !groupAllChecked;
