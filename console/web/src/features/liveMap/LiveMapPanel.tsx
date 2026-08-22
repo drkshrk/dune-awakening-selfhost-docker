@@ -503,12 +503,17 @@ export function LiveMapPanel({ onError, confirmAction, waitForTask, taskTechnica
             if (expandedSections[currentSection] === false) return null;
             const indent = (node: React.ReactNode, keyValue: React.Key) =>
               currentSection ? <div key={keyValue} className="live-map-layer-section-item">{node}</div> : node;
-            if ("placeholder" in item) return indent(<label className="checkbox-row live-map-layer live-map-layer-disabled"><span>{item.label}</span><span className="muted">{item.note}</span><input type="checkbox" disabled /></label>, item.placeholder);
+            // Rows with no chevron (Flour Sand, Sandworms) still need to
+            // reserve the same width a sibling's expand button occupies --
+            // otherwise their label starts to the left of every expandable
+            // sibling's label under the same section header.
+            const chevronSpacer = currentSection ? <span className="live-map-layer-expand-spacer" aria-hidden="true" /> : null;
+            if ("placeholder" in item) return indent(<label className="checkbox-row live-map-layer live-map-layer-disabled">{chevronSpacer}<span>{item.label}</span><span className="muted">{item.note}</span><input type="checkbox" disabled /></label>, item.placeholder);
             const key = item.key;
             if (GATED_LAYER_KEYS.has(key) && capabilities[key] === false) return null;
             const subtypes = EXPANDABLE_KEYS.has(key) ? Object.keys(subtypeFilters[key] || {}).sort() : [];
             if (subtypes.length === 0) {
-              return indent(<label className="checkbox-row live-map-layer"><span>{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /></label>, key);
+              return indent(<label className="checkbox-row live-map-layer">{chevronSpacer}<span>{friendlyMarkerType(key)}</span><span className="muted">{markerCounts[key] || 0}</span><span className={`live-map-legend-dot marker-${key}`} /><input type="checkbox" checked={filters[key]} onChange={() => setFilters({ ...filters, [key]: !filters[key] })} /></label>, key);
             }
             const checkedCount = subtypes.filter((subtype) => subtypeFilters[key][subtype] !== false).length;
             const allChecked = checkedCount === subtypes.length;
