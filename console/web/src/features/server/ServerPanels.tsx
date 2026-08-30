@@ -1599,7 +1599,12 @@ const BATTLEGROUP_CONTAINERS = [
   "dune-server-overmap"
 ];
 
-const CONTAINER_DOWN = /\b(missing|stopped|exited|dead|not running)\b/i;
+// docker's own status strings reach these rows verbatim, so a paused container
+// arrives as "Up 3 hours (Paused)" -- it matches \bUp\b and would otherwise read
+// as healthy. status.sh itself only ever emits a docker status, the literal
+// "stopped", or the literal "missing"; the rest are kept for readiness text and
+// any other producer of a container table.
+const CONTAINER_DOWN = /\b(missing|stopped|exited|dead|paused|not running)\b/i;
 
 // The status table pads columns, so the name is everything before the first gap.
 function containerLineName(line: string) {
@@ -1618,7 +1623,7 @@ function battlegroupContainerLines(containerLines: string[]) {
 export function isHomeStopComplete(status: string, readiness: string) {
   if (getHomeServerState(status, readiness).stopped) return true;
   const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  const statusContainersStopped = containerLines.length >= BATTLEGROUP_CONTAINERS.length && BATTLEGROUP_CONTAINERS.every((name) =>
+  const statusContainersStopped = BATTLEGROUP_CONTAINERS.every((name) =>
     containerLines.some((line) => containerStatusLineHas(name, line, /\b(missing|stopped|exited|dead|not running)\b/i))
   );
   if (statusContainersStopped) return true;

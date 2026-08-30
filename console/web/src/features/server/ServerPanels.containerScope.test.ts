@@ -28,7 +28,7 @@ function statusText(options: {
   return [
     "=== Dune status ===",
     ...(options.overall ? [`Overall:     ${options.overall}`] : []),
-    "Title:       SteelHeart",
+    "Title:       Example Sietch",
     "",
     "=== Containers ===",
     "SERVICE                    STATUS",
@@ -78,6 +78,17 @@ describe("Containers row with the coordinator switched off", () => {
 
   it("reads OK when all eight are up and only the coordinator is absent", () => {
     expect(summarizeContainers(status)).toMatchObject({ label: "OK", status: "Ready" });
+  });
+
+  // docker reports a paused container as "Up 3 hours (Paused)" -- verified
+  // against docker 29.7.2 -- so it satisfies /\bUp\b/ and used to read as
+  // healthy. Nothing in this stack pauses containers, but a paused one is not
+  // serving.
+  it("does not read a paused container as healthy", () => {
+    const paused = statusText({ overall: "ISSUE", battlegroup: "Up 20 minutes", coordinator: "missing" })
+      .replace(/^dune-director\s+Up 20 minutes$/m, "dune-director              Up 3 hours (Paused)");
+    expect(paused).toMatch(/dune-director\s+Up 3 hours \(Paused\)/);
+    expect(summarizeContainers(paused)).toMatchObject({ label: "Needs Review", status: "WARN" });
   });
 });
 
@@ -139,7 +150,7 @@ function fullStatus(overall: string, coordinator: string) {
   return [
     "=== Dune status ===",
     `Overall:     ${overall}`,
-    "Title:       SteelHeart",
+    "Title:       Example Sietch",
     "Population:  0/120",
     "",
     "=== Containers ===",
