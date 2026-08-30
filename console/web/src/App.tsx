@@ -40,7 +40,10 @@ import { useStaleBuildWatcher } from "./lib/staleBuildWatcher";
 // a persisted tab (see loadPersistedTab below) can validate against the real,
 // current list at runtime instead of a hand-duplicated copy that could drift.
 export const ALL_TABS = ["Home", "Server Control", "Services", "Players", "Guilds", "Bases", "Vehicles", "Exchange", "Landsraad", "Admin Tools", "Live Map", "Maps", "Care Package", "Addons", "Database", "Storage", "Backups", "Logs", "Updates", "Settings"] as const;
-type Tab = typeof ALL_TABS[number];
+// Exported so a panel routing to another tab types its destination against the
+// real list rather than `string`. Type-only, so a panel importing it back does
+// not create a runtime cycle.
+export type Tab = typeof ALL_TABS[number];
 const ACTIVE_TAB_STORAGE_KEY = "dune-console:active-tab";
 
 // Persisted in sessionStorage, not localStorage: it should survive the
@@ -302,6 +305,12 @@ const navGroups: { title: string; items: { tab: Tab; icon: React.ReactNode }[] }
   }
 ];
 
+// The tabs the sidebar actually lists. ALL_TABS is wider: "Services" and
+// "Storage" exist and render but have no nav entry, so anything that routes the
+// operator somewhere must check against this, not ALL_TABS -- landing on a tab
+// with no highlighted nav item and no way back reads as a broken jump.
+export const NAV_TABS: readonly Tab[] = navGroups.flatMap((group) => group.items.map((item) => item.tab));
+
 const COMMUNITY_CONTRIBUTORS_URL = "https://github.com/Red-Blink/dune-awakening-selfhost-docker/graphs/contributors";
 const DUNE_DOCKER_WEBSITE_URL = "https://dunedocker.app/";
 const DUNE_DOCKER_DOCS_URL = "https://docs.dunedocker.app/";
@@ -379,6 +388,10 @@ export function App() {
   const [funcomTokenResult, setFuncomTokenResult] = useState<HomeTaskResult | null>(() => loadPersistedFuncomTokenResult());
   const [homeRunningAction, setHomeRunningAction] = useState<"start" | "stop" | "restart" | "">("");
   const [homeRestartStarted, setHomeRestartStarted] = useState(false);
+  // Lives here, not in HomePanel: status/readiness already survive a tab
+  // switch, and component state would reset the age to zero on every remount --
+  // which is what made every visit to Home flash "Updated 0s ago".
+  const [homeSampledAtMs, setHomeSampledAtMs] = useState(0);
   const [stackVersionStatus, setStackVersionStatus] = useState<Record<string, string>>({ status: "Checking", current: "", latest: "" });
   const stackActionStartedAt = useRef(0);
   const stackActionReadyPolls = useRef(0);
@@ -555,23 +568,31 @@ export function App() {
     try { await action(); } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
   }
 
-  const loadStackStatus = useCallback(async () => {
+  // `fresh` is forwarded to the API to bypass its status cache. The in-flight
+  // dedupe below is deliberately not keyed on it: a cached read already in
+  // flight is fine to share, and the restart lifecycle re-polls on its own
+  // interval anyway.
+  const loadStackStatus = useCallback(async (options: { fresh?: boolean } = {}) => {
     if (stackStatusLoadRef.current) return stackStatusLoadRef.current;
     stackStatusLoadRef.current = (async () => {
       setError("");
       const [nextStatus, nextReadiness] = await Promise.allSettled([
-        withTimeout(serverApi.status(), 90000, "Server status check timed out."),
-        withTimeout(serverApi.readiness(), 90000, "Readiness check timed out.")
+        withTimeout(serverApi.status({ fresh: options.fresh }), 90000, "Server status check timed out."),
+        withTimeout(serverApi.readiness({ fresh: options.fresh }), 90000, "Readiness check timed out.")
       ]);
-      const result: HomeLoadResult = { statusLoaded: false, readinessLoaded: false, statusError: "", readinessError: "", statusText: "", readinessText: "" };
+      const result: HomeLoadResult = { statusLoaded: false, readinessLoaded: false, statusError: "", readinessError: "", statusText: "", readinessText: "", sampledAtMs: 0 };
       if (nextStatus.status === "fulfilled") {
         setStatus(nextStatus.value.stdout);
         result.statusText = nextStatus.value.stdout;
         result.statusLoaded = true;
+        // The server stamps when the command actually ran. Fall back to now for
+        // an older API that does not send it, so the age is never negative.
+        result.sampledAtMs = Date.parse(nextStatus.value.sampledAt || "") || Date.now();
       } else {
         result.statusError = nextStatus.reason instanceof Error ? nextStatus.reason.message : String(nextStatus.reason);
       }
       if (nextReadiness.status === "fulfilled") {
+        if (!result.sampledAtMs) result.sampledAtMs = Date.parse(nextReadiness.value.sampledAt || "") || Date.now();
         const readinessText = nextReadiness.value.stdout || nextReadiness.value.stderr || "";
         result.readinessText = readinessText;
         setReadiness(readinessText);
@@ -809,7 +830,7 @@ export function App() {
         </header>
         {error && <div className="error-banner">{error}</div>}
         {redeploySetupOpen && <SetupWizard initialStep={setupJump.step} jumpNonce={setupJump.nonce} mode="redeploy" onSetupComplete={async () => setSetupState(await setupApi.state())} />}
-        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} restartGate={restartGateChoice} />}
+        {!redeploySetupOpen && tab === "Home" && <HomePanel status={status} readiness={readiness} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onLoad={loadStackStatus} confirmAction={confirmDialog} restartGate={restartGateChoice} sampledAtMs={homeSampledAtMs} setSampledAtMs={setHomeSampledAtMs} onNavigate={(nextTab) => { setRedeploySetupOpen(false); setSelectedPinnedAddonId(""); setTab(nextTab); }} />}
         {!redeploySetupOpen && tab === "Server Control" && <ServerPanel setTask={setTask} setStatus={setStatus} status={status} setReadiness={setReadiness} setPorts={setPorts} setDoctor={setDoctor} ports={ports} readiness={readiness} doctor={doctor} taskResult={homeTaskResult} setTaskResult={setHomeTaskResult} funcomTokenResult={funcomTokenResult} setFuncomTokenResult={setFuncomTokenResult} runningAction={homeRunningAction} restartStartObserved={homeRestartStarted} setRunningAction={setHomeRunningAction} onError={setError} confirmAction={confirmDialog} restartGate={restartGateChoice} onRedeploy={() => {
           setSetupJump((current) => ({ step: 0, nonce: current.nonce + 1 }));
           setSelectedPinnedAddonId("");
