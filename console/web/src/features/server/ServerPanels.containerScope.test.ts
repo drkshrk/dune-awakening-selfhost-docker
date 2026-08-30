@@ -125,3 +125,85 @@ describe("getHomeServerState with the real ten-row container table", () => {
     expect(state.running).toBe(true);
   });
 });
+
+// The rows are the visible half; the hero reads from the same summary, and
+// scoping the Containers row moves it too. summarizeContainers was the only
+// thing setting isHomeCoreReadyWithReview, so silencing a false review changes
+// which branch the Overall value comes from. These pin the whole card, not just
+// the row -- the earlier tests call the summarizers directly and would not have
+// caught it.
+//
+// Fixture is the real dune2 output (2026-08-30), trimmed to the sections
+// summarizeHomeStatus reads.
+function fullStatus(overall: string, coordinator: string) {
+  return [
+    "=== Dune status ===",
+    `Overall:     ${overall}`,
+    "Title:       SteelHeart",
+    "Population:  0/120",
+    "",
+    "=== Containers ===",
+    "SERVICE                    STATUS",
+    ...BATTLEGROUP.map((name) => `${name.padEnd(26)} Up 15 hours`),
+    `${"dune-coriolis-coordinator".padEnd(26)} ${coordinator}`,
+    `${"dune-orchestrator".padEnd(26)} Up 15 hours`,
+    "",
+    "=== Listeners ===",
+    "CHECK                    PORT     STATUS",
+    "Postgres localhost       15432/tcp OK",
+    "Director                 11717/tcp OK",
+    "",
+    "=== Database ===",
+    "World partitions: 32",
+    "",
+    "=== Game servers ===",
+    "MAP          STATE        UPTIME",
+    "Survival_1   READY        Up 15 hours",
+    "Overmap      READY        Up 15 hours",
+    "",
+    "=== Funcom/FLS summary ===",
+    "Director heartbeat:       OK",
+    "Population declaration:   OK",
+    "Max capacity declaration: OK",
+    "Gateway DB monitoring:    OK",
+    ""
+  ].join("\n");
+}
+
+function card(status: string, readiness: string) {
+  const summary = summarizeHomeStatus(status, readiness, "", false);
+  const overall = summary.identity.find((item) => item.label === "Overall");
+  return [
+    `Overall ${overall?.value}/${overall?.status}`,
+    ...summary.health.map((item) => `${item.label} ${item.value}/${item.status}`)
+  ].join(" | ");
+}
+
+describe("Home card with the coordinator switched off", () => {
+  // Asserting equality rather than exact wording: the invariant is that turning
+  // an optional service off changes nothing an operator sees, and that survives
+  // future rewording of the labels.
+  it("renders exactly as it does with the coordinator running, once ready", () => {
+    const readiness = "READY: all checks passed";
+    expect(card(fullStatus("READY", "missing"), readiness))
+      .toBe(card(fullStatus("READY", "Up 15 hours"), readiness));
+  });
+
+  // The warm-up window, before ready.sh reaches "READY:" -- readyOverride is not
+  // masking here, so this is where the difference used to show.
+  it("renders the same during warm-up, when readyOverride is not masking", () => {
+    const readiness = "=== Container checks ===\nWARN container dune-director\nNOT READY: still starting";
+    expect(card(fullStatus("READY", "missing"), readiness))
+      .toBe(card(fullStatus("READY", "Up 15 hours"), readiness));
+  });
+
+  // Both of the above depend on status.sh reporting READY rather than ISSUE for
+  // a deliberately-disabled coordinator, which is the backend half of this fix
+  // (runtime/scripts/container-issue-scan.sh). Without it Overall arrives as
+  // ISSUE and the card reads "Starting" on a fully-running battlegroup.
+  it("reads OK, not Starting, on a fully-running battlegroup", () => {
+    const readiness = "=== Container checks ===\nWARN container dune-director\nNOT READY: still starting";
+    expect(card(fullStatus("READY", "missing"), readiness)).toContain("Overall OK/Ready");
+    expect(card(fullStatus("READY", "missing"), readiness)).not.toContain("Starting");
+  });
+});
