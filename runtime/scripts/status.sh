@@ -11,6 +11,7 @@ source runtime/scripts/runtime-env.sh
 source runtime/scripts/fls-signals.sh
 source runtime/scripts/farm-readiness.sh
 source runtime/scripts/container-issue-scan.sh
+source runtime/scripts/game-server-roster.sh
 
 issue=0
 warming=0
@@ -195,7 +196,9 @@ map_state() {
     return
   fi
 
-  logs="$(docker logs "$container" 2>&1 || true)"
+  # Bounded: crash markers land at the end of the log, and an unbounded read
+  # across every always-on map is the single largest cost in this section.
+  logs="$(docker logs --tail "${2:-6000}" "$container" 2>&1 || true)"
 
   if grep -Eiq 'fatal error|segmentation fault|sigsegv|assertion failed|unhandled exception|core dumped|panic:' <<< "$logs"; then
     issue=1
@@ -204,6 +207,91 @@ map_state() {
     warming=1
     echo "WARMING"
   fi
+}
+
+# One snapshot of every container, taken before the game-server rows are built.
+# container_status() costs two or three docker calls per row, and it can return
+# an EMPTY string when a container stops between its two reads -- an empty
+# UPTIME column makes the row fail the consumers' row regex and vanish from the
+# console entirely.
+container_state_snapshot=""
+
+load_container_state_snapshot() {
+  container_state_snapshot="$(docker ps -a --format '{{.Names}}|{{.State}}|{{.Status}}' 2>/dev/null || true)"
+}
+
+snapshot_uptime_for() {
+  local name="$1" row status
+  row="$(printf '%s\n' "$container_state_snapshot" | awk -F '|' -v n="$name" '$1 == n {print; exit}')"
+  if [ -z "$row" ]; then
+    printf 'missing\n'
+    return 0
+  fi
+  status="$(printf '%s' "$row" | cut -d '|' -f3-)"
+  printf '%s\n' "${status:-unknown}"
+}
+
+# State for one expected map server.
+#
+# A configured always-on map whose container does not exist yet is usually
+# queued rather than broken: the autoscaler reconciles always-on maps
+# continuously and brings them up only a few at a time. Reporting NOT RUNNING
+# for those would drive Overall: ISSUE through every clean boot, so a pending
+# spawn reads WAIT, which summarizeGameServers already treats as warming.
+# NOT RUNNING is reserved for a container that exists but is not running, or
+# one that is absent with nothing running to create it.
+game_server_state_for() {
+  local container="$1" uptime="$2"
+
+  # Absence is taken from the snapshot rather than a per-container docker
+  # inspect: map_state's is_running already does its own inspect, so probing
+  # here too cost two extra docker calls for every expected map.
+  if [ "$uptime" = "missing" ]; then
+    if [ "${autoscaler_running:-0}" = "1" ]; then
+      printf 'WAIT\n'
+    else
+      printf 'NOT RUNNING\n'
+    fi
+    return 0
+  fi
+
+  map_state "$container"
+}
+
+render_game_server_rows() {
+  local label map pid container ready state uptime rows survival_uptime overmap_uptime
+
+  rows="$(
+    while IFS='|' read -r label map pid container ready; do
+      [ -n "$label" ] || continue
+      uptime="$(snapshot_uptime_for "$container")"
+      state="$(game_server_state_for "$container" "$uptime")"
+      # summarizeGameServers scans the WHOLE row for MISSING, so leaving the
+      # uptime as "missing" on a queued map would raise Needs Review anyway and
+      # defeat the point of WAIT.
+      if [ "$state" = "WAIT" ]; then
+        uptime="pending"
+      fi
+      printf '%-24s %-13s %s\n' "$label" "$state" "${uptime:-unknown}"
+    done <<INNER
+$(game_server_expected_roster "$game_server_always_on" "$game_server_partitions")
+INNER
+  )"
+
+  # The invariant: never emit fewer rows than the two hardcoded ones this
+  # section used to have. An empty roster means the partition roster could not
+  # be read (Postgres down), not that there are no map servers.
+  if [ -z "$rows" ]; then
+    survival_uptime="$(snapshot_uptime_for dune-server-survival-1)"
+    overmap_uptime="$(snapshot_uptime_for dune-server-overmap)"
+    rows="$(
+      printf '%-24s %-13s %s\n' \
+        Survival_1 "$(game_server_state_for dune-server-survival-1 "$survival_uptime")" "$survival_uptime" \
+        Overmap "$(game_server_state_for dune-server-overmap "$overmap_uptime")" "$overmap_uptime"
+    )"
+  fi
+
+  printf '%s\n' "$rows"
 }
 
 count_rmq_prefix() {
@@ -405,8 +493,46 @@ else
   issue=1
 fi
 
-survival_state="$(map_state dune-server-survival-1 'Server farm is READY .*partition 1')"
-overmap_state="$(map_state dune-server-overmap 'Server farm is READY .*partition 2')"
+# Expected map servers come from CONFIGURATION, never from docker: an always-on
+# map whose container is missing has to be reported, not quietly omitted.
+#
+# Three subprocesses total, independent of how many maps are configured.
+game_server_always_on=""
+game_server_concurrency=""
+game_server_partitions=""
+game_server_roster_unavailable=0
+
+game_server_roster_raw="$(runtime/scripts/map-modes.sh always-on-maps 2>/dev/null || true)"
+game_server_concurrency="$(printf '%s\n' "$game_server_roster_raw" | awk '$1 == "concurrency" { print $2; exit }')"
+game_server_always_on="$(printf '%s\n' "$game_server_roster_raw" | awk '$1 == "map" { print $2 }')"
+
+# Protected maps are deliberately NOT excluded here. map-modes.sh's own listing
+# filters them out, and copying that would drop Survival_1's second partition --
+# the very server the two hardcoded rows used to hide.
+if is_running dune-postgres; then
+  game_server_partitions="$(docker exec dune-postgres psql -U dune -d dune -At -F '|' -c "
+    select
+      wp.map,
+      wp.partition_id,
+      case when coalesce(fs.ready, false) and coalesce(fs.alive, false) then 't' else 'f' end
+    from dune.world_partition wp
+    left join dune.farm_state fs on fs.server_id = wp.server_id
+    where coalesce(wp.blocked, false) = false
+      and coalesce(wp.map, '') <> ''
+    order by wp.map, wp.partition_id;
+  " 2>/dev/null || true)"
+fi
+if [ -z "$game_server_partitions" ]; then
+  game_server_roster_unavailable=1
+fi
+
+autoscaler_running=0
+if [ "$(autoscaler_state)" = "RUNNING" ]; then
+  autoscaler_running=1
+fi
+
+load_container_state_snapshot
+game_server_rows="$(render_game_server_rows)"
 
 active="$(latest_number_from_director_logs 'BattlegroupCurrentActive' || true)"
 database_active=""
@@ -573,10 +699,15 @@ do
   [ "$listener_state" = "OK" ] || issue=1
 done
 
-case "$survival_state:$overmap_state" in
-  *ERROR*|*NOT\ RUNNING*) issue=1 ;;
-  *WARMING*) warming=1 ;;
-esac
+# map_state sets issue/warming itself, but it runs inside a command
+# substitution while the rows are rendered, so those assignments die with the
+# subshell -- the same trap documented in container-issue-scan.sh. Roll the
+# finished rows up here instead, keeping ERROR ahead of WARMING.
+if game_server_rows_have_issue "$game_server_rows"; then
+  issue=1
+elif game_server_rows_have_warming "$game_server_rows"; then
+  warming=1
+fi
 
 [ "$heartbeat_state" = "OK" ] || warming=1
 [ "$population_state" = "OK" ] || warming=1
@@ -627,9 +758,13 @@ echo "World partitions: ${partition_count:-unknown}"
 
 echo
 echo "=== Game servers ==="
-printf "%-12s %-12s %s\n" "MAP" "STATE" "UPTIME"
-printf "%-12s %-12s %s\n" "Survival_1" "$survival_state" "$(container_status dune-server-survival-1)"
-printf "%-12s %-12s %s\n" "Overmap" "$overmap_state" "$(container_status dune-server-overmap)"
+printf "%-24s %-13s %s\n" "MAP" "STATE" "UPTIME"
+printf '%s\n' "$game_server_rows"
+if [ "$game_server_roster_unavailable" = "1" ]; then
+  echo "Note: map roster unavailable (dune-postgres not running); showing the core maps only."
+else
+  echo "Note: $(printf '%s\n' "$game_server_rows" | grep -c .) always-on map servers expected, starting ${game_server_concurrency:-1} at a time."
+fi
 echo
 echo "Note: after a sietch becomes READY, it can still take a bit of time to show up again in the in-game server browser."
 
