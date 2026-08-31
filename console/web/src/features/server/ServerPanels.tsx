@@ -1700,8 +1700,15 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
     fls: preferKnownHomeHealth(summarizeFls(status), summarizeReadinessFls(readiness))
   };
   const rawGames = raw.games;
+  // ready.sh reports READY off the core containers and the two protected maps
+  // only -- it has no notion of the wider always-on roster. So on a host with
+  // more always-on maps it says READY while several are still coming up, and
+  // believing it left the hero reading "Ready" beside "Game servers 2 of 7".
+  // A readiness all-clear is not allowed to override the roster.
+  const rosterWarming = /^Warming$/i.test(rawGames.label);
+  const rosterIncomplete = rosterWarming || /^Needs Review$/i.test(rawGames.label);
   const coreReadyWithReview = !runningAction && isHomeCoreReadyWithReview(status, readiness, raw);
-  const isStarting = runningAction === "start" || runningAction === "restart" || restartSuccessAwaitingFreshStatus || (bootStarting && !coreReadyWithReview);
+  const isStarting = runningAction === "start" || runningAction === "restart" || restartSuccessAwaitingFreshStatus || rosterWarming || (bootStarting && !coreReadyWithReview);
   const restartSuccessObserved = taskResult?.status === "succeeded" && /restart/i.test(taskResult.title || "");
   const restartStartObserved = restartStarted || restartSuccessAwaitingFreshStatus || restartSuccessObserved;
   const transitionOverall = runningAction === "restart"
@@ -1714,8 +1721,8 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
   // Believing readiness there left the heading and every row reading Ready
   // under a "Battlegroup Stopped" banner. A stop we observed, or an Overall:
   // STOPPED, beats a stale all-clear.
-  const readyOverride = readinessReady && !attentionHealth ? { label: "OK", status: "Ready", detail: "" } : null;
-  const overall = readinessReady && !runningAction && !attentionHealth ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : warmingOverall || liveOverall;
+  const readyOverride = readinessReady && !attentionHealth && !rosterIncomplete ? { label: "OK", status: "Ready", detail: "" } : null;
+  const overall = readinessReady && !runningAction && !attentionHealth && !rosterIncomplete ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : warmingOverall || liveOverall;
   const transitionAction: "start" | "stop" | "restart" | "" = restartStartObserved
     ? "start"
     : runningAction === "restart" ? ""
@@ -2327,14 +2334,15 @@ function summarizeDatabase(text: string) {
   if (!value) return { label: "Unknown", status: "Unknown", detail: "" };
   const count = Number(value);
   // This row owns dune-postgres outright, so it reports the container and its
-  // port as well as the world data. Deliberately no detail: one service needs
-  // no x-of-y, and the partition count is a property of the world rather than a
-  // measure of how much of the subsystem is ready.
+  // port as well as the world data. It carries a count like every other row --
+  // one service, so "1 of 1" -- rather than the partition figure, which is a
+  // property of the world and not a measure of readiness.
   const { up, total } = serviceContainerState(text, DATABASE_CONTAINERS);
+  const detail = `${up} of ${total}`;
   const portsOk = listenerPortsOk(listenerStates(text), ownedListenerKeys().database);
   const ready = Number.isFinite(count) && count > 0 && up === total && portsOk;
-  if (ready) return { label: "OK", status: "Ready", detail: "" };
-  return { label: "Needs Review", status: "WARN", detail: "" };
+  if (ready) return { label: "OK", status: "Ready", detail };
+  return { label: "Needs Review", status: "WARN", detail };
 }
 
 // The map rows of the Game servers section: the header and any Note: line are
