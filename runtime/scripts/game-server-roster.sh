@@ -135,6 +135,48 @@ $sorted
 EOF
 }
 
+# The eight battlegroup services, as status.sh prints them in its container
+# table. dune-orchestrator and dune-coriolis-coordinator are excluded for the
+# same reasons as everywhere else: control plane, and optional.
+GAME_SERVER_CORE_CONTAINERS="dune-postgres dune-rmq-admin dune-rmq-game dune-text-router dune-director dune-server-gateway dune-server-survival-1 dune-server-overmap"
+
+# Is the battlegroup fully up? Reads the container table that has already been
+# built rather than asking docker again: the first version called is_running per
+# service, and each of those is a docker inspect -- eight of them added ~1.3s to
+# every status read.
+#
+# A row counts as up only if its status carries no down word, so a paused
+# container does not read as running.
+game_server_core_stack_up() {
+  printf '%s\n' "$1" | awk -v names="$GAME_SERVER_CORE_CONTAINERS" '
+    BEGIN { total = split(names, want, " "); for (i = 1; i <= total; i++) need[want[i]] = 1 }
+    {
+      line = tolower($0)
+      if (($1 in need) && line !~ /missing|stopped|exited|dead|paused|not running/) up[$1] = 1
+    }
+    END { seen = 0; for (k in up) seen++; print (seen == total) ? 1 : 0 }
+  '
+}
+
+# State for an expected map server whose container does not exist.
+#
+# Pending, not faulty, while the battlegroup itself is still coming up: nothing
+# has had the chance to spawn it yet, and reporting NOT RUNNING there put
+# Overall: ISSUE through every cold start. Once the core stack is fully up, an
+# absent always-on map IS a fault -- including when the autoscaler is the thing
+# that is down, which is why this does not test the autoscaler.
+#
+# Gating on the autoscaler was the first attempt and never fired once: it starts
+# roughly 100 seconds into a cold start, long after the roster is first
+# reported, so every unspawned map still read NOT RUNNING.
+game_server_absent_state() {
+  if [ "${1:-0}" = "1" ]; then
+    printf 'NOT RUNNING\n'
+  else
+    printf 'WAIT\n'
+  fi
+}
+
 # Roll-up over the RENDERED section body.
 #
 # status.sh builds the rows inside a command substitution, so any issue=/warming=

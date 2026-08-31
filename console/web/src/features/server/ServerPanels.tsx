@@ -1726,28 +1726,59 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
     fls: preferKnownHomeHealth(summarizeFls(status), summarizeReadinessFls(readiness))
   };
   const rawGames = raw.games;
+  // ready.sh reports READY off the core containers and the two protected maps
+  // only -- it has no notion of the wider always-on roster. So on a host with
+  // more always-on maps it says READY while several are still coming up, and
+  // believing it left the hero reading "Ready" beside "Game servers 2 of 7".
+  // A readiness all-clear is not allowed to override the roster.
+  const rosterWarming = isGameServersComingUp(rawGames.label);
+  const rosterIncomplete = rosterWarming || /^Needs Review$/i.test(rawGames.label);
   const coreReadyWithReview = !runningAction && isHomeCoreReadyWithReview(status, readiness, raw);
-  const isStarting = runningAction === "start" || runningAction === "restart" || restartSuccessAwaitingFreshStatus || (bootStarting && !coreReadyWithReview);
+  const isStarting = runningAction === "start" || runningAction === "restart" || restartSuccessAwaitingFreshStatus || rosterWarming || (bootStarting && !coreReadyWithReview);
   const restartSuccessObserved = taskResult?.status === "succeeded" && /restart/i.test(taskResult.title || "");
   const restartStartObserved = restartStarted || restartSuccessAwaitingFreshStatus || restartSuccessObserved;
   const transitionOverall = runningAction === "restart"
     ? restartStartObserved ? "Starting" : "Restarting Battlegroup"
     : runningAction === "stop" ? "Stopping" : isStarting ? "Starting" : "";
-  const warmingOverall = /^Warming$/i.test(rawGames.label) ? "Warming" : "";
+  const warmingOverall = isGameServersComingUp(rawGames.label) ? rawGames.label : "";
   const attentionHealth = !isStarting && !restartSuccessAwaitingFreshStatus && (serverState.stopped || actionStopped || actionFailed) ? attentionHomeHealthCard(serverState.stopped || actionStopped ? "stopped" : "failed") : null;
   // status and readiness are two separate reads, so they can disagree: a stop
   // updates status to STOPPED while readiness is still the previous "READY:".
   // Believing readiness there left the heading and every row reading Ready
   // under a "Battlegroup Stopped" banner. A stop we observed, or an Overall:
   // STOPPED, beats a stale all-clear.
-  const readyOverride = readinessReady && !attentionHealth ? { label: "OK", status: "Ready", detail: "" } : null;
-  const overall = readinessReady && !runningAction && !attentionHealth ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : warmingOverall || liveOverall;
+  const readinessAllClear = readinessReady && !attentionHealth && !rosterIncomplete;
+  // rosterIncomplete appears twice on purpose. Blocking the readiness
+  // all-clear at the front is not enough: liveOverall is "OK" whenever
+  // readiness reports READY, so a battlegroup with maps genuinely down fell
+  // through to it and the hero read OK beside a "Needs Review" row.
+  const overall = readinessReady && !runningAction && !attentionHealth && !rosterIncomplete ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : rosterIncomplete ? "Needs Review" : warmingOverall || liveOverall;
   const transitionAction: "start" | "stop" | "restart" | "" = restartStartObserved
     ? "start"
     : runningAction === "restart" ? ""
-      : runningAction || (restartSuccessAwaitingFreshStatus || (bootStarting && !coreReadyWithReview) ? "start" : "");
+      : runningAction || (restartSuccessAwaitingFreshStatus || rosterWarming || (bootStarting && !coreReadyWithReview) ? "start" : "");
   const healthRows: HomeHealthRow[] = HOME_HEALTH_ROWS.map(({ id, label }) => {
     const rawCard = raw[id];
+    // Applied per row, and only to a row that is not itself reporting a fault.
+    //
+    // This override only ever does anything when the two reads DISAGREE: when
+    // they agree the row is already OK. So it is really the rule "when status
+    // and readiness disagree, believe readiness" -- and every guard above it was
+    // carved out after a case where that was wrong (an observed stop, an
+    // incomplete map roster). A container or listener fault that status reports
+    // and readiness does not was the third: `ready.sh` checks the same
+    // containers and TCP ports, so the two are contradicting each other about
+    // the same fact, and one of the reads is simply stale.
+    //
+    // Showing the fault is the fail-safe direction. At worst it is one poll of
+    // amber that clears itself; hiding it makes a real outage read green.
+    // Filling in a reading status could not produce at all (Unknown) is still
+    // worth doing, which is what this override is left to do.
+    //
+    // Nothing hangs on it: isHomeActionComplete is satisfied by readinessReady
+    // alone, so a row left at WARN cannot stall a start or a restart, and mid
+    // transition transitionHomeHealthCard below still reports "Getting Ready".
+    const readyOverride = readinessAllClear && !homeCardReportsFault(rawCard) ? HOME_READY_CARD : null;
     const shown = id === "fls" && funcomTokenAuthFailure
       ? { label: "Token Mismatch Detected", status: "FAILED", detail: "" }
       : readyOverride || transitionHomeHealthCard(rawCard, transitionAction) || attentionHealth || rawCard;
@@ -1787,7 +1818,7 @@ export function homeNeedsWarmRefresh(status: string, readiness: string) {
   const gameServerText = sectionLines(status, "Game servers").join("\n");
   const warming = /Overall:\s*(WARMING|WAIT|STARTING)/i.test(status) ||
     /\b(WARMING|WAIT|STARTING)\b/i.test(gameServerText) ||
-    /^(Warming|Starting)$/i.test(String(games?.value || "")) ||
+    isGameServersComingUp(games?.value) || /^Starting$/i.test(String(games?.value || "")) ||
     isHomeBootStarting(status, readiness);
   return warming && (!overallOk || !gamesOk);
 }
@@ -1917,7 +1948,7 @@ export function isHomeActionComplete(status: string, readiness: string, elapsedM
   const nonGameHealthOk = summary.health.filter((item) => item.id !== "games").every((item) =>
     /^OK$/i.test(String(item.value || "")) && /^Ready$/i.test(String(item.status || ""))
   );
-  const gamesWarming = /^Warming$/i.test(String(games?.value || ""));
+  const gamesWarming = isGameServersComingUp(games?.value);
   // Inside the grace window a warming map blocks completion outright. None of
   // the signals below can stand in for it: isHomeReadinessOperational only
   // proves the map containers are up, not that the maps are playable.
@@ -1925,7 +1956,7 @@ export function isHomeActionComplete(status: string, readiness: string, elapsedM
   // Read the raw summariser rather than gamesWarming above: summarizeHomeStatus
   // rewrites every health row to OK once readiness reports READY (readyOverride),
   // so the view model reports a warming map as OK and the gate would never fire.
-  const rawGamesWarming = /^Warming$/i.test(String(summarizeGameServers(status).label || ""));
+  const rawGamesWarming = isGameServersComingUp(summarizeGameServers(status).label);
   if (rawGamesWarming && elapsedMs < gameServerWarmupGraceMs(status)) return false;
   return statusReady || readinessReady || (healthOk || (gamesWarming && nonGameHealthOk));
 }
@@ -2106,8 +2137,16 @@ function attentionHomeHealthCard(reason: "stopped" | "failed") {
 function transitionHomeHealthCard(item: { label: string; status: string; detail: string }, runningAction: "start" | "stop" | "restart" | "") {
   if (runningAction !== "start" && runningAction !== "restart") return null;
   if (/^OK$/i.test(item.label) && /^Ready$/i.test(item.status)) return item;
-  if (/^Warming$/i.test(item.label)) return item;
+  if (isGameServersComingUp(item.label)) return item;
   return { label: "Getting Ready", status: "Starting", detail: "" };
+}
+
+const HOME_READY_CARD = { label: "OK", status: "Ready", detail: "" };
+
+// A row that positively reports a fault. Unknown is deliberately not one: it
+// means "no reading", which is exactly what a readiness all-clear may fill in.
+function homeCardReportsFault(card: { status: string }) {
+  return /^(WARN|FAILED)$/i.test(String(card.status || ""));
 }
 
 function preferKnownHomeHealth(primary: { label: string; status: string; detail: string }, fallback: { label: string; status: string; detail: string }) {
@@ -2353,14 +2392,15 @@ function summarizeDatabase(text: string) {
   if (!value) return { label: "Unknown", status: "Unknown", detail: "" };
   const count = Number(value);
   // This row owns dune-postgres outright, so it reports the container and its
-  // port as well as the world data. Deliberately no detail: one service needs
-  // no x-of-y, and the partition count is a property of the world rather than a
-  // measure of how much of the subsystem is ready.
+  // port as well as the world data. It carries a count like every other row --
+  // one service, so "1 of 1" -- rather than the partition figure, which is a
+  // property of the world and not a measure of readiness.
   const { up, total } = serviceContainerState(text, DATABASE_CONTAINERS);
+  const detail = `${up} of ${total}`;
   const portsOk = listenerPortsOk(listenerStates(text), ownedListenerKeys().database);
   const ready = Number.isFinite(count) && count > 0 && up === total && portsOk;
-  if (ready) return { label: "OK", status: "Ready", detail: "" };
-  return { label: "Needs Review", status: "WARN", detail: "" };
+  if (ready) return { label: "OK", status: "Ready", detail };
+  return { label: "Needs Review", status: "WARN", detail };
 }
 
 // The map rows of the Game servers section: the header and any Note: line are
@@ -2370,14 +2410,32 @@ function gameServerRows(text: string) {
   return sectionLines(text, "Game servers").filter((line) => !/^MAP\s+STATE\s+UPTIME/i.test(line) && !/^Note:/i.test(line));
 }
 
+// "Warming" and "Waiting" both mean the maps are on their way up. Every caller
+// that cares about that distinction-free question goes through here: a bare
+// /^Warming$/i check would silently stop matching the moment a start is early
+// enough to report Waiting.
+export function isGameServersComingUp(label: unknown) {
+  return /^(Warming|Waiting)$/i.test(String(label || ""));
+}
+
 function summarizeGameServers(text: string) {
   const lines = gameServerRows(text);
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
   const bad = lines.find((line) => /\b(ERROR|NOT RUNNING|MISSING)\b/i.test(line));
-  const wait = lines.find((line) => /\b(WARMING|WAIT)\b/i.test(line));
+  // WARMING means the map server is up and loading. WAIT means it has not been
+  // spawned yet -- world servers start after Postgres, RabbitMQ, the text
+  // router and the director, so early in a start they are waiting on their
+  // dependencies rather than warming. Reporting both as "Warming" overstated
+  // how far along a start was.
+  const warming = lines.find((line) => /\bWARMING\b/i.test(line));
+  const waiting = lines.find((line) => /\bWAIT\b/i.test(line));
   const detail = `${lines.filter((line) => /\bREADY\b/i.test(line)).length} of ${lines.length}`;
   if (bad) return { label: "Needs Review", status: "WARN", detail };
-  if (wait) return { label: "Warming", status: "Info", detail };
+  // Starting, not Info: this is a transitional state and the hero says
+  // "Starting" at the same moment. Info read as a neutral aside for something
+  // the operator is actively waiting on.
+  if (warming) return { label: "Warming", status: "Starting", detail };
+  if (waiting) return { label: "Waiting", status: "Starting", detail };
   // This row owns every listener port that is not one of the six TCP service
   // ports -- all the map client and S2S ports, fixed and dynamic alike. Without
   // this they would be unowned once the flat Listeners row went away.
