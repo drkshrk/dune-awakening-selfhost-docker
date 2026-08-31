@@ -1675,7 +1675,7 @@ function firstArray(...values: unknown[]) {
   return values.find((value) => Array.isArray(value)) as unknown[] | undefined;
 }
 
-function summarizeHomeStatus(status: string, readiness: string, readinessWarning: string, loading: boolean, runningAction: "start" | "stop" | "restart" | "" = "", taskResult: HomeTaskResult | null = null, restartStarted = false, funcomTokenAuthFailure = false) {
+export function summarizeHomeStatus(status: string, readiness: string, readinessWarning: string, loading: boolean, runningAction: "start" | "stop" | "restart" | "" = "", taskResult: HomeTaskResult | null = null, restartStarted = false, funcomTokenAuthFailure = false) {
   void readinessWarning;
   const serverState = getHomeServerState(status, readiness);
   const bootStarting = isHomeBootStarting(status, readiness);
@@ -1870,26 +1870,86 @@ function isHomeReadinessOperational(readiness: string) {
   return requiredSignals.every((pattern) => pattern.test(readiness));
 }
 
+// status.sh prints ten container rows, but only these eight are battlegroup
+// services. dune-orchestrator is the control plane -- it creates and removes the
+// others, so it is always Up, including with the battlegroup stopped -- and
+// dune-coriolis-coordinator is optional (DUNE_CORIOLIS_COORDINATOR_ENABLED=0
+// deletes it, and start-all treats a failed start as non-fatal). Scanning the
+// printed rows instead of this list makes "all down" unreachable, "any up"
+// always true, and reports a disabled coordinator as a container problem.
+const BATTLEGROUP_CONTAINERS = [
+  "dune-postgres",
+  "dune-rmq-admin",
+  "dune-rmq-game",
+  "dune-text-router",
+  "dune-director",
+  "dune-server-gateway",
+  "dune-server-survival-1",
+  "dune-server-overmap"
+];
+
+// docker's own status strings reach these rows verbatim, so a paused container
+// arrives as "Up 3 hours (Paused)" -- it matches \bUp\b and would otherwise read
+// as healthy. status.sh itself only ever emits a docker status, the literal
+// "stopped", or the literal "missing"; the rest are kept for readiness text and
+// any other producer of a container table.
+const CONTAINER_DOWN = /\b(missing|stopped|exited|dead|paused|not running)\b/i;
+
+// A completed stop, which is a different question from "is this container
+// down". A paused container is down but has not stopped, so the restart
+// lifecycle must not read it as a finished stop.
+const CONTAINER_STOPPED = /\b(missing|stopped|exited|dead|not running)\b/i;
+
+// The status table pads columns, so the name is everything before the first gap.
+function containerLineName(line: string) {
+  const trimmed = line.trim();
+  const firstSpace = trimmed.search(/\s/);
+  return firstSpace < 0 ? "" : trimmed.slice(0, firstSpace);
+}
+
+function containerSectionLines(status: string) {
+  return sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
+}
+
+// The single definition of which printed rows belong to the battlegroup, and
+// the only way to ask about their status. Two shapes, deliberately NOT
+// interchangeable -- collapsing either onto the other is a real bug:
+//
+//   rows()          the printed rows for the eight. A name with no printed row
+//                   is simply absent, so the length shrinks. Callers that count
+//                   rows or test emptiness want this.
+//   all() / any()   quantify over the eight *names*. A name with no printed row
+//                   makes all() false, so a truncated or partial table can
+//                   never read as "they are all down" / "they are all up".
+//
+// all() and any() match the status text only, via containerStatusLineHas, so a
+// container's name can never satisfy a status pattern.
+const battlegroup = {
+  rows(status: string) {
+    return containerSectionLines(status).filter((line) =>
+      BATTLEGROUP_CONTAINERS.includes(containerLineName(line).toLowerCase())
+    );
+  },
+  all(status: string, pattern: RegExp) {
+    const lines = containerSectionLines(status);
+    return BATTLEGROUP_CONTAINERS.every((name) =>
+      lines.some((line) => containerStatusLineHas(name, line, pattern))
+    );
+  },
+  any(status: string, pattern: RegExp) {
+    const lines = containerSectionLines(status);
+    return BATTLEGROUP_CONTAINERS.some((name) =>
+      lines.some((line) => containerStatusLineHas(name, line, pattern))
+    );
+  }
+};
+
 export function isHomeStopComplete(status: string, readiness: string) {
   if (getHomeServerState(status, readiness).stopped) return true;
-  const requiredContainers = [
-    "dune-postgres",
-    "dune-rmq-admin",
-    "dune-rmq-game",
-    "dune-text-router",
-    "dune-director",
-    "dune-server-gateway",
-    "dune-server-survival-1",
-    "dune-server-overmap"
-  ];
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  const statusContainersStopped = containerLines.length >= requiredContainers.length && requiredContainers.every((name) =>
-    containerLines.some((line) => containerStatusLineHas(name, line, /\b(missing|stopped|exited|dead|not running)\b/i))
-  );
-  if (statusContainersStopped) return true;
+  if (battlegroup.all(status, CONTAINER_STOPPED)) return true;
 
   const text = `${status}\n${readiness}`;
-  const readinessContainersStopped = requiredContainers.every((name) =>
+  const readinessContainersStopped = BATTLEGROUP_CONTAINERS.every((name) =>
     textHasContainerReadiness(text, "FAIL", name)
   );
   const allListenersMissing = sectionLines(status, "Listeners").filter((line) => !/^CHECK\s+PORT\s+STATUS/i.test(line)).length >= 6 &&
@@ -1900,60 +1960,21 @@ export function isHomeStopComplete(status: string, readiness: string) {
 
 function hasRestartStopSignal(status: string, readiness: string) {
   const text = `${status}\n${readiness}`;
-  const requiredContainers = [
-    "dune-postgres",
-    "dune-rmq-admin",
-    "dune-rmq-game",
-    "dune-text-router",
-    "dune-director",
-    "dune-server-gateway",
-    "dune-server-survival-1",
-    "dune-server-overmap"
-  ];
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  return requiredContainers.some((name) =>
-    containerLines.some((line) => containerStatusLineHas(name, line, /\b(missing|stopped|exited|dead|not running)\b/i)) ||
-    textHasContainerReadiness(text, "FAIL", name)
-  );
+  return battlegroup.any(status, CONTAINER_STOPPED) ||
+    BATTLEGROUP_CONTAINERS.some((name) => textHasContainerReadiness(text, "FAIL", name));
 }
 
 function hasRestartStartSignal(status: string, readiness: string) {
   const text = `${status}\n${readiness}`;
-  const requiredContainers = [
-    "dune-postgres",
-    "dune-rmq-admin",
-    "dune-rmq-game",
-    "dune-text-router",
-    "dune-director",
-    "dune-server-gateway",
-    "dune-server-survival-1",
-    "dune-server-overmap"
-  ];
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  return requiredContainers.some((name) =>
-    containerLines.some((line) => containerStatusLineHas(name, line, /\bUp\b/i)) ||
-    textHasContainerReadiness(text, "OK", name)
-  );
+  return battlegroup.any(status, /\bUp\b/i) ||
+    BATTLEGROUP_CONTAINERS.some((name) => textHasContainerReadiness(text, "OK", name));
 }
 
 function isHomeStartComplete(status: string, readiness: string) {
   const serverState = getHomeServerState(status, readiness);
   if (serverState.stopped) return false;
 
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  const requiredContainers = [
-    "dune-postgres",
-    "dune-rmq-admin",
-    "dune-rmq-game",
-    "dune-text-router",
-    "dune-director",
-    "dune-server-gateway",
-    "dune-server-survival-1",
-    "dune-server-overmap"
-  ];
-  const containersReady = requiredContainers.every((name) =>
-    containerLines.some((line) => containerStatusLineHas(name, line, /^Up\b/i))
-  );
+  const containersReady = battlegroup.all(status, /^Up\b/i);
 
   const listenerLines = sectionLines(status, "Listeners").filter((line) => !/^CHECK\s+PORT\s+STATUS/i.test(line));
   const listenersReady = listenerLines.length > 0 && !listenerLines.some((line) => /\b(MISSING|FAIL|ERROR)\b/i.test(line));
@@ -1971,11 +1992,10 @@ function isHomeStartComplete(status: string, readiness: string) {
 }
 
 export function containerStatusLineHas(containerName: string, line: string, statusPattern: RegExp) {
+  const name = containerLineName(line);
+  if (!name || name.toLowerCase() !== containerName.toLowerCase()) return false;
   const trimmed = line.trim();
   const firstSpace = trimmed.search(/\s/);
-  if (firstSpace < 0) return false;
-  const name = trimmed.slice(0, firstSpace);
-  if (name.toLowerCase() !== containerName.toLowerCase()) return false;
   // Status output may pad columns with multiple spaces or tabs. Normalize
   // the remainder before applying either anchored or unanchored patterns.
   return statusPattern.test(trimmed.slice(firstSpace + 1).trimStart());
@@ -2017,11 +2037,13 @@ function preferKnownHomeHealth(primary: { label: string; status: string; detail:
   return /^Unknown$/i.test(primary.label) && !/^Unknown$/i.test(fallback.label) ? fallback : primary;
 }
 
-function getHomeServerState(status: string, readiness: string) {
+export function getHomeServerState(status: string, readiness: string) {
   const text = `${status}\n${readiness}`;
   const overall = findLineValue(status, ["overall"]);
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  const allContainersMissing = containerLines.length >= 4 && containerLines.every((line) => /\b(missing|stopped|exited|dead)\b/i.test(line));
+  const containerLines = containerSectionLines(status);
+  // No length guard needed: all() quantifies over the eight names, so a name
+  // with no printed row already makes this false on an empty or partial table.
+  const allContainersMissing = battlegroup.all(status, CONTAINER_DOWN);
   const coreRuntimeContainerUp = containerLines.some((line) =>
     /^(dune-postgres|dune-rmq-admin|dune-rmq-game|dune-text-router|dune-server-survival-1|dune-server-overmap)\s+.*\bUp\b/i.test(line)
   );
@@ -2055,13 +2077,14 @@ function isHomeBootStarting(status: string, readiness: string) {
   if (!text.trim()) return false;
   if (/\b(server|stack)\s+(is\s+)?(stopped|offline)\b/i.test(text) || /\bNo\s+(running\s+)?containers\b/i.test(text)) return false;
   if (/Overall:\s*(READY|STOPPED|OFFLINE)/i.test(status) || /^READY:/m.test(readiness)) return false;
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  const anyContainerUp = containerLines.some((line) => /\bUp\b/i.test(line));
+  const containerLines = containerSectionLines(status);
+  const battlegroupLines = battlegroup.rows(status);
+  const anyContainerUp = battlegroupLines.some((line) => /\bUp\b/i.test(line));
   const coreStartupContainerUp = containerLines.some((line) =>
     /^(dune-postgres|dune-rmq-admin|dune-rmq-game|dune-text-router|dune-server-survival-1|dune-server-overmap)\s+.*\bUp\b/i.test(line)
   );
-  const missingContainers = containerLines.filter((line) => /\b(missing|stopped|exited|dead|not running)\b/i.test(line)).length;
-  if (containerLines.length >= 8 && missingContainers >= 8 && !anyContainerUp) return false;
+  const missingContainers = battlegroupLines.filter((line) => CONTAINER_DOWN.test(line)).length;
+  if (battlegroupLines.length >= 8 && missingContainers >= 8 && !anyContainerUp) return false;
   const listenerLines = sectionLines(status, "Listeners").filter((line) => !/^CHECK\s+PORT\s+STATUS/i.test(line));
   const missingListeners = listenerLines.filter((line) => /\bMISSING\b/i.test(line)).length;
   const gameServersStopped = /Survival_1\s+NOT RUNNING/i.test(text) && /Overmap\s+NOT RUNNING/i.test(text);
@@ -2072,7 +2095,7 @@ function isHomeBootStarting(status: string, readiness: string) {
   const readinessStarting = coreStartupContainerUp &&
     /^\s*(WARN|FAIL)\s+container\s+dune-/im.test(readiness) &&
     !/^\s*OK\s+container\s+dune-server-(survival-1|overmap)\b/im.test(readiness);
-  return coreStartupContainerUp || readinessStarting || (coreStartupContainerUp && containerLines.length > 0 && missingContainers > 0) || (coreStartupContainerUp && listenerLines.length > 0 && missingListeners > 0);
+  return coreStartupContainerUp || readinessStarting || (coreStartupContainerUp && battlegroupLines.length > 0 && missingContainers > 0) || (coreStartupContainerUp && listenerLines.length > 0 && missingListeners > 0);
 }
 
 // Colours nothing on screen: the hero dot reads homeStateDotTone(overall.value).
@@ -2144,10 +2167,13 @@ function conciseTaskMessage(text: string) {
   return line.replace(/^dune\s+\w+\s+failed\s+with\s+exit\s+\d+[:\s-]*/i, "").slice(0, 220);
 }
 
-function summarizeContainers(text: string) {
-  const lines = sectionLines(text, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
+export function summarizeContainers(text: string) {
+  // Scoped to the battlegroup eight: a coordinator that is off by configuration
+  // is not a container problem, and reporting it as one put "Needs Review" on
+  // the row while the other five read OK.
+  const lines = battlegroup.rows(text);
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
-  const bad = lines.find((line) => /\b(missing|stopped|exited|dead)\b/i.test(line));
+  const bad = lines.find((line) => CONTAINER_DOWN.test(line));
   return bad ? { label: "Needs Review", status: "WARN", detail: "" } : { label: "OK", status: "Ready", detail: "" };
 }
 
