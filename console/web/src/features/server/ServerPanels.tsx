@@ -302,17 +302,17 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       if (homeActionRunId.current !== actionRunId) return;
       if (postLoad) applyHomeLoadResult(postLoad);
       const postState = getHomeServerState(postLoad?.statusText || status, postLoad?.readinessText || readiness);
-      const postReady = isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness);
+      const elapsedMs = Date.now() - homeActionStartedAt.current;
+      const postReady = isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness, elapsedMs);
       if (action === "restart") {
         homeRestartLifecycle.current = advanceRestartLifecycle(homeRestartLifecycle.current, postLoad?.statusText || status, postLoad?.readinessText || readiness);
       }
       const restartReady = isRestartLifecycleReady(action, homeRestartLifecycle.current);
-      const elapsedMs = Date.now() - homeActionStartedAt.current;
       if (action === "stop" && isHomeStopComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness)) {
         setTaskResult({ status: "stopped", title: copy.success, details });
       } else if (action === "restart" && restartReady) {
         keepPolling = true;
-        if (isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness)) {
+        if (isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness, elapsedMs)) {
           setTaskResult((current) => preserveTerminalStackResult(current, { status: "succeeded", title: copy.success, details }));
           setHomeAction("");
         }
@@ -1043,11 +1043,11 @@ export function ServerPanel(props: {
         setTaskResult({ status: "stopped", title: copy.success, details });
       } else if (action === "restart" && restartReady) {
         keepPolling = true;
-        if (isHomeActionComplete(statusText, readinessText)) {
+        if (isHomeActionComplete(statusText, readinessText, elapsedMs)) {
           setTaskResult((current) => preserveTerminalStackResult(current, { status: "succeeded", title: copy.success, details }));
           setControlAction("");
         }
-      } else if (action === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
+      } else if (action === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText, elapsedMs)) {
         keepPolling = true;
         setTaskResult((current) => preserveTerminalStackResult(current, { ...stackActionPendingResult(action, "confirming"), details }));
       } else if (final.status !== "succeeded") {
@@ -1812,7 +1812,16 @@ function isTerminalTask(status: string) {
   return ["succeeded", "failed", "cancelled"].includes(status);
 }
 
-export function isHomeActionComplete(status: string, readiness: string) {
+// Game servers are the slowest part of a start: measured on a live restart, two
+// maps took roughly four minutes to reach READY, and a host with more always-on
+// maps brings them up in batches (DUNE_ALWAYS_ON_STARTUP_PARALLELISM). So wait
+// for them -- but never indefinitely. A map that stays WARMING must not pin the
+// console in "Starting" with its controls disabled forever, so once this window
+// has passed a battlegroup whose only remaining gap is warming maps counts as
+// started. This is a backstop, not a target.
+export const GAME_SERVER_WARMUP_GRACE_MS = 10 * 60 * 1000;
+
+export function isHomeActionComplete(status: string, readiness: string, elapsedMs: number = Number.POSITIVE_INFINITY) {
   const statusReady = isHomeStartComplete(status, readiness);
   const readinessReady = isHomeReadinessOperational(readiness);
   const summary = summarizeHomeStatus(status, readiness, "", false);
@@ -1824,6 +1833,15 @@ export function isHomeActionComplete(status: string, readiness: string) {
     /^OK$/i.test(String(item.value || "")) && /^Ready$/i.test(String(item.status || ""))
   );
   const gamesWarming = /^Warming$/i.test(String(games?.value || ""));
+  // Inside the grace window a warming map blocks completion outright. None of
+  // the signals below can stand in for it: isHomeReadinessOperational only
+  // proves the map containers are up, not that the maps are playable.
+  //
+  // Read the raw summariser rather than gamesWarming above: summarizeHomeStatus
+  // rewrites every health row to OK once readiness reports READY (readyOverride),
+  // so the view model reports a warming map as OK and the gate would never fire.
+  const rawGamesWarming = /^Warming$/i.test(String(summarizeGameServers(status).label || ""));
+  if (rawGamesWarming && elapsedMs < GAME_SERVER_WARMUP_GRACE_MS) return false;
   return statusReady || readinessReady || (healthOk || (gamesWarming && nonGameHealthOk));
 }
 
@@ -1944,7 +1962,7 @@ function hasRestartStartSignal(status: string, readiness: string) {
     BATTLEGROUP_CONTAINERS.some((name) => textHasContainerReadiness(text, "OK", name));
 }
 
-function isHomeStartComplete(status: string, readiness: string) {
+export function isHomeStartComplete(status: string, readiness: string) {
   const serverState = getHomeServerState(status, readiness);
   if (serverState.stopped) return false;
 
@@ -1962,7 +1980,14 @@ function isHomeStartComplete(status: string, readiness: string) {
   const rabbit = summarizeRabbit(status);
   const rabbitReady = /^OK$/i.test(rabbit.label) && /^Ready$/i.test(rabbit.status);
 
-  return containersReady && listenersReady && databaseReady && flsReady && rabbitReady;
+  // A battlegroup whose containers are up but whose maps are still WARMING is
+  // not ready to play on, so the maps gate "started" like everything else.
+  // isHomeActionComplete owns the grace window that stops a map stuck warming
+  // from hanging the lifecycle on this.
+  const games = summarizeGameServers(status);
+  const gameServersReady = /^OK$/i.test(games.label) && /^Ready$/i.test(games.status);
+
+  return containersReady && listenersReady && databaseReady && flsReady && rabbitReady && gameServersReady;
 }
 
 export function containerStatusLineHas(containerName: string, line: string, statusPattern: RegExp) {
