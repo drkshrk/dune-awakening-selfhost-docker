@@ -123,3 +123,65 @@ describe("useStaleBuildWatcher", () => {
     expect(fetchVersion).not.toHaveBeenCalled();
   });
 });
+
+// Signing in re-checks the running build immediately. Without this the tab
+// waits out the rest of the 2-minute cadence, and a login landing inside that
+// window shows the previous bundle until someone refreshes by hand -- which is
+// how this was reported.
+//
+// These assert on fetchVersion call counts rather than reload(): as the comment
+// on versionSource notes, this environment can invoke a mounting effect's async
+// body more than once, so an exact reload count cannot separate the feature
+// from that artifact. Whether the flip causes another version check can.
+describe("recheckToken", () => {
+  function mount(intervalMs = 10_000_000) {
+    const reload = vi.fn();
+    const { fetchVersion, advance } = versionSource("v1.0.0:aaa", "v1.0.0:bbb");
+    const storage = memoryStorage();
+    const view = renderHook(
+      ({ token }) => useStaleBuildWatcher({ fetchVersion, reload, storage, recheckToken: token, intervalMs }),
+      { initialProps: { token: false } }
+    );
+    return { ...view, reload, fetchVersion, advance };
+  }
+
+  it("checks the running build again as soon as the token flips", async () => {
+    const { rerender, fetchVersion } = mount();
+    await vi.runOnlyPendingTimersAsync();
+    const before = fetchVersion.mock.calls.length;
+
+    rerender({ token: true });
+    await vi.runOnlyPendingTimersAsync();
+
+    // The interval is far away, so any further check came from the flip.
+    expect(fetchVersion.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it("reloads when the flip reveals a build change", async () => {
+    const { rerender, reload, advance } = mount();
+    await vi.runOnlyPendingTimersAsync();
+    reload.mockClear();
+
+    advance();
+    rerender({ token: true });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(reload).toHaveBeenCalled();
+  });
+
+  // The baseline lives in a ref for this reason. If the recheck reset it to
+  // whatever the server reports at that moment, it could never find a
+  // difference and the whole thing would be decorative.
+  it("compares against the version this tab started with", async () => {
+    const { rerender, reload } = mount();
+    await vi.runOnlyPendingTimersAsync();
+    reload.mockClear();
+
+    // No build change -- flipping the token must stay quiet rather than
+    // reloading on every sign-in.
+    rerender({ token: true });
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+});

@@ -22,6 +22,7 @@ describe("App stale build watcher", () => {
 
     render(<App />);
 
-    expect(useStaleBuildWatcher).toHaveBeenCalledWith();
+    // Signing in must re-check the build, so App passes the auth flag through.
+    expect(useStaleBuildWatcher).toHaveBeenCalledWith({ recheckToken: false });
   });
 });
