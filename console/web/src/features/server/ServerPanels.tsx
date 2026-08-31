@@ -1558,6 +1558,38 @@ function isTerminalTask(status: string) {
 // started. This is a backstop, not a target.
 export const GAME_SERVER_WARMUP_GRACE_MS = 10 * 60 * 1000;
 
+// Measured on the 2026-08-31 live restart: a map reached READY roughly three
+// minutes after its container started. Four gives margin.
+const GAME_SERVER_WARMUP_PER_BATCH_MS = 4 * 60 * 1000;
+
+// A backstop on the backstop. However many maps are configured, the console
+// stops waiting eventually.
+const GAME_SERVER_WARMUP_GRACE_CAP_MS = 45 * 60 * 1000;
+
+// How long a start may legitimately take before a still-warming map is treated
+// as "close enough to done".
+//
+// A flat budget was wrong once the section reported every always-on map rather
+// than two: the autoscaler brings them up a few at a time
+// (DUNE_ALWAYS_ON_STARTUP_PARALLELISM, clamped by host memory safety), so the
+// wait scales with the number of BATCHES, not the number of maps. status.sh
+// publishes the concurrency on the section's Note: line -- which every row
+// parser already ignores -- so no extra request is needed to read it.
+//
+// Falls back to the flat floor when the section or the note is absent, so an
+// older backend or a roster that could not be read behaves exactly as before.
+export function gameServerWarmupGraceMs(status: string) {
+  const rows = gameServerRows(status);
+  if (!rows.length) return GAME_SERVER_WARMUP_GRACE_MS;
+  const noted = String(status || "").match(/starting\s+(\d+)\s+at a time/i);
+  const concurrency = Math.max(1, Number(noted?.[1]) || 1);
+  const batches = Math.ceil(rows.length / concurrency);
+  return Math.min(
+    GAME_SERVER_WARMUP_GRACE_CAP_MS,
+    Math.max(GAME_SERVER_WARMUP_GRACE_MS, batches * GAME_SERVER_WARMUP_PER_BATCH_MS)
+  );
+}
+
 export function isHomeActionComplete(status: string, readiness: string, elapsedMs: number = Number.POSITIVE_INFINITY) {
   const statusReady = isHomeStartComplete(status, readiness);
   const readinessReady = isHomeReadinessOperational(readiness);
@@ -1578,7 +1610,7 @@ export function isHomeActionComplete(status: string, readiness: string, elapsedM
   // rewrites every health row to OK once readiness reports READY (readyOverride),
   // so the view model reports a warming map as OK and the gate would never fire.
   const rawGamesWarming = /^Warming$/i.test(String(summarizeGameServers(status).label || ""));
-  if (rawGamesWarming && elapsedMs < GAME_SERVER_WARMUP_GRACE_MS) return false;
+  if (rawGamesWarming && elapsedMs < gameServerWarmupGraceMs(status)) return false;
   return statusReady || readinessReady || (healthOk || (gamesWarming && nonGameHealthOk));
 }
 
@@ -1912,8 +1944,15 @@ function summarizeDatabase(text: string) {
   return { label: "Needs Review", status: "WARN", detail: "" };
 }
 
+// The map rows of the Game servers section: the header and any Note: line are
+// not servers. status.sh reports one row per expected always-on map server, so
+// the length of this is the denominator for how long a start should take.
+function gameServerRows(text: string) {
+  return sectionLines(text, "Game servers").filter((line) => !/^MAP\s+STATE\s+UPTIME/i.test(line) && !/^Note:/i.test(line));
+}
+
 function summarizeGameServers(text: string) {
-  const lines = sectionLines(text, "Game servers").filter((line) => !/^MAP\s+STATE\s+UPTIME/i.test(line) && !/^Note:/i.test(line));
+  const lines = gameServerRows(text);
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
   const bad = lines.find((line) => /\b(ERROR|NOT RUNNING|MISSING)\b/i.test(line));
   const wait = lines.find((line) => /\b(WARMING|WAIT)\b/i.test(line));

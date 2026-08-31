@@ -140,6 +140,7 @@ jobs:
           runtime/tests/test-deepdesert-layout-apply-safety.sh
           runtime/tests/test-director-log-id-normalization.sh
           runtime/tests/test-container-issue-scan.sh
+          runtime/tests/test-game-server-roster.sh
           tests/fls-signals-test.sh
           tests/steamcmd-signals-test.sh
           tests/storage-cleanup-test.sh
