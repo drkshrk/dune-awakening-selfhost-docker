@@ -768,3 +768,70 @@ describe("summarizeHomeStatus consumers still see identity and health entries", 
     expect(homeNeedsWarmRefresh("Title: Kovalt", "READY: all checks passed")).toBe(false);
   });
 });
+
+// The Readiness & Health rows now carry how much of each subsystem is ready.
+// The view-model side is covered in ServerPanels.healthCounts.test.ts; this is
+// the assertion that the count actually reaches the DOM, since the row markup
+// previously rendered label, value and pill only and dropped detail entirely.
+const SECTIONED_STATUS = [
+  "Title: Kovalt",
+  "Population: 14",
+  "",
+  "=== Containers ===",
+  "SERVICE                    STATUS",
+  ...[
+    "dune-postgres",
+    "dune-rmq-admin",
+    "dune-rmq-game",
+    "dune-text-router",
+    "dune-director",
+    "dune-server-gateway",
+    "dune-server-survival-1"
+  ].map((name) => `${name.padEnd(26)} Up 15 hours`),
+  `${"dune-server-overmap".padEnd(26)} missing`,
+  "",
+  "=== Game servers ===",
+  "MAP                      STATE         UPTIME",
+  `${"Survival_1".padEnd(24)} ${"READY".padEnd(13)} Up 5 hours`,
+  `${"Overmap".padEnd(24)} ${"WARMING".padEnd(13)} Up 9 seconds`,
+  ""
+].join("\n");
+
+describe("HomePanel readiness counts", () => {
+  it("renders how much of each subsystem is ready beside the pill", async () => {
+    const { container } = renderHome({
+      status: SECTIONED_STATUS,
+      onLoad: vi.fn().mockResolvedValue(loadResult({ statusText: SECTIONED_STATUS }))
+    });
+    await waitFor(() => expect(container.querySelector(".home-subsystem-count")).toBeTruthy());
+
+    const rows = Array.from(container.querySelectorAll(".home-subsystem-row"));
+    const rowFor = (label: string) =>
+      rows.find((row) => row.querySelector(".home-subsystem-label")?.textContent === label);
+
+    expect(rowFor("Containers")?.querySelector(".home-subsystem-count")?.textContent).toBe("7 of 8");
+    expect(rowFor("Game Servers")?.querySelector(".home-subsystem-count")?.textContent).toBe("1 of 2");
+  });
+
+  // A row with nothing countable must not render an empty element, which would
+  // otherwise show up as a stray gap in the flex row.
+  it("renders no count element for a subsystem with no figures", async () => {
+    const { container } = renderHome();
+    await waitFor(() => expect(container.querySelector(".home-subsystem-row")).toBeTruthy());
+    expect(container.querySelector(".home-subsystem-count")).toBeNull();
+  });
+
+  // The count is part of the accessible name, so it is not sighted-only.
+  it("includes the count in the row's accessible name", async () => {
+    const { container } = renderHome({
+      status: SECTIONED_STATUS,
+      onLoad: vi.fn().mockResolvedValue(loadResult({ statusText: SECTIONED_STATUS })),
+      onNavigate: vi.fn()
+    });
+    await waitFor(() => expect(container.querySelector(".home-subsystem-button")).toBeTruthy());
+    const labels = Array.from(container.querySelectorAll(".home-subsystem-button")).map((node) =>
+      node.getAttribute("aria-label") || ""
+    );
+    expect(labels.some((label) => label.includes("7 of 8"))).toBe(true);
+  });
+});
