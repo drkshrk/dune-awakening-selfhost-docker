@@ -115,6 +115,29 @@ $sorted
 EOF
 }
 
+# The eight battlegroup services, as status.sh prints them in its container
+# table. dune-orchestrator and dune-coriolis-coordinator are excluded for the
+# same reasons as everywhere else: control plane, and optional.
+GAME_SERVER_CORE_CONTAINERS="dune-postgres dune-rmq-admin dune-rmq-game dune-text-router dune-director dune-server-gateway dune-server-survival-1 dune-server-overmap"
+
+# Is the battlegroup fully up? Reads the container table that has already been
+# built rather than asking docker again: the first version called is_running per
+# service, and each of those is a docker inspect -- eight of them added ~1.3s to
+# every status read.
+#
+# A row counts as up only if its status carries no down word, so a paused
+# container does not read as running.
+game_server_core_stack_up() {
+  printf '%s\n' "$1" | awk -v names="$GAME_SERVER_CORE_CONTAINERS" '
+    BEGIN { total = split(names, want, " "); for (i = 1; i <= total; i++) need[want[i]] = 1 }
+    {
+      line = tolower($0)
+      if (($1 in need) && line !~ /missing|stopped|exited|dead|paused|not running/) up[$1] = 1
+    }
+    END { seen = 0; for (k in up) seen++; print (seen == total) ? 1 : 0 }
+  '
+}
+
 # State for an expected map server whose container does not exist.
 #
 # Pending, not faulty, while the battlegroup itself is still coming up: nothing

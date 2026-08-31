@@ -523,16 +523,9 @@ if [ -z "$game_server_partitions" ]; then
 fi
 
 # Is the battlegroup itself fully up? Used to tell a map that has not been
-# spawned yet from one that is genuinely missing.
-core_stack_up=1
-for _core in dune-postgres dune-rmq-admin dune-rmq-game dune-text-router \
-  dune-director dune-server-gateway dune-server-survival-1 dune-server-overmap
-do
-  if ! is_running "$_core"; then
-    core_stack_up=0
-    break
-  fi
-done
+# spawned yet from one that is genuinely missing. Derived from the container
+# table already built above -- asking docker again cost eight inspects.
+core_stack_up="$(game_server_core_stack_up "$container_rows")"
 
 load_container_state_snapshot
 game_server_rows="$(render_game_server_rows)"
