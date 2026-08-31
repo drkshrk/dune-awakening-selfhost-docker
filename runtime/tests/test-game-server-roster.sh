@@ -229,6 +229,44 @@ expect_no_issue "queued map with a pending uptime is not an issue" \
 expect_issue "the same row with a missing uptime WOULD be an issue" \
   "$(printf '%-24s %-13s %s\n' SH_Arrakeen WAIT missing)"
 
+# core_stack_up reads the container table rather than asking docker, so it is
+# testable here. Rows are status.sh's "%-26s %s" layout.
+core_row() { printf '%-26s %s\n' "$1" "$2"; }
+core_table() {
+  local status="$1" name
+  for name in $GAME_SERVER_CORE_CONTAINERS; do core_row "$name" "$status"; done
+}
+
+expect_eq "every core container up" "1" "$(game_server_core_stack_up "$(core_table 'Up 15 hours')")"
+expect_eq "every core container missing" "0" "$(game_server_core_stack_up "$(core_table missing)")"
+expect_eq "empty table is not up" "0" "$(game_server_core_stack_up "")"
+
+# One down is enough, and the orchestrator being up must not make up for it --
+# counting the printed rows rather than the eight names is exactly how the
+# original container bug worked.
+core_table_with() {
+  # The full table with one service replaced, plus any extra rows.
+  local name="$1" status="$2"
+  shift 2
+  core_table 'Up 15 hours' | grep -v "^${name} "
+  [ -n "$status" ] && core_row "$name" "$status"
+  while [ "$#" -gt 0 ]; do core_row "$1" 'Up 15 hours'; shift; done
+  return 0
+}
+
+expect_eq "one core container down" "0" \
+  "$(game_server_core_stack_up "$(core_table_with dune-director missing)")"
+
+# The orchestrator and coordinator being up must not make up for a missing core
+# service -- counting printed rows rather than the eight names is exactly how
+# the original container bug worked.
+expect_eq "extra containers do not substitute for a missing one" "0" \
+  "$(game_server_core_stack_up "$(core_table_with dune-postgres '' dune-orchestrator dune-coriolis-coordinator)")"
+
+# A paused container is not serving, so it must not count as up.
+expect_eq "a paused core container is not up" "0" \
+  "$(game_server_core_stack_up "$(core_table_with dune-rmq-game 'Up 3 hours (Paused)')")"
+
 # An always-on map with no container is pending while the battlegroup is still
 # coming up, and a fault once it is up. Gating this on the autoscaler instead --
 # the first attempt -- never fired at all: the autoscaler starts roughly 100
