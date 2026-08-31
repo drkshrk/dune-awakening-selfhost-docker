@@ -16,7 +16,7 @@ import { conciseTaskError, funcomTokenMismatchDetected } from "../../lib/taskDis
 import { QueueBadges, queueCountsSummary, queueCountsTotal, type QueueCounts } from "../../components/common/QueueBadges";
 import { childAccessPieceCount, usePendingQueues } from "../../lib/usePendingRefills";
 
-export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string };
+export type HomeLoadResult = { statusLoaded: boolean; readinessLoaded: boolean; statusError: string; readinessError: string; statusText: string; readinessText: string; sampledAtMs: number };
 export type HomeTaskResult = { status: "running" | "succeeded" | "failed" | "stopped"; title: string; message?: string; details?: string };
 export type RestartLifecycleState = { stopObserved: boolean; startObserved: boolean };
 
@@ -150,9 +150,16 @@ export const HOME_SUBSYSTEM_ROUTES: Record<string, Tab> = {
   "Funcom/FLS": "Server Control"
 };
 
-// Two misses, not one: a single failed poll is routine (console restarting, a
-// request racing a container bounce). Two is ~1 minute on the idle 30s cadence.
-export const STALE_POLL_THRESHOLD = 2;
+// Three missed idle polls. Derived from the sample's own age rather than a
+// count of consecutive failures: age is true by construction whatever the cause
+// -- failed poll, hidden tab, dead backend -- and unlike a counter it survives
+// leaving Home and coming back.
+export const STALE_SAMPLE_AGE_MS = 90_000;
+
+export function isStatusSampleStale(sampledAtMs: number, now: number) {
+  if (!sampledAtMs) return false;
+  return now - sampledAtMs > STALE_SAMPLE_AGE_MS;
+}
 
 export function formatFreshness(lastUpdatedAt: number, now: number) {
   if (!lastUpdatedAt) return "";
@@ -163,7 +170,7 @@ export function formatFreshness(lastUpdatedAt: number, now: number) {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`;
 }
 
-export function HomePanel({ status, readiness, taskResult, setTaskResult, funcomTokenResult, setFuncomTokenResult, runningAction, restartStartObserved, setRunningAction, onLoad, confirmAction, restartGate, onNavigate }: {
+export function HomePanel({ status, readiness, taskResult, setTaskResult, funcomTokenResult, setFuncomTokenResult, runningAction, restartStartObserved, setRunningAction, onLoad, confirmAction, restartGate, onNavigate, sampledAtMs = 0, setSampledAtMs }: {
   status: string;
   readiness: string;
   taskResult: HomeTaskResult | null;
@@ -173,11 +180,14 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   runningAction: "start" | "stop" | "restart" | "";
   restartStartObserved: boolean;
   setRunningAction: Dispatch<SetStateAction<"start" | "stop" | "restart" | "">>;
-  onLoad: () => Promise<HomeLoadResult>;
+  onLoad: (options?: { fresh?: boolean }) => Promise<HomeLoadResult>;
   confirmAction: ConfirmAction;
   restartGate: RestartGate;
   // Absent (e.g. in tests) means the subsystem rows render as text, not buttons.
   onNavigate?: (tab: Tab) => void;
+  // Held by App so it outlives this panel unmounting on a tab switch.
+  sampledAtMs?: number;
+  setSampledAtMs?: (value: number) => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [localError, setLocalError] = useState("");
@@ -185,8 +195,6 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   const [performance, setPerformance] = useState<PerformanceSnapshot | null>(null);
   const [performanceError, setPerformanceError] = useState("");
   const [hasLoaded, setHasLoaded] = useState(Boolean(status || readiness));
-  const [lastUpdatedAt, setLastUpdatedAt] = useState(0);
-  const [pollFailures, setPollFailures] = useState(0);
   const homeActionRunId = useRef(0);
   const homeActionStartedAt = useRef(0);
   const homeRestartLifecycle = useRef<RestartLifecycleState>(createRestartLifecycleState());
@@ -202,43 +210,35 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
     if (!runningAction) homeActionStartedAt.current = 0;
   }, [runningAction]);
 
-  // The polling effects below swallow their errors, so a backend that starts
-  // failing after the first load would otherwise leave stale values up with no
-  // cue. Called from every refresh path so they all date the data alike.
-  function recordLoadOutcome(loaded: boolean) {
-    if (loaded) {
-      setLastUpdatedAt(Date.now());
-      setPollFailures(0);
-    } else {
-      setPollFailures((count) => count + 1);
-    }
-  }
-
   function applyHomeLoadResult(result: HomeLoadResult) {
     const loaded = result.statusLoaded || result.readinessLoaded;
     if (loaded) setHasLoaded(true);
-    recordLoadOutcome(loaded);
+    // Only a successful read moves the clock. A failed poll leaves the old
+    // sample time in place, so its age keeps growing and eventually reads as
+    // stale on its own -- no failure counter needed.
+    if (loaded && result.sampledAtMs) setSampledAtMs?.(result.sampledAtMs);
     setReadinessWarning(!result.readinessLoaded && result.readinessError ? result.readinessError : "");
     if (!result.statusLoaded && !result.readinessLoaded && result.statusError) setLocalError(friendlyHomeStatusError(result.statusError));
   }
 
-  async function refresh(isActive = () => true) {
+  // `fresh` is opt-in per caller. The mount read deliberately accepts a cached
+  // snapshot -- that read is the whole reason the cache exists -- while an
+  // operator pressing Refresh Status is asking to go and look again.
+  async function refresh(isActive = () => true, options: { fresh?: boolean } = {}) {
     const runId = ++refreshRunId.current;
     setLoading(true);
     setLocalError("");
     setReadinessWarning("");
     try {
-      const result = await onLoad();
+      const result = await onLoad({ fresh: options.fresh });
       if (!isActive() || refreshRunId.current !== runId) return;
       if (result.statusLoaded || result.readinessLoaded) {
         applyHomeLoadResult(result);
       } else {
-        recordLoadOutcome(false);
         setLocalError(friendlyHomeStatusError(result.statusError || result.readinessError || "Server status and readiness checks failed."));
       }
     } catch (error) {
       if (isActive() && refreshRunId.current === runId) {
-        recordLoadOutcome(false);
         setLocalError(friendlyHomeStatusError(error instanceof Error ? error.message : String(error)));
       }
     } finally {
@@ -260,7 +260,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
     setHomeAction(action);
     setTaskResult(stackActionPendingResult(action));
     if (action === "restart") {
-      const preLoad = await onLoad().catch(() => null);
+      const preLoad = await onLoad({ fresh: true }).catch(() => null);
       if (homeActionRunId.current !== actionRunId) return;
       if (preLoad) {
         applyHomeLoadResult(preLoad);
@@ -288,7 +288,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       if (homeActionRunId.current !== actionRunId) return;
       const details = taskTechnicalDetails(final);
       if (action === "restart") homeRestartLifecycle.current = advanceRestartLifecycleFromTaskDetails(homeRestartLifecycle.current, details);
-      const postLoad = await onLoad().catch(() => null);
+      const postLoad = await onLoad({ fresh: true }).catch(() => null);
       if (homeActionRunId.current !== actionRunId) return;
       if (postLoad) applyHomeLoadResult(postLoad);
       const postState = getHomeServerState(postLoad?.statusText || status, postLoad?.readinessText || readiness);
@@ -366,10 +366,20 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   useEffect(() => {
     if (runningAction || !homeNeedsWarmRefresh(status, readiness)) return;
     let active = true;
+    // fresh: true bypasses the server-side cache by design, so each tick costs a
+    // real ~4s status.sh run. Without this guard the interval keeps firing while
+    // one is still in flight and they queue back-to-back for the whole warm-up,
+    // which is exactly when the host is most loaded. The server dedupes
+    // concurrent collects, so this never manufactured parallel subprocesses --
+    // it just asked for far more of them than anyone could read.
+    let inFlight = false;
     const id = window.setInterval(async () => {
-      const result = await onLoad().catch(() => null);
+      if (inFlight) return;
+      inFlight = true;
+      // Warming: the whole point is to watch it change, so never cached.
+      const result = await onLoad({ fresh: true }).catch(() => null).finally(() => { inFlight = false; });
       if (!active) return;
-      if (result) applyHomeLoadResult(result); else recordLoadOutcome(false);
+      if (result) applyHomeLoadResult(result);
     }, 5000);
     return () => {
       active = false;
@@ -382,9 +392,11 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
     let active = true;
     const id = window.setInterval(async () => {
       if (document.hidden) return;
+      // Idle: a cached read is acceptable here and on mount. These are the only
+      // two paths that tolerate staleness.
       const result = await onLoad().catch(() => null);
       if (!active) return;
-      if (result) applyHomeLoadResult(result); else recordLoadOutcome(false);
+      if (result) applyHomeLoadResult(result);
     }, 30000);
     return () => {
       active = false;
@@ -395,10 +407,18 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   useEffect(() => {
     if (!isRestartSuccessAwaitingFreshStatus(taskResult, status, readiness)) return;
     let active = true;
+    // Same guard as the warm-up poll above, and it matters more here: a 1.5s
+    // interval against a ~4s uncached read means every tick but the first would
+    // land on top of one already running.
+    let inFlight = false;
     const id = window.setInterval(async () => {
-      const result = await onLoad().catch(() => null);
+      if (inFlight) return;
+      inFlight = true;
+      // Waiting for the restart to show up in status; a cached snapshot here
+      // would be the pre-restart one.
+      const result = await onLoad({ fresh: true }).catch(() => null).finally(() => { inFlight = false; });
       if (!active) return;
-      if (result) applyHomeLoadResult(result); else recordLoadOutcome(false);
+      if (result) applyHomeLoadResult(result);
     }, 1500);
     return () => {
       active = false;
@@ -459,7 +479,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       <article className="hero-panel wide">
         <h2>Server status unavailable</h2>
         <p className="error">{localError}</p>
-        <button onClick={() => refresh()}>Retry Status Check</button>
+        <button onClick={() => refresh(undefined, { fresh: true })}>Retry Status Check</button>
       </article>
     </section>;
   }
@@ -513,12 +533,12 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
               </div>)}
             </dl>
             <div className="action-row">
-              <button className={loading ? "refresh-status-button refreshing" : "refresh-status-button"} disabled={refreshDisabled} onClick={() => refresh()}>{loading ? <span className="loading-dots">Refreshing</span> : "Refresh Status"}</button>
+              <button className={loading ? "refresh-status-button refreshing" : "refresh-status-button"} disabled={refreshDisabled} onClick={() => refresh(undefined, { fresh: true })}>{loading ? <span className="loading-dots">Refreshing</span> : "Refresh Status"}</button>
               <button disabled={startDisabled} title={controlsState.running ? "Battlegroup is already running." : ""} onClick={() => runServerAction("start")}><Play size={16} /> Start</button>
               <button className="danger-button" disabled={stopDisabled} onClick={() => runServerAction("stop")}>Stop</button>
               <button disabled={restartDisabled} onClick={() => runServerAction("restart")}>Restart Battlegroup</button>
             </div>
-            <StatusFreshness lastUpdatedAt={lastUpdatedAt} pollFailures={pollFailures} />
+            <StatusFreshness sampledAtMs={sampledAtMs} />
             <PendingRefillNote />
             {taskResult && <HomeTaskResultCard result={taskResult} />}
             {localError && <p className="error">{localError}</p>}
@@ -589,15 +609,15 @@ function homePopulationSegment(value: unknown) {
 
 // Owns its 1s tick so the per-second re-render stays here instead of redrawing
 // every card in the panel.
-function StatusFreshness({ lastUpdatedAt, pollFailures }: { lastUpdatedAt: number; pollFailures: number }) {
+function StatusFreshness({ sampledAtMs }: { sampledAtMs: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
-  if (!lastUpdatedAt) return null;
-  const stale = pollFailures >= STALE_POLL_THRESHOLD;
-  const ago = formatFreshness(lastUpdatedAt, now);
+  if (!sampledAtMs) return null;
+  const stale = isStatusSampleStale(sampledAtMs, now);
+  const ago = formatFreshness(sampledAtMs, now);
   return <p className={stale ? "home-freshness stale" : "home-freshness"}>
     {stale ? `Status may be stale — last updated ${ago}` : `Updated ${ago}`}
   </p>;
@@ -797,10 +817,11 @@ export function ServerPanel(props: {
       : [serverApi.status(), serverApi.readiness()] as const;
     const results = await Promise.allSettled(requests);
     const [nextStatus, nextReadiness, nextPorts, nextDoctor] = results;
-    const result: HomeLoadResult = { statusLoaded: false, readinessLoaded: false, statusError: "", readinessError: "", statusText: "", readinessText: "" };
+    const result: HomeLoadResult = { statusLoaded: false, readinessLoaded: false, statusError: "", readinessError: "", statusText: "", readinessText: "", sampledAtMs: 0 };
     if (nextStatus?.status === "fulfilled") {
       result.statusText = nextStatus.value.stdout;
       result.statusLoaded = true;
+      result.sampledAtMs = Date.parse(nextStatus.value.sampledAt || "") || Date.now();
       props.setStatus(nextStatus.value.stdout);
     } else if (nextStatus) {
       result.statusError = nextStatus.reason instanceof Error ? nextStatus.reason.message : String(nextStatus.reason);

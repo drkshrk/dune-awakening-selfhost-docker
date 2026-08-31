@@ -691,9 +691,9 @@ async function handleApi(req, res) {
   if (path === "/api/public-directory/status") return json(res, 200, publicDirectory.publicState());
   if (path.startsWith("/api/setup/tasks/")) return taskRoute(req, res, path);
 
-  if (path === "/api/server/status") return commandJson(res, "status");
+  if (path === "/api/server/status") return cachedCommandJson(res, "status", url);
   if (path === "/api/server/performance") return json(res, 200, await collectPerformanceSnapshot(config.repoRoot));
-  if (path === "/api/server/readiness") return safeCommandJson(res, "readiness");
+  if (path === "/api/server/readiness") return cachedCommandJson(res, "readiness", url);
   if (path === "/api/server/ports") return commandJson(res, "ports");
   if (path === "/api/server/services") return commandJson(res, "services");
   if (path === "/api/server/doctor") return safeCommandJson(res, "doctor");
@@ -1612,10 +1612,22 @@ async function liveMapTeleportPlayerRoute(req, res) {
   }
 }
 
+// How long a read command's result may be reused. Most take the cache's short
+// default, which exists to collapse concurrent and rapid-repeat calls. `status`
+// and `readiness` take a much longer configurable window: each costs ~4s of
+// subprocess, and the Home panel asks for both on every mount and idle poll.
+//
+// Keyed on the operation rather than the caller so the same command always gets
+// the same window whoever populates the entry -- Home and the Maps panel now
+// share one `readiness` collect instead of running two.
+function readCommandTtlMs(operation) {
+  return operation === "status" || operation === "readiness" ? config.statusCacheMs : undefined;
+}
+
 async function commandJson(res, operation, payload = {}) {
   if (config.mockMode) return json(res, 200, mockCommand(operation));
   const args = buildDuneArgs(operation, payload);
-  const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
+  const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args), { ttlMs: readCommandTtlMs(operation) });
   return json(res, 200, { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code });
 }
 
@@ -1645,6 +1657,41 @@ function isAdminToolsHistoryLine(line) {
   if (/^web-hydrate-all$/i.test(command)) return true;
   if (/^KickPlayer$/i.test(command) && /^(all|\*)$/i.test(target)) return true;
   return false;
+}
+
+// The Home routes for `status` and `readiness`. They share readCommandCache and
+// its key space with every other read command -- an earlier version kept a
+// second cache for these two, which meant readiness was cached twice over and a
+// `?fresh=1` read could still be served a stale inner entry.
+//
+// Two things these need beyond the default: `?fresh=1`, because Home watches a
+// warm-up and a restart and a cached answer there is the pre-change one; and
+// `sampledAt`, because Home dates its reading from when the command actually
+// ran rather than when the response was written.
+//
+// Error behaviour is preserved per operation: `status` propagates the way
+// commandJson does, `readiness` swallows and reports the way safeCommand does.
+async function cachedCommandJson(res, operation, url) {
+  if (config.mockMode) return json(res, 200, mockCommand(operation));
+  const fresh = url?.searchParams?.get("fresh") === "1";
+  const args = buildDuneArgs(operation, {});
+  const options = { ttlMs: readCommandTtlMs(operation), fresh };
+  let stamped;
+  try {
+    stamped = await readCommandCache.runStamped(JSON.stringify(args), () => runDune(config, args), options);
+  } catch (error) {
+    if (operation !== "readiness") throw error;
+    return json(res, 200, { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 });
+  }
+  const result = stamped.value;
+  return json(res, 200, {
+    operation,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode: result.code,
+    sampledAt: new Date(stamped.sampledAtMs).toISOString(),
+    fromCache: stamped.fromCache
+  });
 }
 
 async function safeCommandJson(res, operation, payload = {}) {
@@ -2037,7 +2084,7 @@ async function marketItemsSaveRoute(req, res) {
 async function safeCommand(operation, payload = {}) {
   try {
     const args = buildDuneArgs(operation, payload);
-    const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args));
+    const result = await readCommandCache.run(JSON.stringify(args), () => runDune(config, args), { ttlMs: readCommandTtlMs(operation) });
     return { operation, stdout: result.stdout, stderr: result.stderr, exitCode: result.code };
   } catch (error) {
     return { operation, stdout: redact(error.stdout || ""), stderr: redact(error.stderr || error?.message || "Unexpected error."), exitCode: error.code || 1 };
@@ -2434,6 +2481,10 @@ async function task(req, res, type, operation, payload) {
     return json(res, 400, { error: redact(error?.message || "Unexpected error.") });
   }
   if (await maybeQueueRestart(req, res, type, operation, payload)) return;
+  // Any server-group task is about to change what status/readiness report, so
+  // drop the cached snapshot now rather than letting Home show "Running" for a
+  // full TTL after a stop.
+  if (type === "server") readCommandCache.invalidate();
   audit(config, req, `task.${operation}`, payload);
   return json(res, 202, { task: tasks.create(type, operation, payload) });
 }

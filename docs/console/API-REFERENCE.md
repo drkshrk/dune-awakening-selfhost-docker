@@ -56,9 +56,9 @@ Complete reference for all HTTP API endpoints in the Dune Docker Console. All en
 
 | Method | Route | Description | Parameters |
 |--------|-------|-------------|------------|
-| GET | `/api/server/status` | Server status command | None |
+| GET | `/api/server/status` | Server status command | `fresh?` (query, `1` to bypass the cache) |
 | GET | `/api/server/performance` | Performance snapshot (CPU, memory, disk) | None |
-| GET | `/api/server/readiness` | Service readiness check | None |
+| GET | `/api/server/readiness` | Service readiness check | `fresh?` (query, `1` to bypass the cache) |
 | GET | `/api/server/ports` | List service ports | None |
 | GET | `/api/server/services` | List services and status | None |
 | GET | `/api/server/doctor` | Run diagnostic check | None |
