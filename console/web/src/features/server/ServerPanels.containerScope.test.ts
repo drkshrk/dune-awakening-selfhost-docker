@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getHomeServerState, summarizeContainers, summarizeHomeStatus } from "./ServerPanels";
+import { advanceRestartLifecycle, createRestartLifecycleState, getHomeServerState, summarizeContainers, summarizeHomeStatus } from "./ServerPanels";
 
 // status.sh prints ten container rows. Only eight are battlegroup services:
 // dune-orchestrator is the control plane and is always Up (it is what starts
@@ -216,5 +216,65 @@ describe("Home card with the coordinator switched off", () => {
     const readiness = "=== Container checks ===\nWARN container dune-director\nNOT READY: still starting";
     expect(card(fullStatus("READY", "missing"), readiness)).toContain("Overall OK/Ready");
     expect(card(fullStatus("READY", "missing"), readiness)).not.toContain("Starting");
+  });
+});
+
+// all() quantifies over the eight NAMES, not over the printed rows. A name with
+// no row at all must make it false, so a truncated or partial Containers
+// section can never read as "they are all down". Collapsing all() onto rows()
+// -- filtering to the battlegroup and asking .every() of what survives -- looks
+// equivalent and is not: with six of the eight absent, every *printed* row is
+// down and the battlegroup would be declared stopped on two rows of evidence.
+describe("a partial Containers section", () => {
+  const partial = [
+    "=== Dune status ===",
+    "Title:       Example Sietch",
+    "",
+    "=== Containers ===",
+    "SERVICE                    STATUS",
+    `${"dune-postgres".padEnd(26)} missing`,
+    `${"dune-rmq-admin".padEnd(26)} missing`,
+    "",
+    "=== Listeners ===",
+    "CHECK                    PORT     STATUS",
+    "Postgres localhost       15432/tcp OK",
+    "",
+    "=== Game servers ===",
+    "MAP          STATE        UPTIME",
+    "Survival_1   READY        Up 15 hours",
+    "Overmap      READY        Up 15 hours",
+    ""
+  ].join("\n");
+
+  it("is not read as a stopped battlegroup", () => {
+    expect(partial).not.toMatch(/Overall:/);
+    expect(getHomeServerState(partial, "READY: all checks passed").stopped).toBe(false);
+  });
+
+  it("does not report the six unlisted containers as OK either", () => {
+    expect(summarizeContainers(partial)).toMatchObject({ status: "WARN" });
+  });
+});
+
+// The restart lifecycle asks "has a stop been observed?" of the eight names.
+// An optional coordinator that is off by configuration reads as "missing"
+// forever, so an unscoped check would latch stopObserved on a battlegroup that
+// never stopped -- and stopObserved is monotonic, so it never recovers.
+describe("restart lifecycle with the coordinator switched off", () => {
+  const running = [
+    "=== Dune status ===",
+    "Overall:     READY",
+    "",
+    "=== Containers ===",
+    "SERVICE                    STATUS",
+    ...BATTLEGROUP.map((name) => `${name.padEnd(26)} Up 15 hours`),
+    `${"dune-coriolis-coordinator".padEnd(26)} missing`,
+    `${"dune-orchestrator".padEnd(26)} Up 15 hours`,
+    ""
+  ].join("\n");
+
+  it("does not latch a stop that never happened", () => {
+    const next = advanceRestartLifecycle(createRestartLifecycleState(), running, "READY: all checks passed");
+    expect(next.stopObserved).toBe(false);
   });
 });
