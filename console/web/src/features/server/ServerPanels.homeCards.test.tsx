@@ -8,7 +8,6 @@ import {
   homeOverallBadge,
   homeOverallHeading,
   homeStateDotTone,
-  isPopulationUnknowable,
   isStatusSampleStale,
   STALE_SAMPLE_AGE_MS,
   isHomeActionComplete,
@@ -712,26 +711,6 @@ describe("HomePanel when the battlegroup is stopped", () => {
 // or moving to or from stopped. summarizeHomeStatus reports "Unavailable" and
 // flags it WARN in all of them, which put an amber warning beside the server
 // name for an expected condition.
-describe("isPopulationUnknowable", () => {
-  it("covers stopped and every transitional reading", () => {
-    for (const value of ["Stopped", "Starting", "Stopping", "Restarting Battlegroup"]) {
-      expect(isPopulationUnknowable(value), value).toBe(true);
-    }
-  });
-
-  // These leave the battlegroup up and serving, so the count is real.
-  it("leaves a serving battlegroup alone", () => {
-    for (const value of ["OK", "Needs Review", "Warming"]) {
-      expect(isPopulationUnknowable(value), value).toBe(false);
-    }
-  });
-
-  it("matches on the whole word, not a prefix", () => {
-    expect(isPopulationUnknowable("Stoppedish")).toBe(false);
-    expect(isPopulationUnknowable("")).toBe(false);
-    expect(isPopulationUnknowable(undefined)).toBe(false);
-  });
-});
 
 describe("isStatusSampleStale", () => {
   const now = 1_000_000_000;

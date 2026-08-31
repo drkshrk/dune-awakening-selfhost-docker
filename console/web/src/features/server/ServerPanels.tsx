@@ -510,7 +510,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   const identityCards = summary.identity.filter((item) => item.label !== "Overall");
   const populationItem = identityCards.find((item) => item.label === "Population");
   const populationWarn = /^warn$/i.test(String(populationItem?.status || ""));
-  const populationSegment = isPopulationUnknowable(overall?.value) ? "" : homePopulationSegment(populationItem?.value);
+  const populationSegment = homePopulationSegment(populationItem?.value);
   // Drives the dot and the reading beside it from one value, so the two can
   // never disagree about severity.
   const stateTone = homeStateDotTone(overall?.value, summary.health);
@@ -609,6 +609,20 @@ export function homeStateDotTone(overallValue: unknown, health: { status: string
 // the summary -- that value is shared with homeNeedsWarmRefresh and with
 // isHomeActionComplete, which matches /^OK$/ to detect a finished restart. So
 // "OK" is renamed for display only, never in the summary.
+// Does this heading read green to the operator?
+//
+// The union is deliberate. homeStateDotTone with an empty health array asks
+// "how green is this word on its own", which already encodes the carve-outs
+// this must respect -- motion for starting/stopping, failed for stopped, nodata
+// for unknown. homeOverallBadge closes the other half: friendlyHomeOverall
+// passes an unrecognised Overall: token straight through, and inferStatus
+// badges Healthy, Running, Up, Listening and Found as Ready.
+//
+// A false positive here is safe: the only thing it enables is a downgrade.
+export function heroReadsGreen(value: unknown) {
+  return homeStateDotTone(value, []) === "ok" || homeOverallBadge(String(value || "")) === "Ready";
+}
+
 export function homeOverallHeading(value: unknown) {
   const text = formatDisplayValue(value || "Unknown");
   if (/^ok$/i.test(text.trim())) return "Ready";
@@ -632,18 +646,6 @@ function homeIdentityLine(items: { label: string; value: string }[]) {
   return parts.join(" · ");
 }
 
-// The readings where there is no population to report: the battlegroup is down,
-// or in transition to or from being down. summarizeHomeStatus yields
-// "Unavailable" and flags it WARN in all of them, which puts an amber warning
-// next to the server name for an entirely expected condition.
-//
-// "Restarting Battlegroup" is matched on its first word, which is the raw value
-// summarizeHomeStatus emits mid-restart. Deliberately NOT listed: "Needs
-// Review" and "Warming" leave the battlegroup up and serving, so its count is
-// real and worth showing.
-export function isPopulationUnknowable(value: unknown) {
-  return /^(stopped|starting|stopping|restarting)\b/i.test(String(value || "").trim());
-}
 
 // formatHomePopulation yields "14", "14 / 40", "14 / ?" or "Unavailable", all of
 // which read as a bare trailing number unlabelled. "Unavailable" is kept rather
@@ -651,7 +653,12 @@ export function isPopulationUnknowable(value: unknown) {
 function homePopulationSegment(value: unknown) {
   const text = String(value || "").trim();
   if (!text || /^unknown$/i.test(text)) return "";
-  if (/^unavailable$/i.test(text)) return "population unavailable";
+  // Absence, not a warning. This used to read "population unavailable", and the
+  // caller suppressed the whole segment by inspecting the HEADING -- so hiding
+  // the count was coupled to whatever word the hero happened to be showing.
+  // A count that cannot be read is simply not shown; the reason belongs to the
+  // row that owns it.
+  if (/^unavailable$/i.test(text)) return "";
   return `${text} online`;
 }
 
@@ -1714,7 +1721,6 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
   const transitionOverall = runningAction === "restart"
     ? restartStartObserved ? "Starting" : "Restarting Battlegroup"
     : runningAction === "stop" ? "Stopping" : isStarting ? "Starting" : "";
-  const warmingOverall = isGameServersComingUp(rawGames.label) ? rawGames.label : "";
   const attentionHealth = !isStarting && !restartSuccessAwaitingFreshStatus && (serverState.stopped || actionStopped || actionFailed) ? attentionHomeHealthCard(serverState.stopped || actionStopped ? "stopped" : "failed") : null;
   // status and readiness are two separate reads, so they can disagree: a stop
   // updates status to STOPPED while readiness is still the previous "READY:".
@@ -1722,11 +1728,6 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
   // under a "Battlegroup Stopped" banner. A stop we observed, or an Overall:
   // STOPPED, beats a stale all-clear.
   const readyOverride = readinessReady && !attentionHealth && !rosterIncomplete ? { label: "OK", status: "Ready", detail: "" } : null;
-  // rosterIncomplete appears twice on purpose. Blocking the readiness
-  // all-clear at the front is not enough: liveOverall is "OK" whenever
-  // readiness reports READY, so a battlegroup with maps genuinely down fell
-  // through to it and the hero read OK beside a "Needs Review" row.
-  const overall = readinessReady && !runningAction && !attentionHealth && !rosterIncomplete ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : rosterIncomplete ? "Needs Review" : warmingOverall || liveOverall;
   const transitionAction: "start" | "stop" | "restart" | "" = restartStartObserved
     ? "start"
     : runningAction === "restart" ? ""
@@ -1743,6 +1744,16 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
     // the row is showing OK or "Getting Ready".
     return { id, label, value: shown.label, status: shown.status, detail: rawCard.detail };
   });
+  // The rows are computed first so the heading can be held to them. Everything
+  // that can make this green flows through applyHeroHealthFloor -- keep it that
+  // way: exactly one binding named `overall`, defined once, consumed once. An
+  // ungated `overall` left in scope is how the last three incidents happened.
+  //
+  // rosterIncomplete still appears twice: blocking the readiness all-clear at
+  // the front does not stop liveOverall, which is "OK" whenever readiness
+  // reports READY.
+  const overallCandidate = readinessReady && !runningAction && !attentionHealth && !rosterIncomplete ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : rosterIncomplete ? "Needs Review" : liveOverall;
+  const overall = applyHeroHealthFloor(overallCandidate, healthRows);
   const population = formatHomePopulation(findPopulation(status) || findLineValue(status, ["population", "players"]));
   return {
     identity: [
@@ -2082,6 +2093,56 @@ function textHasContainerReadiness(text: string, state: "OK" | "FAIL", container
 // while a failed start leaves the subsystems in whatever state the failure left
 // them. Saying "Stopped" for a failed start would be a false claim.
 // Every row gets the same card, so this is one card rather than a per-row map.
+type HomeRowSeverity = "fail" | "warn" | "transition" | "unknown" | "ok";
+
+// Order is load-bearing: transition MUST be tested before warn, because
+// normalizeStatus("Starting") returns "warn". Checking normalizeStatus first
+// would classify every transitional row as a warning and make the hero read
+// "Needs Review" through every normal start.
+//
+// Status first, value second: three transitional values (Warming, Waiting,
+// Getting Ready) share the one Starting status, so keying on value alone lets a
+// future fourth slip through as ok.
+function homeHealthRowSeverity(row: { value: string; status: string }): HomeRowSeverity {
+  if (/^Starting$/i.test(row.status) || /^(Warming|Waiting|Getting Ready)$/i.test(row.value)) return "transition";
+  const normalized = normalizeStatus(String(row.status || ""));
+  if (normalized === "fail") return "fail";
+  if (normalized === "warn") return "warn";
+  if (/^Unknown$/i.test(row.status)) return "unknown";
+  return "ok";
+}
+
+const HOME_ROW_SEVERITY_ORDER: HomeRowSeverity[] = ["fail", "warn", "transition"];
+
+// The hero is never greener than its worst health row.
+//
+// "OK" is produced in four independent expressions -- the Overall ternary's
+// first branch, liveOverall's readinessReady arm, friendlyHomeOverall("READY"),
+// and friendlyHomeOverall's passthrough into inferStatus's pass-list -- each
+// with its own guard set. Guarding them one at a time is what let a green
+// heading sit above a "Needs Review" row three separate times. This is the one
+// place they all flow through, so a guard added here protects every producer,
+// including ones added later.
+//
+// Only ever downgrades. A non-green heading is returned byte-identical, so
+// nothing that reads the hero can be made *more* optimistic by this.
+//
+// `unknown` deliberately does not downgrade: an absent reading is not a
+// severity, and preferKnownHomeHealth exists precisely to paper over first-paint
+// gaps. Making Unknown a trigger would flicker the heading on every cold load.
+export function applyHeroHealthFloor(candidate: string, rows: readonly { value: string; status: string }[]) {
+  if (!heroReadsGreen(candidate)) return candidate;
+  for (const severity of HOME_ROW_SEVERITY_ORDER) {
+    const worst = rows.find((row) => homeHealthRowSeverity(row) === severity);
+    if (!worst) continue;
+    // Transitional rows resolve to the fixed word rather than the row's own
+    // value: "Starting" is a first-class hero value everywhere downstream,
+    // where "Warming" badges Info and dots attention.
+    return severity === "transition" ? "Starting" : worst.value;
+  }
+  return candidate;
+}
+
 function attentionHomeHealthCard(reason: "stopped" | "failed") {
   return reason === "stopped"
     ? { label: "Stopped", status: "FAILED", detail: "" }
@@ -2461,7 +2522,15 @@ function findPopulation(text: string) {
 function normalizePopulationPair(current: string, max: string) {
   const normalizedCurrent = /^unknown$/i.test(current) ? "?" : current;
   const normalizedMax = /^unknown$/i.test(max) ? "?" : max;
-  if (normalizedCurrent === "?" && normalizedMax === "?") return "";
+  // An unknown CURRENT count is not a count. A stopped battlegroup prints
+  // "Population: unknown/60", and rendering that as "?/60 online" states a
+  // player figure nobody measured. The capacity half may still be unknown --
+  // "14/?" is a real reading of 14 players -- so only the current side decides.
+  //
+  // This used to be handled by suppressing the whole segment whenever the HERO
+  // read stopped/starting, which coupled a population decision to whatever word
+  // the heading happened to show.
+  if (normalizedCurrent === "?") return "";
   return `${normalizedCurrent}/${normalizedMax}`;
 }
 

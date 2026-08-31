@@ -1,80 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { HOME_SUBSYSTEM_ROUTES, isGameServersComingUp, summarizeHomeStatus } from "./ServerPanels";
-
-// Shaped after real dune2 output, 2026-08-31.
-const BATTLEGROUP = [
-  "dune-postgres",
-  "dune-rmq-admin",
-  "dune-rmq-game",
-  "dune-text-router",
-  "dune-director",
-  "dune-server-gateway",
-  "dune-server-survival-1",
-  "dune-server-overmap"
-];
-
-const MAPS: Array<[string, string]> = [
-  ["Survival_1", "READY"],
-  ["Survival_1#60", "READY"],
-  ["Overmap", "READY"],
-  ["SH_Arrakeen", "READY"],
-  ["SH_HarkoVillage", "READY"],
-  ["DeepDesert_1", "READY"],
-  ["DeepDesert_1#59", "READY"]
-];
-
-function statusText(options: { downContainers?: number; maps?: Array<[string, string]>; badListeners?: number; flsWait?: number } = {}) {
-  const down = options.downContainers ?? 0;
-  const maps = options.maps ?? MAPS;
-  const badListeners = options.badListeners ?? 0;
-  const flsWait = options.flsWait ?? 0;
-  const listeners = ["Postgres localhost       15432/tcp", "Director                 11717/tcp", "TextRouter               5059/tcp", "RabbitMQ game            31982/tcp"];
-  const fls = ["Director heartbeat:      ", "Population declaration:  ", "Max capacity declaration:", "Gateway DB monitoring:   "];
-  return [
-    "=== Dune status ===",
-    "Overall:     READY",
-    "Title:       Example Sietch",
-    "",
-    "=== Containers ===",
-    "SERVICE                    STATUS",
-    ...BATTLEGROUP.map((name, i) => `${name.padEnd(26)} ${i < down ? "missing" : "Up 15 hours"}`),
-    `${"dune-coriolis-coordinator".padEnd(26)} Up 15 hours`,
-    `${"dune-orchestrator".padEnd(26)} Up 15 hours`,
-    "",
-    "=== Listeners ===",
-    "CHECK                    PORT     STATUS",
-    ...listeners.map((line, i) => `${line} ${i < badListeners ? "MISSING" : "OK"}`),
-    "",
-    "=== Database ===",
-    "World partitions: 32",
-    "",
-    "=== Game servers ===",
-    "MAP                      STATE         UPTIME",
-    ...maps.map(([label, state]) => `${label.padEnd(24)} ${state.padEnd(13)} ${state === "READY" ? "Up 5 hours" : "Up 9 seconds"}`),
-    `Note: ${maps.length} always-on map servers expected, starting 2 at a time.`,
-    "",
-    "=== RabbitMQ game connections ===",
-    "RabbitMQ connection details: Checked by readiness",
-    "",
-    "=== Funcom/FLS summary ===",
-    ...fls.map((line, i) => `${line} ${i < flsWait ? "WAIT" : "OK"}`),
-    ""
-  ].join("\n");
-}
-
-const READY_READINESS = [
-  "OK container dune-postgres",
-  "OK container dune-rmq-admin",
-  "OK container dune-rmq-game",
-  "OK container dune-text-router",
-  "OK container dune-director",
-  "OK container dune-server-gateway",
-  "OK container dune-server-survival-1",
-  "OK container dune-server-overmap",
-  "OK world_partition rows: 32",
-  "OK game server sg.* RMQ connections",
-  "READY: all checks passed"
-].join("\n");
+// Shared with the property test so the two cannot drift apart -- a generator
+// per file means the property test keeps passing against a shape the app no
+// longer produces.
+import { MAPS, READY_READINESS, statusText } from "./homeStatusFixtures";
 
 function counts(status: string, readiness = READY_READINESS, runningAction: "start" | "stop" | "restart" | "" = "") {
   const summary = summarizeHomeStatus(status, readiness, "", false, runningAction);
