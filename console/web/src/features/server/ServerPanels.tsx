@@ -2238,6 +2238,11 @@ export function homeOverallBadge(value: string) {
   // Something is flagged, but inferStatus finds no keyword and falls through to
   // "Info" -- the same neutral as "Unknown", i.e. "nothing known yet".
   if (normalized === "needs review") return "WARN";
+  // The Funcom/FLS row's value when the stored token is rejected. Only reachable
+  // here since applyHeroHealthFloor mirrors the worst row into the hero, and
+  // inferStatus matches no keyword in the phrase -- so a credential fault would
+  // otherwise badge "Unknown", i.e. "nothing known yet".
+  if (normalized === "token mismatch detected") return "Failed";
   return inferStatus(value);
 }
 

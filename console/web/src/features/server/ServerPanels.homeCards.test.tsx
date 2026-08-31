@@ -5,6 +5,7 @@ import {
   HomePanel,
   formatFreshness,
   homeNeedsWarmRefresh,
+  heroReadsGreen,
   homeOverallBadge,
   homeOverallHeading,
   homeStateDotTone,
@@ -246,6 +247,22 @@ describe("homeOverallBadge", () => {
   it("distinguishes a flagged subsystem from an unknown state", () => {
     expect(normalizeStatus(homeOverallBadge("Needs Review"))).toBe("warn");
     expect(normalizeStatus(homeOverallBadge("Needs Review"))).not.toBe(normalizeStatus(homeOverallBadge("Unknown")));
+  });
+
+  // Reachable as a hero value only since applyHeroHealthFloor mirrors the worst
+  // row up. inferStatus matches none of its keywords, so the badge read
+  // "Unknown" -- indistinguishable from "no reading yet" for a rejected Funcom
+  // credential, which is the most actionable state Home can report.
+  it("badges a rejected Funcom token as a failure, not as no-reading-yet", () => {
+    expect(normalizeStatus(homeOverallBadge("Token Mismatch Detected"))).toBe("fail");
+    expect(normalizeStatus(homeOverallBadge("Token Mismatch Detected"))).not.toBe(normalizeStatus(homeOverallBadge("Unknown")));
+  });
+
+  // The gate can only downgrade, so heroReadsGreen must not start treating this
+  // as green -- and the dot must stay red whether or not the row is present.
+  it("keeps a token mismatch out of the green path", () => {
+    expect(heroReadsGreen("Token Mismatch Detected")).toBe(false);
+    expect(homeStateDotTone("Token Mismatch Detected", [])).not.toBe("ok");
   });
 });
 
