@@ -5,10 +5,10 @@ import {
   HomePanel,
   formatFreshness,
   homeNeedsWarmRefresh,
+  heroReadsGreen,
   homeOverallBadge,
   homeOverallHeading,
   homeStateDotTone,
-  isPopulationUnknowable,
   isStatusSampleStale,
   STALE_SAMPLE_AGE_MS,
   isHomeActionComplete,
@@ -247,6 +247,22 @@ describe("homeOverallBadge", () => {
   it("distinguishes a flagged subsystem from an unknown state", () => {
     expect(normalizeStatus(homeOverallBadge("Needs Review"))).toBe("warn");
     expect(normalizeStatus(homeOverallBadge("Needs Review"))).not.toBe(normalizeStatus(homeOverallBadge("Unknown")));
+  });
+
+  // Reachable as a hero value only since applyHeroHealthFloor mirrors the worst
+  // row up. inferStatus matches none of its keywords, so the badge read
+  // "Unknown" -- indistinguishable from "no reading yet" for a rejected Funcom
+  // credential, which is the most actionable state Home can report.
+  it("badges a rejected Funcom token as a failure, not as no-reading-yet", () => {
+    expect(normalizeStatus(homeOverallBadge("Token Mismatch Detected"))).toBe("fail");
+    expect(normalizeStatus(homeOverallBadge("Token Mismatch Detected"))).not.toBe(normalizeStatus(homeOverallBadge("Unknown")));
+  });
+
+  // The gate can only downgrade, so heroReadsGreen must not start treating this
+  // as green -- and the dot must stay red whether or not the row is present.
+  it("keeps a token mismatch out of the green path", () => {
+    expect(heroReadsGreen("Token Mismatch Detected")).toBe(false);
+    expect(homeStateDotTone("Token Mismatch Detected", [])).not.toBe("ok");
   });
 });
 
@@ -712,26 +728,6 @@ describe("HomePanel when the battlegroup is stopped", () => {
 // or moving to or from stopped. summarizeHomeStatus reports "Unavailable" and
 // flags it WARN in all of them, which put an amber warning beside the server
 // name for an expected condition.
-describe("isPopulationUnknowable", () => {
-  it("covers stopped and every transitional reading", () => {
-    for (const value of ["Stopped", "Starting", "Stopping", "Restarting Battlegroup"]) {
-      expect(isPopulationUnknowable(value), value).toBe(true);
-    }
-  });
-
-  // These leave the battlegroup up and serving, so the count is real.
-  it("leaves a serving battlegroup alone", () => {
-    for (const value of ["OK", "Needs Review", "Warming"]) {
-      expect(isPopulationUnknowable(value), value).toBe(false);
-    }
-  });
-
-  it("matches on the whole word, not a prefix", () => {
-    expect(isPopulationUnknowable("Stoppedish")).toBe(false);
-    expect(isPopulationUnknowable("")).toBe(false);
-    expect(isPopulationUnknowable(undefined)).toBe(false);
-  });
-});
 
 describe("isStatusSampleStale", () => {
   const now = 1_000_000_000;
