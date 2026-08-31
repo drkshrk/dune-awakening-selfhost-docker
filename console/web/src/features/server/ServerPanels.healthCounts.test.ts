@@ -89,41 +89,40 @@ function values(status: string, readiness = READY_READINESS, runningAction: "sta
 describe("Readiness & Health rows carry an x-of-y count", () => {
   it("counts a fully healthy battlegroup", () => {
     expect(counts(statusText())).toMatchObject({
-      Containers: "8 of 8",
-      Listeners: "4 of 4",
-      "Game Servers": "7 of 7",
-      RabbitMQ: "2 of 2",
+      Messaging: "3 of 3",
+      "Battlegroup services": "2 of 2",
+      "Game servers": "7 of 7",
       "Funcom/FLS": "4 of 4"
     });
   });
 
-  // The denominator is the expected eight, not the printed rows. A container
-  // with no row at all is missing, and counting printed rows would report
-  // "7 of 7" for exactly that case.
-  it("keeps the container denominator at eight when rows are missing", () => {
-    const missing = statusText().replace(/^dune-postgres.*$/m, "");
-    expect(counts(missing).Containers).toBe("7 of 8");
+  // The denominator is the services a row owns, not the printed rows. A
+  // container with no row at all is missing, and counting printed rows would
+  // report "2 of 2" for exactly that case.
+  it("keeps a row's denominator at what it owns when rows are missing", () => {
+    const missing = statusText().replace(/^dune-text-router.*$/m, "");
+    expect(counts(missing).Messaging).toBe("2 of 3");
   });
 
   it("counts a partially down battlegroup", () => {
-    expect(counts(statusText({ downContainers: 2 })).Containers).toBe("6 of 8");
-    expect(counts(statusText({ badListeners: 1 })).Listeners).toBe("3 of 4");
+    // BATTLEGROUP order is postgres, rmq-admin, rmq-game, text-router, ...
+    expect(counts(statusText({ downContainers: 3 })).Messaging).toBe("1 of 3");
     expect(counts(statusText({ flsWait: 2 }))["Funcom/FLS"]).toBe("2 of 4");
   });
 
-  // RabbitMQ is two brokers. The connections section only ever speaks about the
-  // game broker, so the count is taken from the container table, which lists
-  // both -- otherwise a downed admin broker is invisible here.
-  it("counts both RabbitMQ brokers", () => {
-    expect(counts(statusText()).RabbitMQ).toBe("2 of 2");
+  // Messaging is the two brokers plus the text router, which is a hard client of
+  // the game broker. The connections section only ever speaks about the game
+  // broker, so the count comes from the container table, which lists all three.
+  it("counts all three messaging services", () => {
+    expect(counts(statusText()).Messaging).toBe("3 of 3");
     // dune-rmq-admin is the second battlegroup container.
-    expect(counts(statusText({ downContainers: 2 })).RabbitMQ).toBe("1 of 2");
-    expect(counts(statusText({ downContainers: 3 })).RabbitMQ).toBe("0 of 2");
+    expect(counts(statusText({ downContainers: 2 })).Messaging).toBe("2 of 3");
+    expect(counts(statusText({ downContainers: 4 })).Messaging).toBe("0 of 3");
   });
 
-  it("leaves RabbitMQ blank when there is no container table to read", () => {
+  it("leaves a row blank when there is no container table to read", () => {
     const noContainers = statusText().replace(/=== Containers ===[\s\S]*?\n\n/, "");
-    expect(counts(noContainers).RabbitMQ).toBe("");
+    expect(counts(noContainers).Messaging).toBe("");
   });
 
   it("counts only the maps that are actually READY", () => {
@@ -136,7 +135,7 @@ describe("Readiness & Health rows carry an x-of-y count", () => {
       ["DeepDesert_1", "WARMING"],
       ["DeepDesert_1#59", "WARMING"]
     ];
-    expect(counts(statusText({ maps: warming }))["Game Servers"]).toBe("3 of 7");
+    expect(counts(statusText({ maps: warming }))["Game servers"]).toBe("3 of 7");
   });
 
   // The partition count is a property of the world, not a measure of how much
@@ -166,8 +165,8 @@ describe("Readiness & Health rows carry an x-of-y count", () => {
 describe("counts survive the display overrides", () => {
   it("survives readyOverride on a healthy battlegroup", () => {
     // readyOverride is what rewrites every row to a bare "OK".
-    expect(values(statusText())["Game Servers"]).toBe("OK");
-    expect(counts(statusText())["Game Servers"]).toBe("7 of 7");
+    expect(values(statusText())["Game servers"]).toBe("OK");
+    expect(counts(statusText())["Game servers"]).toBe("7 of 7");
   });
 
   it("survives the transitional override mid-start", () => {
@@ -178,10 +177,10 @@ describe("counts survive the display overrides", () => {
     const readiness = "=== Container checks ===\nWARN container dune-director\nNOT READY: still starting";
     // The row itself reads "Getting Ready" -- the count is the only thing
     // telling an operator how far along the start actually is.
-    expect(values(status, readiness, "start").Containers).toBe("Getting Ready");
+    expect(values(status, readiness, "start").Messaging).toBe("Getting Ready");
     expect(counts(status, readiness, "start")).toMatchObject({
-      Containers: "6 of 8",
-      "Game Servers": "3 of 7"
+      Messaging: "2 of 3",
+      "Game servers": "3 of 7"
     });
   });
 
@@ -189,9 +188,9 @@ describe("counts survive the display overrides", () => {
     const stopped = statusText({ downContainers: 8, maps: MAPS.map(([l]) => [l, "NOT RUNNING"] as [string, string]) })
       .replace("Overall:     READY", "Overall:     STOPPED");
     expect(counts(stopped, "")).toMatchObject({
-      Containers: "0 of 8",
-      "Game Servers": "0 of 7",
-      RabbitMQ: "0 of 2",
+      Messaging: "0 of 3",
+      "Battlegroup services": "0 of 2",
+      "Game servers": "0 of 7",
       Database: ""
     });
   });
