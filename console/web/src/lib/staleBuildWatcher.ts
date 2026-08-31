@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { fetchConsoleAuthState } from "../api/client";
 
 const RELOAD_COOLDOWN_KEY = "dune-console:stale-build-reload-at";
@@ -22,6 +22,15 @@ export type StaleBuildWatcherOptions = {
   reload?: () => void;
   storage?: StaleBuildStorage | null;
   now?: () => number;
+  // Poll again as soon as this changes, without disturbing the baseline. App
+  // passes the auth flag, so signing in re-checks immediately instead of
+  // waiting out the rest of the 2-minute interval.
+  //
+  // Distinct from the focus re-check above, which it cannot stand in for:
+  // signing in usually happens in a tab that already has focus, so neither
+  // visibilitychange nor focus fires. A session that expires and is renewed in
+  // place never leaves the tab at all.
+  recheckToken?: unknown;
 };
 
 async function defaultFetchVersion(): Promise<string | null> {
@@ -56,6 +65,17 @@ function browserReload() {
 // reload automatically the first time it changes, so a tab left open
 // during someone else's console update or a same-version rebuild recovers
 // on its own instead of running stale code indefinitely.
+//
+// The baseline lives in a ref rather than inside the interval effect so an
+// out-of-band recheck (see recheckToken) compares against the version this tab
+// started with, instead of resetting the comparison to whatever the server
+// reports at that moment -- which would make the recheck useless.
+//
+// Known limit: this detects a tab that goes stale while open, not one that
+// LOADED stale. The first poll records whatever the server reports, so a tab
+// already running behind has nothing to compare against. index.html is served
+// no-cache and the assets are content-hashed, so a fresh load gets current code
+// and that case should not arise.
 export function useStaleBuildWatcher(options: StaleBuildWatcherOptions = {}) {
   const {
     enabled = true,
@@ -63,24 +83,40 @@ export function useStaleBuildWatcher(options: StaleBuildWatcherOptions = {}) {
     fetchVersion = defaultFetchVersion,
     reload = browserReload,
     storage = browserStorage(),
-    now = Date.now
+    now = Date.now,
+    recheckToken
   } = options;
 
-  useEffect(() => {
-    if (!enabled) return;
-    let cancelled = false;
-    let baselineVersion: string | null = null;
-    let lastPollStartedAt = 0;
+  const baselineRef = useRef<string | null>(null);
+  const cancelledRef = useRef(false);
+  const lastPollStartedAtRef = useRef(0);
+  // Any of the three triggers can fire at the same moment as an interval tick.
+  // Both would await the same fetch, both read an unset cooldown marker, and
+  // both call reload(). Harmless in a browser -- reload navigates away -- but it
+  // defeats the cooldown that exists to stop a reload loop against a flapping
+  // deploy, so only let one poll be in flight. The focus throttle below does
+  // not cover this: it spaces out repeated focus events, not a focus landing on
+  // top of a scheduled tick.
+  const inFlightRef = useRef(false);
 
-    async function poll() {
-      lastPollStartedAt = now();
+  const poll = useCallback(async () => {
+    if (!enabled || inFlightRef.current) return;
+    inFlightRef.current = true;
+    lastPollStartedAtRef.current = now();
+    try {
+      await runPoll();
+    } finally {
+      inFlightRef.current = false;
+    }
+
+    async function runPoll() {
       const version = await fetchVersion().catch(() => null);
-      if (cancelled || !version) return;
-      if (baselineVersion === null) {
-        baselineVersion = version;
+      if (cancelledRef.current || !version) return;
+      if (baselineRef.current === null) {
+        baselineRef.current = version;
         return;
       }
-      if (version === baselineVersion) return;
+      if (version === baselineRef.current) return;
 
       // Without a durable cooldown marker, don't risk an uncontrolled reload
       // loop against a flapping deploy -- same fail-closed choice
@@ -96,10 +132,15 @@ export function useStaleBuildWatcher(options: StaleBuildWatcherOptions = {}) {
       }
       reload();
     }
+  }, [enabled, fetchVersion, reload, storage, now]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    cancelledRef.current = false;
 
     function recheckOnReturn() {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
-      if (now() - lastPollStartedAt < FOCUS_RECHECK_MIN_GAP_MS) return;
+      if (now() - lastPollStartedAtRef.current < FOCUS_RECHECK_MIN_GAP_MS) return;
       void poll();
     }
 
@@ -108,12 +149,19 @@ export function useStaleBuildWatcher(options: StaleBuildWatcherOptions = {}) {
     document.addEventListener("visibilitychange", recheckOnReturn);
     window.addEventListener("focus", recheckOnReturn);
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", recheckOnReturn);
       window.removeEventListener("focus", recheckOnReturn);
     };
-  }, [enabled, intervalMs, fetchVersion, reload, storage, now]);
+  }, [enabled, intervalMs, poll, now]);
+
+  // Signing in is exactly when someone is about to read fresh data, and it is
+  // the point the 2-minute cadence was most likely to be mid-window at.
+  useEffect(() => {
+    if (!enabled || !recheckToken) return;
+    void poll();
+  }, [enabled, recheckToken, poll]);
 }
 
 export const staleBuildWatcherInternals = Object.freeze({ RELOAD_COOLDOWN_KEY, RELOAD_COOLDOWN_MS, DEFAULT_POLL_INTERVAL_MS, FOCUS_RECHECK_MIN_GAP_MS });

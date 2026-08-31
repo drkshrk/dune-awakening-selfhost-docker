@@ -416,7 +416,10 @@ export function App() {
   // session. Keep watching through the logged-out state too: a Console
   // rebuild clears the in-memory session, and disabling the watcher at that
   // moment would let the old bundle survive through the next login.
-  useStaleBuildWatcher();
+  // recheckToken: signing in re-checks the running build immediately rather
+  // than waiting out the rest of the poll interval, which is the window a
+  // fresh login was landing in and showing the previous bundle.
+  useStaleBuildWatcher({ recheckToken: auth });
 
   useEffect(() => {
     const handleSessionExpired = () => {
