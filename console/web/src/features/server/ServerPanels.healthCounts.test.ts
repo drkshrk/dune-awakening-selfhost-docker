@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HOME_SUBSYSTEM_ROUTES, summarizeHomeStatus } from "./ServerPanels";
+import { HOME_SUBSYSTEM_ROUTES, isGameServersComingUp, summarizeHomeStatus } from "./ServerPanels";
 
 // Shaped after real dune2 output, 2026-08-31.
 const BATTLEGROUP = [
@@ -280,5 +280,73 @@ describe("a readiness all-clear does not override an incomplete roster", () => {
 
   it("reads OK once the whole roster is up", () => {
     expect(overall(statusText(), READY_READINESS)).toBe("OK");
+  });
+});
+
+// World servers start after Postgres, RabbitMQ, the text router and the
+// director, so early in a start they are waiting on dependencies rather than
+// loading. Reporting both as "Warming" overstated how far along a start was,
+// and "Info" read as a neutral aside for something the operator is actively
+// waiting on -- while the hero said "Starting" at the same moment.
+describe("maps that have not started yet read differently from maps that are loading", () => {
+  const allWaiting = statusText({ maps: MAPS.map(([l]) => [l, "WAIT"] as [string, string]) });
+  const someWarming = statusText({
+    maps: MAPS.map(([l], i) => [l, i < 3 ? "READY" : i === 3 ? "WARMING" : "WAIT"] as [string, string])
+  });
+
+  it("reads Waiting when nothing has been spawned yet", () => {
+    expect(values(allWaiting, "")["Game servers"]).toBe("Waiting");
+    expect(counts(allWaiting, "")["Game servers"]).toBe("0 of 7");
+  });
+
+  it("reads Warming once a map is actually loading", () => {
+    expect(values(someWarming, "")["Game servers"]).toBe("Warming");
+  });
+
+  it("badges both as Starting rather than Info", () => {
+    const statusOf = (text: string) =>
+      summarizeHomeStatus(text, "", "", false).health.find((i) => i.id === "games")?.status;
+    expect(statusOf(allWaiting)).toBe("Starting");
+    expect(statusOf(someWarming)).toBe("Starting");
+  });
+
+  // Six call sites ask "are the maps on their way up?". A bare /^Warming$/i
+  // check would silently stop matching the moment a start is early enough to
+  // report Waiting -- the same label-as-key trap that dropped row routes.
+  it("treats both labels as coming up", () => {
+    expect(isGameServersComingUp("Warming")).toBe(true);
+    expect(isGameServersComingUp("Waiting")).toBe(true);
+    expect(isGameServersComingUp("OK")).toBe(false);
+    expect(isGameServersComingUp("Needs Review")).toBe(false);
+    expect(isGameServersComingUp(undefined)).toBe(false);
+  });
+});
+
+// The hero and the rows have to agree. Saying "Starting" up top while a row
+// says "Needs Review" invites someone to go looking for a fault that is really
+// just a service that has not registered yet.
+describe("the rows follow the hero during a start", () => {
+  const warming = statusText({
+    maps: MAPS.map(([l], i) => [l, i < 2 ? "READY" : "WARMING"] as [string, string]),
+    flsWait: 3
+  });
+
+  it("shows a not-yet-registered subsystem as Getting Ready, not Needs Review", () => {
+    expect(values(warming, READY_READINESS)["Funcom/FLS"]).toBe("Getting Ready");
+  });
+
+  it("keeps the hero and that row in the same vocabulary", () => {
+    const s = summarizeHomeStatus(warming, READY_READINESS, "", false);
+    expect(s.identity.find((i) => i.label === "Overall")?.value).toBe("Starting");
+    expect(s.health.find((i) => i.id === "fls")?.status).toBe("Starting");
+  });
+
+  // The other half: when the maps are genuinely down rather than starting, a
+  // READY readiness must not let the hero read OK over a Needs Review row.
+  it("does not read OK over a broken roster", () => {
+    const broken = statusText({ maps: MAPS.map(([l]) => [l, "NOT RUNNING"] as [string, string]) });
+    const s = summarizeHomeStatus(broken, READY_READINESS, "", false);
+    expect(s.health.find((i) => i.id === "games")?.value).toBe("Needs Review");
+    expect(s.identity.find((i) => i.label === "Overall")?.value).toBe("Needs Review");
   });
 });

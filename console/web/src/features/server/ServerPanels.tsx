@@ -1705,7 +1705,7 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
   // more always-on maps it says READY while several are still coming up, and
   // believing it left the hero reading "Ready" beside "Game servers 2 of 7".
   // A readiness all-clear is not allowed to override the roster.
-  const rosterWarming = /^Warming$/i.test(rawGames.label);
+  const rosterWarming = isGameServersComingUp(rawGames.label);
   const rosterIncomplete = rosterWarming || /^Needs Review$/i.test(rawGames.label);
   const coreReadyWithReview = !runningAction && isHomeCoreReadyWithReview(status, readiness, raw);
   const isStarting = runningAction === "start" || runningAction === "restart" || restartSuccessAwaitingFreshStatus || rosterWarming || (bootStarting && !coreReadyWithReview);
@@ -1714,7 +1714,7 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
   const transitionOverall = runningAction === "restart"
     ? restartStartObserved ? "Starting" : "Restarting Battlegroup"
     : runningAction === "stop" ? "Stopping" : isStarting ? "Starting" : "";
-  const warmingOverall = /^Warming$/i.test(rawGames.label) ? "Warming" : "";
+  const warmingOverall = isGameServersComingUp(rawGames.label) ? rawGames.label : "";
   const attentionHealth = !isStarting && !restartSuccessAwaitingFreshStatus && (serverState.stopped || actionStopped || actionFailed) ? attentionHomeHealthCard(serverState.stopped || actionStopped ? "stopped" : "failed") : null;
   // status and readiness are two separate reads, so they can disagree: a stop
   // updates status to STOPPED while readiness is still the previous "READY:".
@@ -1722,11 +1722,15 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
   // under a "Battlegroup Stopped" banner. A stop we observed, or an Overall:
   // STOPPED, beats a stale all-clear.
   const readyOverride = readinessReady && !attentionHealth && !rosterIncomplete ? { label: "OK", status: "Ready", detail: "" } : null;
-  const overall = readinessReady && !runningAction && !attentionHealth && !rosterIncomplete ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : warmingOverall || liveOverall;
+  // rosterIncomplete appears twice on purpose. Blocking the readiness
+  // all-clear at the front is not enough: liveOverall is "OK" whenever
+  // readiness reports READY, so a battlegroup with maps genuinely down fell
+  // through to it and the hero read OK beside a "Needs Review" row.
+  const overall = readinessReady && !runningAction && !attentionHealth && !rosterIncomplete ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : rosterIncomplete ? "Needs Review" : warmingOverall || liveOverall;
   const transitionAction: "start" | "stop" | "restart" | "" = restartStartObserved
     ? "start"
     : runningAction === "restart" ? ""
-      : runningAction || (restartSuccessAwaitingFreshStatus || (bootStarting && !coreReadyWithReview) ? "start" : "");
+      : runningAction || (restartSuccessAwaitingFreshStatus || rosterWarming || (bootStarting && !coreReadyWithReview) ? "start" : "");
   const healthRows: HomeHealthRow[] = HOME_HEALTH_ROWS.map(({ id, label }) => {
     const rawCard = raw[id];
     const shown = id === "fls" && funcomTokenAuthFailure
@@ -1768,7 +1772,7 @@ export function homeNeedsWarmRefresh(status: string, readiness: string) {
   const gameServerText = sectionLines(status, "Game servers").join("\n");
   const warming = /Overall:\s*(WARMING|WAIT|STARTING)/i.test(status) ||
     /\b(WARMING|WAIT|STARTING)\b/i.test(gameServerText) ||
-    /^(Warming|Starting)$/i.test(String(games?.value || "")) ||
+    isGameServersComingUp(games?.value) || /^Starting$/i.test(String(games?.value || "")) ||
     isHomeBootStarting(status, readiness);
   return warming && (!overallOk || !gamesOk);
 }
@@ -1898,7 +1902,7 @@ export function isHomeActionComplete(status: string, readiness: string, elapsedM
   const nonGameHealthOk = summary.health.filter((item) => item.id !== "games").every((item) =>
     /^OK$/i.test(String(item.value || "")) && /^Ready$/i.test(String(item.status || ""))
   );
-  const gamesWarming = /^Warming$/i.test(String(games?.value || ""));
+  const gamesWarming = isGameServersComingUp(games?.value);
   // Inside the grace window a warming map blocks completion outright. None of
   // the signals below can stand in for it: isHomeReadinessOperational only
   // proves the map containers are up, not that the maps are playable.
@@ -1906,7 +1910,7 @@ export function isHomeActionComplete(status: string, readiness: string, elapsedM
   // Read the raw summariser rather than gamesWarming above: summarizeHomeStatus
   // rewrites every health row to OK once readiness reports READY (readyOverride),
   // so the view model reports a warming map as OK and the gate would never fire.
-  const rawGamesWarming = /^Warming$/i.test(String(summarizeGameServers(status).label || ""));
+  const rawGamesWarming = isGameServersComingUp(summarizeGameServers(status).label);
   if (rawGamesWarming && elapsedMs < gameServerWarmupGraceMs(status)) return false;
   return statusReady || readinessReady || (healthOk || (gamesWarming && nonGameHealthOk));
 }
@@ -2087,7 +2091,7 @@ function attentionHomeHealthCard(reason: "stopped" | "failed") {
 function transitionHomeHealthCard(item: { label: string; status: string; detail: string }, runningAction: "start" | "stop" | "restart" | "") {
   if (runningAction !== "start" && runningAction !== "restart") return null;
   if (/^OK$/i.test(item.label) && /^Ready$/i.test(item.status)) return item;
-  if (/^Warming$/i.test(item.label)) return item;
+  if (isGameServersComingUp(item.label)) return item;
   return { label: "Getting Ready", status: "Starting", detail: "" };
 }
 
@@ -2352,14 +2356,32 @@ function gameServerRows(text: string) {
   return sectionLines(text, "Game servers").filter((line) => !/^MAP\s+STATE\s+UPTIME/i.test(line) && !/^Note:/i.test(line));
 }
 
+// "Warming" and "Waiting" both mean the maps are on their way up. Every caller
+// that cares about that distinction-free question goes through here: a bare
+// /^Warming$/i check would silently stop matching the moment a start is early
+// enough to report Waiting.
+export function isGameServersComingUp(label: unknown) {
+  return /^(Warming|Waiting)$/i.test(String(label || ""));
+}
+
 function summarizeGameServers(text: string) {
   const lines = gameServerRows(text);
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
   const bad = lines.find((line) => /\b(ERROR|NOT RUNNING|MISSING)\b/i.test(line));
-  const wait = lines.find((line) => /\b(WARMING|WAIT)\b/i.test(line));
+  // WARMING means the map server is up and loading. WAIT means it has not been
+  // spawned yet -- world servers start after Postgres, RabbitMQ, the text
+  // router and the director, so early in a start they are waiting on their
+  // dependencies rather than warming. Reporting both as "Warming" overstated
+  // how far along a start was.
+  const warming = lines.find((line) => /\bWARMING\b/i.test(line));
+  const waiting = lines.find((line) => /\bWAIT\b/i.test(line));
   const detail = `${lines.filter((line) => /\bREADY\b/i.test(line)).length} of ${lines.length}`;
   if (bad) return { label: "Needs Review", status: "WARN", detail };
-  if (wait) return { label: "Warming", status: "Info", detail };
+  // Starting, not Info: this is a transitional state and the hero says
+  // "Starting" at the same moment. Info read as a neutral aside for something
+  // the operator is actively waiting on.
+  if (warming) return { label: "Warming", status: "Starting", detail };
+  if (waiting) return { label: "Waiting", status: "Starting", detail };
   // This row owns every listener port that is not one of the six TCP service
   // ports -- all the map client and S2S ports, fixed and dynamic alike. Without
   // this they would be unowned once the flat Listeners row went away.
