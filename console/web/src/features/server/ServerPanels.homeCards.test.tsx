@@ -463,11 +463,11 @@ describe("HomePanel server identity", () => {
 });
 
 describe("HomePanel subsystem rows", () => {
-  const SUBSYSTEMS = ["Containers", "Listeners", "Database", "Game Servers", "RabbitMQ", "Funcom/FLS"];
+  const SUBSYSTEMS = ["Database", "Messaging", "Battlegroup services", "Game servers", "Funcom/FLS"];
 
   it("lists every readiness subsystem", async () => {
     const { container } = renderHome();
-    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(6));
+    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(5));
     const labels = Array.from(container.querySelectorAll(".home-subsystem-label")).map((node) => node.textContent);
     expect(labels).toEqual(SUBSYSTEMS);
   });
@@ -475,7 +475,7 @@ describe("HomePanel subsystem rows", () => {
   it("routes an unhealthy subsystem to the tab that can fix it", async () => {
     const onNavigate = vi.fn();
     const { container } = renderHome({ onNavigate });
-    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-button").length).toBe(6));
+    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-button").length).toBe(5));
     const rowFor = (label: string) => {
       const node = Array.from(container.querySelectorAll(".home-subsystem-label")).find((item) => item.textContent === label);
       return node?.closest("button") as HTMLButtonElement;
@@ -483,7 +483,7 @@ describe("HomePanel subsystem rows", () => {
     // Every row lands on Server Control: these report health, and that is where
     // health is diagnosed. Database deliberately included -- the Database tab is
     // for data, not for whether Postgres is up.
-    for (const label of ["Containers", "Listeners", "Database", "Game Servers", "RabbitMQ", "Funcom/FLS"]) {
+    for (const label of ["Database", "Messaging", "Battlegroup services", "Game servers", "Funcom/FLS"]) {
       onNavigate.mockClear();
       rowFor(label).click();
       expect(onNavigate, `${label} should route to Server Control`).toHaveBeenCalledWith("Server Control");
@@ -492,9 +492,9 @@ describe("HomePanel subsystem rows", () => {
 
   it("renders plain rows, not buttons to nowhere, when no navigation is wired", async () => {
     const { container } = renderHome();
-    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(6));
+    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(5));
     expect(container.querySelectorAll(".home-subsystem-button").length).toBe(0);
-    expect(container.querySelectorAll(".home-subsystem-static").length).toBe(6);
+    expect(container.querySelectorAll(".home-subsystem-static").length).toBe(5);
   });
 });
 
@@ -628,7 +628,7 @@ describe("HomePanel when the battlegroup is stopped", () => {
 
   it("says every subsystem is stopped rather than needing review", async () => {
     const { container } = renderStopped();
-    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(6));
+    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(5));
     const values = Array.from(container.querySelectorAll(".home-subsystem-value")).map((node) => node.textContent);
     expect(values.every((text) => text?.includes("Stopped"))).toBe(true);
     expect(values.some((text) => text?.includes("Needs Review"))).toBe(false);
@@ -636,7 +636,7 @@ describe("HomePanel when the battlegroup is stopped", () => {
 
   it("badges them FAILED, not WARN", async () => {
     const { container } = renderStopped();
-    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row .badge").length).toBe(6));
+    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row .badge").length).toBe(5));
     const badges = Array.from(container.querySelectorAll(".home-subsystem-row .badge"));
     expect(badges.every((b) => b.className.includes("badge-fail"))).toBe(true);
   });
@@ -674,7 +674,7 @@ describe("HomePanel when the battlegroup is stopped", () => {
       taskResult: { status: "stopped", title: "Battlegroup Stopped" },
       onLoad: vi.fn().mockResolvedValue(loadResult({ statusText: STOPPED_STATUS, readinessText: "READY: all checks passed" }))
     });
-    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(6));
+    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(5));
     const values = Array.from(container.querySelectorAll(".home-subsystem-value")).map((node) => node.textContent);
     expect(values.every((text) => text?.includes("Stopped"))).toBe(true);
     expect(container.querySelector(".home-hero-state-value")?.textContent).toBe("Stopped");
@@ -701,7 +701,7 @@ describe("HomePanel when the battlegroup is stopped", () => {
       taskResult: { status: "failed", title: "Battlegroup Start Failed" },
       onLoad: vi.fn().mockResolvedValue(loadResult({ statusText: "Title: Kovalt", readinessText: "", readinessLoaded: false }))
     });
-    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(6));
+    await waitFor(() => expect(container.querySelectorAll(".home-subsystem-row").length).toBe(5));
     const values = Array.from(container.querySelectorAll(".home-subsystem-value")).map((node) => node.textContent);
     expect(values.every((text) => text?.includes("Needs Review"))).toBe(true);
     expect(values.some((text) => text?.includes("Stopped"))).toBe(false);
@@ -809,8 +809,8 @@ describe("HomePanel readiness counts", () => {
     const rowFor = (label: string) =>
       rows.find((row) => row.querySelector(".home-subsystem-label")?.textContent === label);
 
-    expect(rowFor("Containers")?.querySelector(".home-subsystem-count")?.textContent).toBe("7 of 8");
-    expect(rowFor("Game Servers")?.querySelector(".home-subsystem-count")?.textContent).toBe("1 of 2");
+    expect(rowFor("Messaging")?.querySelector(".home-subsystem-count")?.textContent).toBe("3 of 3");
+    expect(rowFor("Game servers")?.querySelector(".home-subsystem-count")?.textContent).toBe("1 of 2");
   });
 
   // A row with nothing countable must not render an empty element, which would
@@ -832,6 +832,6 @@ describe("HomePanel readiness counts", () => {
     const labels = Array.from(container.querySelectorAll(".home-subsystem-button")).map((node) =>
       node.getAttribute("aria-label") || ""
     );
-    expect(labels.some((label) => label.includes("7 of 8"))).toBe(true);
+    expect(labels.some((label) => label.includes("1 of 2"))).toBe(true);
   });
 });

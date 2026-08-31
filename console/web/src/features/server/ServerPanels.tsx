@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { Tab } from "../../App";
 import { Play, Trash2 } from "lucide-react";
 import { serverApi, type PerformanceSnapshot } from "../../api/server";
+import { getServerPorts } from "../../api/serverPorts";
 import { runGatedRestart, serviceRestartTarget, type RestartGate } from "./restartQueueGuard";
 import { setupApi, type Task } from "../../api/setup";
 import { PortChecklist } from "../../components/PortChecklist";
@@ -137,8 +138,10 @@ export function performanceTrackTone(percent: number | null, sampled: boolean) {
   return "";
 }
 
-// Keyed on the labels summarizeHomeStatus() emits, so a renamed label loses its
-// route rather than pointing somewhere wrong.
+// Keyed on the stable row id, never the label. The label is display text and is
+// expected to change; the id is not. Keying on the label meant a rename silently
+// dropped the route -- the lookup fails closed, so the row simply stopped being
+// clickable with nothing failing but a button count.
 //
 // Every row goes to Server Control. These rows report *health*, and Server
 // Control is where health is diagnosed -- ReadinessTimeline, PortChecklist,
@@ -151,13 +154,35 @@ export function performanceTrackTone(percent: number | null, sampled: boolean) {
 // the sidebar lists -- "Services" is in ALL_TABS but has no navGroups entry, and
 // routing there dropped the operator on a panel with nothing highlighted and no
 // way back. App.activeTab.test.tsx guards that.
+// A Readiness & Health row. `id` is the stable key every lookup uses; `label` is
+// display text only.
+export type HomeHealthRow = { id: string; label: string; value: string; status: string; detail: string };
+
+// The rows, in display order. One home per service:
+//   database    dune-postgres, the world partitions, and 15432
+//   messaging   the two RabbitMQ brokers and the text router, which is a hard
+//               client of the game broker -- start-text-router.sh blocks on its
+//               TLS listener before starting
+//   battlegroup dune-director and dune-server-gateway
+//   games       every always-on map server and every map port
+//   fls         registration with Funcom's live service; owns no container
+//
+// dune-orchestrator and dune-coriolis-coordinator are deliberately unowned: the
+// control plane is always up, and the coordinator is optional.
+const HOME_HEALTH_ROWS: Array<{ id: string; label: string }> = [
+  { id: "database", label: "Database" },
+  { id: "messaging", label: "Messaging" },
+  { id: "battlegroup", label: "Battlegroup services" },
+  { id: "games", label: "Game servers" },
+  { id: "fls", label: "Funcom/FLS" }
+];
+
 export const HOME_SUBSYSTEM_ROUTES: Record<string, Tab> = {
-  Containers: "Server Control",
-  Listeners: "Server Control",
-  Database: "Server Control",
-  "Game Servers": "Server Control",
-  RabbitMQ: "Server Control",
-  "Funcom/FLS": "Server Control"
+  database: "Server Control",
+  messaging: "Server Control",
+  battlegroup: "Server Control",
+  games: "Server Control",
+  fls: "Server Control"
 };
 
 // Three missed idle polls. Derived from the sample's own age rather than a
@@ -648,7 +673,7 @@ function StatusFreshness({ sampledAtMs }: { sampledAtMs: number }) {
 
 // A row is a button when the subsystem has somewhere to be dealt with, so a
 // warning routes to the tab that can fix it instead of being a dead end.
-function HomeSubsystemList({ items, onNavigate }: { items: { label: string; value: string; status: string; detail: string }[]; onNavigate?: (tab: Tab) => void }) {
+function HomeSubsystemList({ items, onNavigate }: { items: HomeHealthRow[]; onNavigate?: (tab: Tab) => void }) {
   return <section className="home-subsystems" aria-label="Readiness and health">
     <h3>Readiness & Health</h3>
     <ul className="home-subsystem-list">
@@ -656,7 +681,7 @@ function HomeSubsystemList({ items, onNavigate }: { items: { label: string; valu
         // hasOwn, not a bare index: a plain object inherits Object.prototype,
         // so a label of "constructor" would return a truthy non-Tab value and
         // reach setTab. Fail-closed if labels ever stop being literals.
-        const route = Object.hasOwn(HOME_SUBSYSTEM_ROUTES, item.label) ? HOME_SUBSYSTEM_ROUTES[item.label] : undefined;
+        const route = Object.hasOwn(HOME_SUBSYSTEM_ROUTES, item.id) ? HOME_SUBSYSTEM_ROUTES[item.id] : undefined;
         const body = <>
           <span className="home-subsystem-label">{item.label}</span>
           <span className="home-subsystem-value">
@@ -672,7 +697,7 @@ function HomeSubsystemList({ items, onNavigate }: { items: { label: string; valu
         // detail carries how much of each subsystem is ready ("7 of 7"). It is
         // rendered inline rather than as a title, since a tooltip would hide the
         // count behind a hover the reading is not worth.
-        return <li key={item.label} className="home-subsystem-row">
+        return <li key={item.id} className="home-subsystem-row">
           {route && onNavigate
             ? <button type="button" className="home-subsystem-button" onClick={() => onNavigate(route)} aria-label={`${item.label}: ${item.value}${item.detail ? `, ${item.detail}` : ""}. Open ${route}`}>{body}</button>
             : <div className="home-subsystem-static">{body}</div>}
@@ -1661,13 +1686,21 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
   const rawOverall = findLineValue(status, ["overall"]);
   const readinessReady = /^READY:/m.test(readiness);
   const liveOverall = readinessReady ? "OK" : friendlyHomeOverall(rawOverall || (readiness ? "Readiness checked" : readinessWarning ? "Status loaded, readiness warning" : status ? "Status loaded" : loading ? "Checking" : "Unknown"));
-  const rawContainers = preferKnownHomeHealth(summarizeContainers(status), summarizeReadinessContainers(readiness));
-  const rawListeners = preferKnownHomeHealth(summarizeListeners(status), summarizeReadinessListeners(readiness));
-  const rawDatabase = preferKnownHomeHealth(summarizeDatabase(status), summarizeReadinessDatabase(readiness));
-  const rawGames = preferKnownHomeHealth(summarizeGameServers(status), summarizeReadinessGameServers(readiness));
-  const rawRabbit = preferKnownHomeHealth(summarizeRabbit(status), summarizeReadinessRabbit(readiness));
-  const rawFls = preferKnownHomeHealth(summarizeFls(status), summarizeReadinessFls(readiness));
-  const coreReadyWithReview = !runningAction && isHomeCoreReadyWithReview(status, readiness, rawContainers, rawListeners, rawDatabase, rawGames, rawRabbit, rawFls);
+  // One card per row, keyed by the row id. Every battlegroup container has
+  // exactly one home here, so nothing is reported twice.
+  //
+  // battlegroup has no readiness-derived fallback: `dune ready` reports per
+  // container and per check, with nothing that corresponds to "the director and
+  // gateway as a pair".
+  const raw: Record<string, { label: string; status: string; detail: string }> = {
+    database: preferKnownHomeHealth(summarizeDatabase(status), summarizeReadinessDatabase(readiness)),
+    messaging: preferKnownHomeHealth(summarizeMessaging(status), summarizeReadinessRabbit(readiness)),
+    battlegroup: summarizeBattlegroupServices(status),
+    games: preferKnownHomeHealth(summarizeGameServers(status), summarizeReadinessGameServers(readiness)),
+    fls: preferKnownHomeHealth(summarizeFls(status), summarizeReadinessFls(readiness))
+  };
+  const rawGames = raw.games;
+  const coreReadyWithReview = !runningAction && isHomeCoreReadyWithReview(status, readiness, raw);
   const isStarting = runningAction === "start" || runningAction === "restart" || restartSuccessAwaitingFreshStatus || (bootStarting && !coreReadyWithReview);
   const restartSuccessObserved = taskResult?.status === "succeeded" && /restart/i.test(taskResult.title || "");
   const restartStartObserved = restartStarted || restartSuccessAwaitingFreshStatus || restartSuccessObserved;
@@ -1675,10 +1708,10 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
     ? restartStartObserved ? "Starting" : "Restarting Battlegroup"
     : runningAction === "stop" ? "Stopping" : isStarting ? "Starting" : "";
   const warmingOverall = /^Warming$/i.test(rawGames.label) ? "Warming" : "";
-  const attentionHealth = !isStarting && !restartSuccessAwaitingFreshStatus && (serverState.stopped || actionStopped || actionFailed) ? attentionHomeHealthCards(serverState.stopped || actionStopped ? "stopped" : "failed") : null;
+  const attentionHealth = !isStarting && !restartSuccessAwaitingFreshStatus && (serverState.stopped || actionStopped || actionFailed) ? attentionHomeHealthCard(serverState.stopped || actionStopped ? "stopped" : "failed") : null;
   // status and readiness are two separate reads, so they can disagree: a stop
   // updates status to STOPPED while readiness is still the previous "READY:".
-  // Believing readiness there left the heading and all six rows reading Ready
+  // Believing readiness there left the heading and every row reading Ready
   // under a "Battlegroup Stopped" banner. A stop we observed, or an Overall:
   // STOPPED, beats a stale all-clear.
   const readyOverride = readinessReady && !attentionHealth ? { label: "OK", status: "Ready", detail: "" } : null;
@@ -1687,14 +1720,18 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
     ? "start"
     : runningAction === "restart" ? ""
       : runningAction || (restartSuccessAwaitingFreshStatus || (bootStarting && !coreReadyWithReview) ? "start" : "");
-  const containers = readyOverride || transitionHomeHealthCard(rawContainers, transitionAction) || attentionHealth?.containers || rawContainers;
-  const listeners = readyOverride || transitionHomeHealthCard(rawListeners, transitionAction) || attentionHealth?.listeners || rawListeners;
-  const database = readyOverride || transitionHomeHealthCard(rawDatabase, transitionAction) || attentionHealth?.database || rawDatabase;
-  const games = readyOverride || transitionHomeHealthCard(rawGames, transitionAction) || attentionHealth?.games || rawGames;
-  const rabbit = readyOverride || transitionHomeHealthCard(rawRabbit, transitionAction) || attentionHealth?.rabbit || rawRabbit;
-  const fls = funcomTokenAuthFailure
-    ? { label: "Token Mismatch Detected", status: "FAILED", detail: "" }
-    : readyOverride || transitionHomeHealthCard(rawFls, transitionAction) || attentionHealth?.fls || rawFls;
+  const healthRows: HomeHealthRow[] = HOME_HEALTH_ROWS.map(({ id, label }) => {
+    const rawCard = raw[id];
+    const shown = id === "fls" && funcomTokenAuthFailure
+      ? { label: "Token Mismatch Detected", status: "FAILED", detail: "" }
+      : readyOverride || transitionHomeHealthCard(rawCard, transitionAction) || attentionHealth || rawCard;
+    // The count comes from the RAW reading, not from whichever display override
+    // won. readyOverride and transitionHomeHealthCard both carry an empty
+    // detail, so taking it from them would blank the count in the two states it
+    // is most wanted: healthy, and mid-start. "3 of 7" is equally true whether
+    // the row is showing OK or "Getting Ready".
+    return { id, label, value: shown.label, status: shown.status, detail: rawCard.detail };
+  });
   const population = formatHomePopulation(findPopulation(status) || findLineValue(status, ["population", "players"]));
   return {
     identity: [
@@ -1706,19 +1743,7 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
       { label: "Battlegroup", value: findLineValue(status, ["battlegroup", "battlegroup id"]) || "Unknown", status: "Info", detail: "" },
       { label: "Population", value: population, status: population.includes("?") || population === "Unavailable" ? "WARN" : "Info", detail: "" }
     ],
-    health: [
-      // The count comes from the RAW reading, not from whichever display
-      // override won. readyOverride and transitionHomeHealthCard both carry an
-      // empty detail, so taking it from them would blank the count in the two
-      // states it is most wanted: healthy, and mid-start. "3 of 7" is equally
-      // true whether the row is showing OK or "Getting Ready".
-      { label: "Containers", value: containers.label, status: containers.status, detail: rawContainers.detail },
-      { label: "Listeners", value: listeners.label, status: listeners.status, detail: rawListeners.detail },
-      { label: "Database", value: database.label, status: database.status, detail: rawDatabase.detail },
-      { label: "Game Servers", value: games.label, status: games.status, detail: rawGames.detail },
-      { label: "RabbitMQ", value: rabbit.label, status: rabbit.status, detail: rawRabbit.detail },
-      { label: "Funcom/FLS", value: fls.label, status: fls.status, detail: rawFls.detail }
-    ]
+    health: healthRows
   };
 }
 
@@ -1730,7 +1755,7 @@ export function homeNeedsWarmRefresh(status: string, readiness: string) {
   if (!status && !readiness) return false;
   const summary = summarizeHomeStatus(status, readiness, "", false);
   const overall = summary.identity.find((item) => item.label === "Overall");
-  const games = summary.health.find((item) => item.label === "Game Servers");
+  const games = summary.health.find((item) => item.id === "games");
   const overallOk = /^OK$/i.test(String(overall?.value || "")) || /^Ready$/i.test(String(overall?.status || ""));
   const gamesOk = /^OK$/i.test(String(games?.value || "")) && /^Ready$/i.test(String(games?.status || ""));
   const gameServerText = sectionLines(status, "Game servers").join("\n");
@@ -1744,19 +1769,14 @@ export function homeNeedsWarmRefresh(status: string, readiness: string) {
 function isHomeCoreReadyWithReview(
   status: string,
   readiness: string,
-  containers: { label: string; status: string; detail: string },
-  listeners: { label: string; status: string; detail: string },
-  database: { label: string; status: string; detail: string },
-  games: { label: string; status: string; detail: string },
-  rabbit: { label: string; status: string; detail: string },
-  fls: { label: string; status: string; detail: string }
+  cards: Record<string, { label: string; status: string; detail: string }>
 ) {
   const text = `${status}\n${readiness}`;
-  const gamesReady = isReadyHomeCard(games) || (/OK\s+Survival_1\s+ready/i.test(text) && /OK\s+Overmap\s+ready/i.test(text));
-  const databaseReady = isReadyHomeCard(database) || /OK\s+world_partition rows:/i.test(text);
-  const rabbitReady = isReadyHomeCard(rabbit) || /OK\s+game server sg\.\* RMQ connections/i.test(text);
-  const hasReview = [containers, listeners, database, games, rabbit, fls].some((item) => /^Needs Review$/i.test(item.label) || /^WARN$/i.test(item.status));
-  return gamesReady && databaseReady && rabbitReady && hasReview;
+  const gamesReady = isReadyHomeCard(cards.games) || (/OK\s+Survival_1\s+ready/i.test(text) && /OK\s+Overmap\s+ready/i.test(text));
+  const databaseReady = isReadyHomeCard(cards.database) || /OK\s+world_partition rows:/i.test(text);
+  const messagingReady = isReadyHomeCard(cards.messaging) || /OK\s+game server sg\.\* RMQ connections/i.test(text);
+  const hasReview = Object.values(cards).some((item) => /^Needs Review$/i.test(item.label) || /^WARN$/i.test(item.status));
+  return gamesReady && databaseReady && messagingReady && hasReview;
 }
 
 function isReadyHomeCard(item: { label: string; status: string; detail: string }) {
@@ -1864,11 +1884,11 @@ export function isHomeActionComplete(status: string, readiness: string, elapsedM
   const statusReady = isHomeStartComplete(status, readiness);
   const readinessReady = isHomeReadinessOperational(readiness);
   const summary = summarizeHomeStatus(status, readiness, "", false);
-  const games = summary.health.find((item) => item.label === "Game Servers");
+  const games = summary.health.find((item) => item.id === "games");
   const healthOk = summary.health.length > 0 && summary.health.every((item) =>
     /^OK$/i.test(String(item.value || "")) && /^Ready$/i.test(String(item.status || ""))
   );
-  const nonGameHealthOk = summary.health.filter((item) => item.label !== "Game Servers").every((item) =>
+  const nonGameHealthOk = summary.health.filter((item) => item.id !== "games").every((item) =>
     /^OK$/i.test(String(item.value || "")) && /^Ready$/i.test(String(item.status || ""))
   );
   const gamesWarming = /^Warming$/i.test(String(games?.value || ""));
@@ -2016,8 +2036,8 @@ export function isHomeStartComplete(status: string, readiness: string) {
   const flsLines = sectionLines(status, "Funcom/FLS summary");
   const flsReady = flsLines.length > 0 && !flsLines.some((line) => /:\s*(WAIT|FAIL|ERROR|MISSING)/i.test(line));
 
-  const rabbit = summarizeRabbit(status);
-  const rabbitReady = /^OK$/i.test(rabbit.label) && /^Ready$/i.test(rabbit.status);
+  const messaging = summarizeMessaging(status);
+  const messagingReady = /^OK$/i.test(messaging.label) && /^Ready$/i.test(messaging.status);
 
   // A battlegroup whose containers are up but whose maps are still WARMING is
   // not ready to play on, so the maps gate "started" like everything else.
@@ -2026,7 +2046,7 @@ export function isHomeStartComplete(status: string, readiness: string) {
   const games = summarizeGameServers(status);
   const gameServersReady = /^OK$/i.test(games.label) && /^Ready$/i.test(games.status);
 
-  return containersReady && listenersReady && databaseReady && flsReady && rabbitReady && gameServersReady;
+  return containersReady && listenersReady && databaseReady && flsReady && messagingReady && gameServersReady;
 }
 
 export function containerStatusLineHas(containerName: string, line: string, statusPattern: RegExp) {
@@ -2050,18 +2070,11 @@ function textHasContainerReadiness(text: string, state: "OK" | "FAIL", container
 // the same: a stopped battlegroup has a known cause and every subsystem is off,
 // while a failed start leaves the subsystems in whatever state the failure left
 // them. Saying "Stopped" for a failed start would be a false claim.
-function attentionHomeHealthCards(reason: "stopped" | "failed") {
-  const item = reason === "stopped"
+// Every row gets the same card, so this is one card rather than a per-row map.
+function attentionHomeHealthCard(reason: "stopped" | "failed") {
+  return reason === "stopped"
     ? { label: "Stopped", status: "FAILED", detail: "" }
     : { label: "Needs Review", status: "WARN", detail: "" };
-  return {
-    containers: item,
-    listeners: item,
-    database: item,
-    games: item,
-    rabbit: item,
-    fls: item
-  };
 }
 
 function transitionHomeHealthCard(item: { label: string; status: string; detail: string }, runningAction: "start" | "stop" | "restart" | "") {
@@ -2219,22 +2232,108 @@ export function summarizeContainers(text: string) {
   return bad ? { label: "Needs Review", status: "WARN", detail } : { label: "OK", status: "Ready", detail };
 }
 
-function summarizeListeners(text: string) {
-  const lines = sectionLines(text, "Listeners").filter((line) => !/^CHECK\s+PORT\s+STATUS/i.test(line));
-  if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
-  const bad = lines.find((line) => /\b(MISSING|FAIL|ERROR)\b/i.test(line));
-  const detail = `${lines.filter((line) => !/\b(MISSING|FAIL|ERROR)\b/i.test(line)).length} of ${lines.length}`;
-  return bad ? { label: "Needs Review", status: "WARN", detail } : { label: "OK", status: "Ready", detail };
+// Which services each row owns. Every battlegroup container has exactly one
+// home, so nothing is counted twice: the Containers and Listeners rows used to
+// re-report services that Database, Messaging, Game servers and Funcom/FLS
+// already covered.
+const DATABASE_CONTAINERS = ["dune-postgres"];
+const MESSAGING_CONTAINERS = ["dune-rmq-admin", "dune-rmq-game", "dune-text-router"];
+const BATTLEGROUP_SERVICE_CONTAINERS = ["dune-director", "dune-server-gateway"];
+
+// Listener rows keyed by `${port}/${protocol}` -- the only unique key. Labels
+// repeat: two partitions of Survival_1 both print "Survival_1 clients", on
+// different ports, and a map may be named anything Funcom's world template
+// contains. Ports come from the instance's resolved configuration, not the
+// stock values, so a host on non-default ports still attributes correctly.
+function listenerStates(text: string) {
+  const states = new Map<string, string>();
+  for (const line of sectionLines(text, "Listeners")) {
+    const match = line.match(/^(.+?)\s+(\d{2,5})\/(tcp|udp)\s+(\S+)$/i);
+    if (match) states.set(`${match[2]}/${match[3].toLowerCase()}`, match[4].toUpperCase());
+  }
+  return states;
+}
+
+// The six TCP service ports, by owning row. Everything else in the section --
+// every map client/S2S port, fixed or dynamically spawned -- belongs to Game
+// servers, so no listener row is unowned and none is owned twice.
+function ownedListenerKeys() {
+  const ports = getServerPorts();
+  return {
+    database: [`${ports.postgres}/tcp`],
+    messaging: [`${ports.rmqAdmin}/tcp`, `${ports.rmqGame}/tcp`, `${ports.rmqGameHttp}/tcp`, `${ports.textRouter}/tcp`],
+    battlegroup: [`${ports.director}/tcp`]
+  };
+}
+
+// A port that is not printed at all is unknown, not failed: status.sh omits
+// rows whose port could not be resolved.
+function listenerPortsOk(states: Map<string, string>, keys: string[]) {
+  return keys.every((key) => !states.has(key) || states.get(key) === "OK");
+}
+
+function mapListenerPortsOk(text: string) {
+  const owned = ownedListenerKeys();
+  const service = new Set([...owned.database, ...owned.messaging, ...owned.battlegroup]);
+  const states = listenerStates(text);
+  return [...states.entries()].every(([key, state]) => service.has(key) || state === "OK");
+}
+
+// How many of a row's containers are up, from the container table.
+function serviceContainerState(text: string, names: string[]) {
+  const lines = containerSectionLines(text);
+  const rows = names.map((name) => lines.find((line) => containerLineName(line).toLowerCase() === name));
+  return {
+    listed: rows.filter(Boolean).length,
+    up: rows.filter((line) => line && !CONTAINER_DOWN.test(line)).length,
+    total: names.length
+  };
+}
+
+// Counts are services, not checks: a closed port turns the row amber without
+// changing the denominator, so "Messaging" reads 3 of 3 rather than 7 of 7.
+function summarizeServiceGroup(text: string, names: string[], portKeys: string[]) {
+  const { listed, up, total } = serviceContainerState(text, names);
+  if (!listed) return { label: "Unknown", status: "Unknown", detail: "" };
+  const detail = `${up} of ${total}`;
+  if (up < total) return { label: "Needs Review", status: "WARN", detail };
+  if (!listenerPortsOk(listenerStates(text), portKeys)) return { label: "Needs Review", status: "WARN", detail };
+  return { label: "OK", status: "Ready", detail };
+}
+
+function summarizeMessaging(text: string) {
+  const group = summarizeServiceGroup(text, MESSAGING_CONTAINERS, ownedListenerKeys().messaging);
+  if (!/^OK$/i.test(group.label)) return group;
+  // This row also owns the game broker's connection report: the containers can
+  // all be up while no game server has actually connected to the broker.
+  const lines = sectionLines(text, "RabbitMQ game connections");
+  if (lines.some((line) => /not running|missing|failed/i.test(line))) {
+    return { ...group, label: "Needs Review", status: "WARN" };
+  }
+  const director = numberAfterLabel(lines, "Director connections");
+  const game = numberAfterLabel(lines, "Game server connections");
+  if ((director !== null && director < 1) || (game !== null && game < 1)) {
+    return { ...group, label: "Needs Review", status: "WARN" };
+  }
+  return group;
+}
+
+function summarizeBattlegroupServices(text: string) {
+  return summarizeServiceGroup(text, BATTLEGROUP_SERVICE_CONTAINERS, ownedListenerKeys().battlegroup);
 }
 
 function summarizeDatabase(text: string) {
   const value = findLineValue(sectionLines(text, "Database").join("\n"), ["World partitions"]);
   if (!value) return { label: "Unknown", status: "Unknown", detail: "" };
   const count = Number(value);
-  // Deliberately no detail: the partition count is a property of the world, not
-  // a count of how much of this subsystem is ready, and reading "32 partitions"
-  // beside five x-of-y counts invited it to be read as one.
-  if (Number.isFinite(count) && count > 0) return { label: "OK", status: "Ready", detail: "" };
+  // This row owns dune-postgres outright, so it reports the container and its
+  // port as well as the world data. Deliberately no detail: one service needs
+  // no x-of-y, and the partition count is a property of the world rather than a
+  // measure of how much of the subsystem is ready.
+  const { up, total } = serviceContainerState(text, DATABASE_CONTAINERS);
+  const portsOk = listenerPortsOk(listenerStates(text), ownedListenerKeys().database);
+  const ready = Number.isFinite(count) && count > 0 && up === total && portsOk;
+  if (ready) return { label: "OK", status: "Ready", detail: "" };
   return { label: "Needs Review", status: "WARN", detail: "" };
 }
 
@@ -2253,35 +2352,10 @@ function summarizeGameServers(text: string) {
   const detail = `${lines.filter((line) => /\bREADY\b/i.test(line)).length} of ${lines.length}`;
   if (bad) return { label: "Needs Review", status: "WARN", detail };
   if (wait) return { label: "Warming", status: "Info", detail };
-  return { label: "OK", status: "Ready", detail };
-}
-
-// RabbitMQ is two services. The connections section says whether the game
-// broker is reachable but never mentions the admin broker, so the count comes
-// from the container table, which lists both.
-const RABBIT_CONTAINERS = ["dune-rmq-admin", "dune-rmq-game"];
-
-function rabbitContainerCount(text: string) {
-  const containerLines = containerSectionLines(text);
-  const rows = RABBIT_CONTAINERS.map((name) =>
-    containerLines.find((line) => containerLineName(line).toLowerCase() === name)
-  );
-  // No container table at all is unknown, not "0 of 2".
-  if (!rows.some(Boolean)) return "";
-  const up = rows.filter((line) => line && !CONTAINER_DOWN.test(line)).length;
-  return `${up} of ${RABBIT_CONTAINERS.length}`;
-}
-
-function summarizeRabbit(text: string) {
-  const detail = rabbitContainerCount(text);
-  const lines = sectionLines(text, "RabbitMQ game connections");
-  if (!lines.length) return { label: "Unknown", status: "Unknown", detail };
-  if (lines.some((line) => /not running|missing|failed/i.test(line))) return { label: "Needs Review", status: "WARN", detail };
-  const director = numberAfterLabel(lines, "Director connections");
-  const game = numberAfterLabel(lines, "Game server connections");
-  if ((director !== null && director < 1) || (game !== null && game < 1)) {
-    return { label: "Needs Review", status: "WARN", detail };
-  }
+  // This row owns every listener port that is not one of the six TCP service
+  // ports -- all the map client and S2S ports, fixed and dynamic alike. Without
+  // this they would be unowned once the flat Listeners row went away.
+  if (!mapListenerPortsOk(text)) return { label: "Needs Review", status: "WARN", detail };
   return { label: "OK", status: "Ready", detail };
 }
 
@@ -2299,22 +2373,6 @@ function summarizeFls(text: string) {
   const detail = `${lines.filter((line) => /:\s*OK\b/i.test(line)).length} of ${lines.length}`;
   if (bad) return { label: "Needs Review", status: "WARN", detail };
   return { label: "OK", status: "Ready", detail };
-}
-
-function summarizeReadinessContainers(text: string) {
-  const lines = readinessRows(text, /container\s+dune-/i);
-  if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
-  return lines.every((line) => /^OK\s+/i.test(line))
-    ? { label: "OK", status: "Ready", detail: "" }
-    : { label: "Needs Review", status: "WARN", detail: "" };
-}
-
-function summarizeReadinessListeners(text: string) {
-  const lines = readinessRows(text, /\b(TCP|UDP)\s+\d+/i);
-  if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
-  return lines.every((line) => /^OK\s+/i.test(line))
-    ? { label: "OK", status: "Ready", detail: "" }
-    : { label: "Needs Review", status: "WARN", detail: "" };
 }
 
 function summarizeReadinessDatabase(text: string) {
