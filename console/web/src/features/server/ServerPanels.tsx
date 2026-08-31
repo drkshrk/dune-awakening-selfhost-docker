@@ -665,14 +665,16 @@ function HomeSubsystemList({ items, onNavigate }: { items: { label: string; valu
                 case. Anything else ("Warming", "Token Mismatch Detected",
                 "3 of 8 up") is the detail the pill cannot carry, so it stays. */}
             {!/^OK$/i.test(item.value) && <span>{formatDisplayValue(item.value)}</span>}
+            {item.detail && <span className="home-subsystem-count">{item.detail}</span>}
             <StatusPill value={item.status} />
           </span>
         </>;
-        // No `title`: every producer of a health card emits detail: "", so a
-        // tooltip would advertise a hover affordance that never has content.
+        // detail carries how much of each subsystem is ready ("7 of 7"). It is
+        // rendered inline rather than as a title, since a tooltip would hide the
+        // count behind a hover the reading is not worth.
         return <li key={item.label} className="home-subsystem-row">
           {route && onNavigate
-            ? <button type="button" className="home-subsystem-button" onClick={() => onNavigate(route)} aria-label={`${item.label}: ${item.value}. Open ${route}`}>{body}</button>
+            ? <button type="button" className="home-subsystem-button" onClick={() => onNavigate(route)} aria-label={`${item.label}: ${item.value}${item.detail ? `, ${item.detail}` : ""}. Open ${route}`}>{body}</button>
             : <div className="home-subsystem-static">{body}</div>}
         </li>;
       })}
@@ -1705,12 +1707,17 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
       { label: "Population", value: population, status: population.includes("?") || population === "Unavailable" ? "WARN" : "Info", detail: "" }
     ],
     health: [
-      { label: "Containers", value: containers.label, status: containers.status, detail: containers.detail },
-      { label: "Listeners", value: listeners.label, status: listeners.status, detail: listeners.detail },
-      { label: "Database", value: database.label, status: database.status, detail: database.detail },
-      { label: "Game Servers", value: games.label, status: games.status, detail: games.detail },
-      { label: "RabbitMQ", value: rabbit.label, status: rabbit.status, detail: rabbit.detail },
-      { label: "Funcom/FLS", value: fls.label, status: fls.status, detail: fls.detail }
+      // The count comes from the RAW reading, not from whichever display
+      // override won. readyOverride and transitionHomeHealthCard both carry an
+      // empty detail, so taking it from them would blank the count in the two
+      // states it is most wanted: healthy, and mid-start. "3 of 7" is equally
+      // true whether the row is showing OK or "Getting Ready".
+      { label: "Containers", value: containers.label, status: containers.status, detail: rawContainers.detail },
+      { label: "Listeners", value: listeners.label, status: listeners.status, detail: rawListeners.detail },
+      { label: "Database", value: database.label, status: database.status, detail: rawDatabase.detail },
+      { label: "Game Servers", value: games.label, status: games.status, detail: rawGames.detail },
+      { label: "RabbitMQ", value: rabbit.label, status: rabbit.status, detail: rawRabbit.detail },
+      { label: "Funcom/FLS", value: fls.label, status: fls.status, detail: rawFls.detail }
     ]
   };
 }
@@ -2204,21 +2211,29 @@ export function summarizeContainers(text: string) {
   // the row while the other five read OK.
   const lines = battlegroup.rows(text);
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
+  // Denominator is the expected eight, not the printed rows: a container with
+  // no row at all is missing, and "7 of 7" would hide exactly that.
+  const up = lines.filter((line) => !CONTAINER_DOWN.test(line)).length;
+  const detail = `${up} of ${BATTLEGROUP_CONTAINERS.length}`;
   const bad = lines.find((line) => CONTAINER_DOWN.test(line));
-  return bad ? { label: "Needs Review", status: "WARN", detail: "" } : { label: "OK", status: "Ready", detail: "" };
+  return bad ? { label: "Needs Review", status: "WARN", detail } : { label: "OK", status: "Ready", detail };
 }
 
 function summarizeListeners(text: string) {
   const lines = sectionLines(text, "Listeners").filter((line) => !/^CHECK\s+PORT\s+STATUS/i.test(line));
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
   const bad = lines.find((line) => /\b(MISSING|FAIL|ERROR)\b/i.test(line));
-  return bad ? { label: "Needs Review", status: "WARN", detail: "" } : { label: "OK", status: "Ready", detail: "" };
+  const detail = `${lines.filter((line) => !/\b(MISSING|FAIL|ERROR)\b/i.test(line)).length} of ${lines.length}`;
+  return bad ? { label: "Needs Review", status: "WARN", detail } : { label: "OK", status: "Ready", detail };
 }
 
 function summarizeDatabase(text: string) {
   const value = findLineValue(sectionLines(text, "Database").join("\n"), ["World partitions"]);
   if (!value) return { label: "Unknown", status: "Unknown", detail: "" };
   const count = Number(value);
+  // Deliberately no detail: the partition count is a property of the world, not
+  // a count of how much of this subsystem is ready, and reading "32 partitions"
+  // beside five x-of-y counts invited it to be read as one.
   if (Number.isFinite(count) && count > 0) return { label: "OK", status: "Ready", detail: "" };
   return { label: "Needs Review", status: "WARN", detail: "" };
 }
@@ -2235,29 +2250,55 @@ function summarizeGameServers(text: string) {
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
   const bad = lines.find((line) => /\b(ERROR|NOT RUNNING|MISSING)\b/i.test(line));
   const wait = lines.find((line) => /\b(WARMING|WAIT)\b/i.test(line));
-  if (bad) return { label: "Needs Review", status: "WARN", detail: "" };
-  if (wait) return { label: "Warming", status: "Info", detail: "" };
-  return { label: "OK", status: "Ready", detail: "" };
+  const detail = `${lines.filter((line) => /\bREADY\b/i.test(line)).length} of ${lines.length}`;
+  if (bad) return { label: "Needs Review", status: "WARN", detail };
+  if (wait) return { label: "Warming", status: "Info", detail };
+  return { label: "OK", status: "Ready", detail };
+}
+
+// RabbitMQ is two services. The connections section says whether the game
+// broker is reachable but never mentions the admin broker, so the count comes
+// from the container table, which lists both.
+const RABBIT_CONTAINERS = ["dune-rmq-admin", "dune-rmq-game"];
+
+function rabbitContainerCount(text: string) {
+  const containerLines = containerSectionLines(text);
+  const rows = RABBIT_CONTAINERS.map((name) =>
+    containerLines.find((line) => containerLineName(line).toLowerCase() === name)
+  );
+  // No container table at all is unknown, not "0 of 2".
+  if (!rows.some(Boolean)) return "";
+  const up = rows.filter((line) => line && !CONTAINER_DOWN.test(line)).length;
+  return `${up} of ${RABBIT_CONTAINERS.length}`;
 }
 
 function summarizeRabbit(text: string) {
+  const detail = rabbitContainerCount(text);
   const lines = sectionLines(text, "RabbitMQ game connections");
-  if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
-  if (lines.some((line) => /not running|missing|failed/i.test(line))) return { label: "Needs Review", status: "WARN", detail: "" };
+  if (!lines.length) return { label: "Unknown", status: "Unknown", detail };
+  if (lines.some((line) => /not running|missing|failed/i.test(line))) return { label: "Needs Review", status: "WARN", detail };
   const director = numberAfterLabel(lines, "Director connections");
   const game = numberAfterLabel(lines, "Game server connections");
   if ((director !== null && director < 1) || (game !== null && game < 1)) {
-    return { label: "Needs Review", status: "WARN", detail: "" };
+    return { label: "Needs Review", status: "WARN", detail };
   }
-  return { label: "OK", status: "Ready", detail: "" };
+  return { label: "OK", status: "Ready", detail };
 }
 
 function summarizeFls(text: string) {
-  const lines = sectionLines(text, "Funcom/FLS summary");
+  // Funcom/FLS is the LAST section status.sh prints, so sectionLines runs to end
+  // of output and picks up the trailing "Tip:" lines with it. Narrow to rows
+  // that actually carry a state: counting the tips made a healthy host read
+  // "4 of 6", and only luck kept them out of the failure check below -- one of
+  // those tips contains the word "fail".
+  const lines = sectionLines(text, "Funcom/FLS summary").filter((line) =>
+    /:\s*(OK|WAIT|FAIL|ERROR|MISSING)\b/i.test(line)
+  );
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
   const bad = lines.find((line) => /:\s*(WAIT|FAIL|ERROR|MISSING)/i.test(line));
-  if (bad) return { label: "Needs Review", status: "WARN", detail: "" };
-  return { label: "OK", status: "Ready", detail: "" };
+  const detail = `${lines.filter((line) => /:\s*OK\b/i.test(line)).length} of ${lines.length}`;
+  if (bad) return { label: "Needs Review", status: "WARN", detail };
+  return { label: "OK", status: "Ready", detail };
 }
 
 function summarizeReadinessContainers(text: string) {

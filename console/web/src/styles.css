@@ -2249,6 +2249,18 @@ body.debug .technical-details { display: block; }
 /* Only the text gives way -- the badge is already compact and must stay whole. */
 .home-subsystem-value > span:not(.badge) { min-width: 0; overflow-wrap: anywhere; }
 .home-subsystem-value > .badge { flex: 0 0 auto; }
+/* How much of a subsystem is ready ("7 of 7"). --text-subtle, not the warm
+   --muted the row already uses: this console is uniformly amber, so a second
+   warm step beside the value reads as the same text rather than as a
+   secondary reading. Tabular figures stop the digits shifting as counts
+   change during a start. */
+.home-subsystem-count {
+  flex: 0 0 auto;
+  color: var(--text-subtle);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 
 /* Stop destroys running state; it should not read as the peer of the read-only
    Refresh beside it. Border and text only -- filled danger is for dialogs. */
