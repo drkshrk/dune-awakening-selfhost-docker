@@ -137,8 +137,10 @@ export function performanceTrackTone(percent: number | null, sampled: boolean) {
   return "";
 }
 
-// Keyed on the labels summarizeHomeStatus() emits, so a renamed label loses its
-// route rather than pointing somewhere wrong.
+// Keyed on the stable row id, never the label. The label is display text and is
+// expected to change; the id is not. Keying on the label meant a rename silently
+// dropped the route -- the lookup fails closed, so the row simply stopped being
+// clickable with nothing failing but a button count.
 //
 // Every row goes to Server Control. These rows report *health*, and Server
 // Control is where health is diagnosed -- ReadinessTimeline, PortChecklist,
@@ -151,13 +153,17 @@ export function performanceTrackTone(percent: number | null, sampled: boolean) {
 // the sidebar lists -- "Services" is in ALL_TABS but has no navGroups entry, and
 // routing there dropped the operator on a panel with nothing highlighted and no
 // way back. App.activeTab.test.tsx guards that.
+// A Readiness & Health row. `id` is the stable key every lookup uses; `label` is
+// display text only.
+export type HomeHealthRow = { id: string; label: string; value: string; status: string; detail: string };
+
 export const HOME_SUBSYSTEM_ROUTES: Record<string, Tab> = {
-  Containers: "Server Control",
-  Listeners: "Server Control",
-  Database: "Server Control",
-  "Game Servers": "Server Control",
-  RabbitMQ: "Server Control",
-  "Funcom/FLS": "Server Control"
+  containers: "Server Control",
+  listeners: "Server Control",
+  database: "Server Control",
+  games: "Server Control",
+  rabbit: "Server Control",
+  fls: "Server Control"
 };
 
 // Three missed idle polls. Derived from the sample's own age rather than a
@@ -648,7 +654,7 @@ function StatusFreshness({ sampledAtMs }: { sampledAtMs: number }) {
 
 // A row is a button when the subsystem has somewhere to be dealt with, so a
 // warning routes to the tab that can fix it instead of being a dead end.
-function HomeSubsystemList({ items, onNavigate }: { items: { label: string; value: string; status: string; detail: string }[]; onNavigate?: (tab: Tab) => void }) {
+function HomeSubsystemList({ items, onNavigate }: { items: HomeHealthRow[]; onNavigate?: (tab: Tab) => void }) {
   return <section className="home-subsystems" aria-label="Readiness and health">
     <h3>Readiness & Health</h3>
     <ul className="home-subsystem-list">
@@ -656,7 +662,7 @@ function HomeSubsystemList({ items, onNavigate }: { items: { label: string; valu
         // hasOwn, not a bare index: a plain object inherits Object.prototype,
         // so a label of "constructor" would return a truthy non-Tab value and
         // reach setTab. Fail-closed if labels ever stop being literals.
-        const route = Object.hasOwn(HOME_SUBSYSTEM_ROUTES, item.label) ? HOME_SUBSYSTEM_ROUTES[item.label] : undefined;
+        const route = Object.hasOwn(HOME_SUBSYSTEM_ROUTES, item.id) ? HOME_SUBSYSTEM_ROUTES[item.id] : undefined;
         const body = <>
           <span className="home-subsystem-label">{item.label}</span>
           <span className="home-subsystem-value">
@@ -672,7 +678,7 @@ function HomeSubsystemList({ items, onNavigate }: { items: { label: string; valu
         // detail carries how much of each subsystem is ready ("7 of 7"). It is
         // rendered inline rather than as a title, since a tooltip would hide the
         // count behind a hover the reading is not worth.
-        return <li key={item.label} className="home-subsystem-row">
+        return <li key={item.id} className="home-subsystem-row">
           {route && onNavigate
             ? <button type="button" className="home-subsystem-button" onClick={() => onNavigate(route)} aria-label={`${item.label}: ${item.value}${item.detail ? `, ${item.detail}` : ""}. Open ${route}`}>{body}</button>
             : <div className="home-subsystem-static">{body}</div>}
@@ -1712,12 +1718,12 @@ export function summarizeHomeStatus(status: string, readiness: string, readiness
       // empty detail, so taking it from them would blank the count in the two
       // states it is most wanted: healthy, and mid-start. "3 of 7" is equally
       // true whether the row is showing OK or "Getting Ready".
-      { label: "Containers", value: containers.label, status: containers.status, detail: rawContainers.detail },
-      { label: "Listeners", value: listeners.label, status: listeners.status, detail: rawListeners.detail },
-      { label: "Database", value: database.label, status: database.status, detail: rawDatabase.detail },
-      { label: "Game Servers", value: games.label, status: games.status, detail: rawGames.detail },
-      { label: "RabbitMQ", value: rabbit.label, status: rabbit.status, detail: rawRabbit.detail },
-      { label: "Funcom/FLS", value: fls.label, status: fls.status, detail: rawFls.detail }
+      { id: "containers", label: "Containers", value: containers.label, status: containers.status, detail: rawContainers.detail },
+      { id: "listeners", label: "Listeners", value: listeners.label, status: listeners.status, detail: rawListeners.detail },
+      { id: "database", label: "Database", value: database.label, status: database.status, detail: rawDatabase.detail },
+      { id: "games", label: "Game Servers", value: games.label, status: games.status, detail: rawGames.detail },
+      { id: "rabbit", label: "RabbitMQ", value: rabbit.label, status: rabbit.status, detail: rawRabbit.detail },
+      { id: "fls", label: "Funcom/FLS", value: fls.label, status: fls.status, detail: rawFls.detail }
     ]
   };
 }
@@ -1730,7 +1736,7 @@ export function homeNeedsWarmRefresh(status: string, readiness: string) {
   if (!status && !readiness) return false;
   const summary = summarizeHomeStatus(status, readiness, "", false);
   const overall = summary.identity.find((item) => item.label === "Overall");
-  const games = summary.health.find((item) => item.label === "Game Servers");
+  const games = summary.health.find((item) => item.id === "games");
   const overallOk = /^OK$/i.test(String(overall?.value || "")) || /^Ready$/i.test(String(overall?.status || ""));
   const gamesOk = /^OK$/i.test(String(games?.value || "")) && /^Ready$/i.test(String(games?.status || ""));
   const gameServerText = sectionLines(status, "Game servers").join("\n");
@@ -1864,11 +1870,11 @@ export function isHomeActionComplete(status: string, readiness: string, elapsedM
   const statusReady = isHomeStartComplete(status, readiness);
   const readinessReady = isHomeReadinessOperational(readiness);
   const summary = summarizeHomeStatus(status, readiness, "", false);
-  const games = summary.health.find((item) => item.label === "Game Servers");
+  const games = summary.health.find((item) => item.id === "games");
   const healthOk = summary.health.length > 0 && summary.health.every((item) =>
     /^OK$/i.test(String(item.value || "")) && /^Ready$/i.test(String(item.status || ""))
   );
-  const nonGameHealthOk = summary.health.filter((item) => item.label !== "Game Servers").every((item) =>
+  const nonGameHealthOk = summary.health.filter((item) => item.id !== "games").every((item) =>
     /^OK$/i.test(String(item.value || "")) && /^Ready$/i.test(String(item.status || ""))
   );
   const gamesWarming = /^Warming$/i.test(String(games?.value || ""));

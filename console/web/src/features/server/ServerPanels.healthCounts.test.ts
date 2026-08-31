@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { summarizeHomeStatus } from "./ServerPanels";
+import { HOME_SUBSYSTEM_ROUTES, summarizeHomeStatus } from "./ServerPanels";
 
 // Shaped after real dune2 output, 2026-08-31.
 const BATTLEGROUP = [
@@ -204,6 +204,39 @@ describe("the count does not disturb the lifecycle contract", () => {
   it("leaves a healthy row's value as the bare OK", () => {
     for (const [label, value] of Object.entries(values(statusText()))) {
       expect(value, `${label} value`).toBe("OK");
+    }
+  });
+});
+
+// Every lookup keys on the row id, never the label. The label is display text
+// and is expected to change; keying on it fails SILENTLY -- the route lookup
+// fails closed so the row just stops being clickable, and
+// isHomeActionComplete's find returns undefined so the warming-map path is
+// permanently disabled with nothing failing.
+describe("health rows are addressed by a stable id", () => {
+  const rows = () => summarizeHomeStatus(statusText(), READY_READINESS, "", false).health;
+
+  it("gives every row an id", () => {
+    for (const row of rows()) expect(row.id, `${row.label} id`).toMatch(/^[a-z][a-z-]*$/);
+  });
+
+  it("uses ids that are unique", () => {
+    const ids = rows().map((r) => r.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  // Catches a new row added without a route, and an id renamed on one side
+  // only -- both of which would otherwise only show up as a button count.
+  it("has a route for every row id", () => {
+    for (const row of rows()) {
+      expect(Object.hasOwn(HOME_SUBSYSTEM_ROUTES, row.id), `no route for id "${row.id}" (${row.label})`).toBe(true);
+    }
+  });
+
+  it("routes nothing that is not a row id", () => {
+    const ids = new Set(rows().map((r) => r.id));
+    for (const key of Object.keys(HOME_SUBSYSTEM_ROUTES)) {
+      expect(ids.has(key), `route "${key}" matches no row`).toBe(true);
     }
   });
 });
