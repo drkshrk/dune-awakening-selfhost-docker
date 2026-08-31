@@ -33,10 +33,14 @@
   --danger: #a74949;
   --danger-strong: #8d3434;
   --danger-text: #ffb4a8;
-  /* For small filled indicators only, never text. At 11px --danger-text is a
-     pale salmon not separable from --title's amber (measured side by side), and
-     --danger reads brown on the card background. This is the middle. */
+  /* At 11px --danger-text is a pale salmon not separable from --title's amber
+     (measured side by side), and --danger reads brown on the card background.
+     This is the middle. 4.78:1 on --panel -- the narrowest margin of the tones,
+     so check it first if the surface colour ever changes. */
   --danger-signal: #e05a4f;
+  /* Blue is the palette's informational hue (.badge-info) and the one family
+     that does not blur into the warm chrome. 8.29:1 on --panel. */
+  --state-motion: #85b7eb;
   --warning: #a97932;
   background: var(--bg);
   color: var(--text);
@@ -2254,16 +2258,19 @@ body.debug .technical-details { display: block; }
 .home-state-dot-ok { background: var(--success-text); }
 .home-state-dot-attention { background: var(--title); }
 .home-state-dot-failed { background: var(--danger-signal); }
-/* Off on purpose: solid, because the hollow ring means "no reading". Uses
-   --text-subtle, not the warm --muted, which blurred into --title at 11px. */
-.home-state-dot-off { background: var(--text-subtle); }
-/* Blue is already the palette's informational hue (.badge-info) and the one
-   family that does not blur into the warm chrome. */
-.home-state-dot-motion { background: #85b7eb; animation: state-dot-pulse 1.6s ease-in-out infinite; }
+.home-state-dot-motion { background: var(--state-motion); animation: state-dot-pulse 1.6s ease-in-out infinite; }
 /* Dashed vs solid, not just pulsing vs still: prefers-reduced-motion strips the
    animation, which would otherwise make these two identical. */
 .home-state-dot-loading { background: transparent; border: 2px dashed var(--text-subtle); animation: state-dot-pulse 1.6s ease-in-out infinite; }
 .home-state-dot-nodata { background: transparent; border: 2px solid var(--text-subtle); }
+/* The reading takes its dot's colour. At 1.4em bold this is large text, where
+   every tone clears AA on --panel; the dot stays the redundant channel for
+   anyone who cannot separate the hues. */
+.home-hero-state-value-ok { color: var(--success-text); }
+.home-hero-state-value-attention { color: var(--title); }
+.home-hero-state-value-failed { color: var(--danger-signal); }
+.home-hero-state-value-motion { color: var(--state-motion); }
+.home-hero-state-value-loading, .home-hero-state-value-nodata { color: var(--text-subtle); }
 @keyframes state-dot-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: .45; transform: scale(.82); }
@@ -2276,8 +2283,22 @@ body.debug .technical-details { display: block; }
 .home-population-warn { color: var(--title); }
 /* Reference values an operator copies, so labelled rather than folded into the
    "·" summary line above. */
-.home-hero-meta { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 12px 0 0; }
-.home-hero-meta-item { min-width: 0; display: grid; gap: 2px; }
+.home-hero-meta { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 0; }
+/* Boxed, matching the .status-card / .key-value-item treatment used elsewhere
+   rather than a new one. flex-basis 0 so the two share the width evenly instead
+   of sizing to their content -- a short IP beside a long battlegroup id would
+   otherwise give two very lopsided boxes. */
+.home-hero-meta-item {
+  flex: 1 1 0;
+  min-width: 140px;
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  padding: 9px 11px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
 .home-hero-meta dt { color: var(--muted); font-size: 12px; }
 .home-hero-meta dd { margin: 0; color: var(--text-strong); overflow-wrap: anywhere; }
 /* Muted at rest; only the stale form is allowed to draw the eye. */

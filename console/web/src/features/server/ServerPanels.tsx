@@ -139,14 +139,25 @@ export function performanceTrackTone(percent: number | null, sampled: boolean) {
 }
 
 // Keyed on the labels summarizeHomeStatus() emits, so a renamed label loses its
-// route rather than pointing somewhere wrong. Listeners and Funcom/FLS both land
-// on Server Control -- PortChecklist and the Change Funcom Token form live there.
+// route rather than pointing somewhere wrong.
+//
+// Every row goes to Server Control. These rows report *health*, and Server
+// Control is where health is diagnosed -- ReadinessTimeline, PortChecklist,
+// DoctorSummary and the Change Funcom Token form all live there. The Database
+// row deliberately does not go to the Database tab: that tab is for data (schema
+// browser, queries), not for whether Postgres is up and its partitions readable.
+//
+// Kept as a per-label map rather than one constant so a subsystem can be pointed
+// somewhere better later without restructuring. Every destination must be a tab
+// the sidebar lists -- "Services" is in ALL_TABS but has no navGroups entry, and
+// routing there dropped the operator on a panel with nothing highlighted and no
+// way back. App.activeTab.test.tsx guards that.
 export const HOME_SUBSYSTEM_ROUTES: Record<string, Tab> = {
-  Containers: "Services",
+  Containers: "Server Control",
   Listeners: "Server Control",
-  Database: "Database",
-  "Game Servers": "Services",
-  RabbitMQ: "Services",
+  Database: "Server Control",
+  "Game Servers": "Server Control",
+  RabbitMQ: "Server Control",
   "Funcom/FLS": "Server Control"
 };
 
@@ -490,7 +501,10 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   const identityCards = summary.identity.filter((item) => item.label !== "Overall");
   const populationItem = identityCards.find((item) => item.label === "Population");
   const populationWarn = /^warn$/i.test(String(populationItem?.status || ""));
-  const populationSegment = homePopulationSegment(populationItem?.value);
+  const populationSegment = isPopulationUnknowable(overall?.value) ? "" : homePopulationSegment(populationItem?.value);
+  // Drives the dot and the reading beside it from one value, so the two can
+  // never disagree about severity.
+  const stateTone = homeStateDotTone(overall?.value, summary.health);
   const identityLine = homeIdentityLine(identityCards);
 
   return (
@@ -511,8 +525,14 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
                 rather than inside, so the heading text stays just the label. */}
             <div className="home-hero-state">
               <h3 className="home-hero-state-label">Battlegroup Status:</h3>
-              <span className={`home-state-dot home-state-dot-${homeStateDotTone(overall?.value, summary.health)}`} aria-hidden="true" />
-              <span className="home-hero-state-value">{homeOverallHeading(overall?.value)}</span>
+              {/* Explicit space: the dot between the label and the reading is an
+                  empty element, so without it the heading's text content reads
+                  "Battlegroup Status:Stopped" to a screen reader and to anyone
+                  copying it. Whitespace-only text between flex items is not
+                  rendered, so this costs nothing visually. */}
+              {" "}
+              <span className={`home-state-dot home-state-dot-${stateTone}`} aria-hidden="true" />
+              <span className={`home-hero-state-value home-hero-state-value-${stateTone}`}>{homeOverallHeading(overall?.value)}</span>
             </div>
             {/* Population is rendered apart from the rest of the line so its
                 WARN can survive: summarizeHomeStatus flags an unreadable count
@@ -551,7 +571,7 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
   );
 }
 
-export type HomeStateTone = "ok" | "motion" | "off" | "attention" | "failed" | "loading" | "nodata";
+export type HomeStateTone = "ok" | "motion" | "attention" | "failed" | "loading" | "nodata";
 
 // Splits the readings by what the operator should do about them, rather than
 // putting six of the ten on one amber -- a restart in flight and a failed
@@ -562,7 +582,10 @@ export function homeStateDotTone(overallValue: unknown, health: { status: string
   // restart the subsystems are legitimately down, and red would cry wolf.
   if (/^(starting|stopping|restarting)\b/.test(value)) return "motion";
   if (value === "checking") return "loading";
-  if (value === "stopped") return "off";
+  // Stopped is reported at full severity, same as the rows below it: one
+  // state, one colour. It is checked before the escalation so a stop reads as
+  // stopped rather than as whichever subsystem happens to have failed.
+  if (value === "stopped") return "failed";
   if (value === "unknown" || value === "status loaded") return "nodata";
   // summarizeHomeStatus can report "OK" while Funcom/FLS is FAILED (the
   // token-mismatch branch overrides its ready override), so the heading word
@@ -574,9 +597,12 @@ export function homeStateDotTone(overallValue: unknown, health: { status: string
 
 // summarizeHomeStatus yields "Restarting Battlegroup", which under the
 // "Battlegroup Status:" prefix would say Battlegroup twice. Trimmed here, not in
-// the summary -- that value is shared with homeNeedsWarmRefresh.
+// the summary -- that value is shared with homeNeedsWarmRefresh and with
+// isHomeActionComplete, which matches /^OK$/ to detect a finished restart. So
+// "OK" is renamed for display only, never in the summary.
 export function homeOverallHeading(value: unknown) {
   const text = formatDisplayValue(value || "Unknown");
+  if (/^ok$/i.test(text.trim())) return "Ready";
   return text.replace(/\s+battlegroup$/i, "");
 }
 
@@ -595,6 +621,19 @@ function homeIdentityLine(items: { label: string; value: string }[]) {
   };
   const parts = [pick("Title"), pick("Region"), pick("Mode")].filter(Boolean);
   return parts.join(" · ");
+}
+
+// The readings where there is no population to report: the battlegroup is down,
+// or in transition to or from being down. summarizeHomeStatus yields
+// "Unavailable" and flags it WARN in all of them, which puts an amber warning
+// next to the server name for an entirely expected condition.
+//
+// "Restarting Battlegroup" is matched on its first word, which is the raw value
+// summarizeHomeStatus emits mid-restart. Deliberately NOT listed: "Needs
+// Review" and "Warming" leave the battlegroup up and serving, so its count is
+// real and worth showing.
+export function isPopulationUnknowable(value: unknown) {
+  return /^(stopped|starting|stopping|restarting)\b/i.test(String(value || "").trim());
 }
 
 // formatHomePopulation yields "14", "14 / 40", "14 / ?" or "Unavailable", all of
@@ -1652,7 +1691,6 @@ function summarizeHomeStatus(status: string, readiness: string, readinessWarning
   const rawGames = preferKnownHomeHealth(summarizeGameServers(status), summarizeReadinessGameServers(readiness));
   const rawRabbit = preferKnownHomeHealth(summarizeRabbit(status), summarizeReadinessRabbit(readiness));
   const rawFls = preferKnownHomeHealth(summarizeFls(status), summarizeReadinessFls(readiness));
-  const readyOverride = readinessReady ? { label: "OK", status: "Ready", detail: "" } : null;
   const coreReadyWithReview = !runningAction && isHomeCoreReadyWithReview(status, readiness, rawContainers, rawListeners, rawDatabase, rawGames, rawRabbit, rawFls);
   const isStarting = runningAction === "start" || runningAction === "restart" || restartSuccessAwaitingFreshStatus || (bootStarting && !coreReadyWithReview);
   const restartSuccessObserved = taskResult?.status === "succeeded" && /restart/i.test(taskResult.title || "");
@@ -1661,8 +1699,14 @@ function summarizeHomeStatus(status: string, readiness: string, readinessWarning
     ? restartStartObserved ? "Starting" : "Restarting Battlegroup"
     : runningAction === "stop" ? "Stopping" : isStarting ? "Starting" : "";
   const warmingOverall = /^Warming$/i.test(rawGames.label) ? "Warming" : "";
-  const overall = readinessReady && !runningAction ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : warmingOverall || liveOverall;
-  const attentionHealth = !isStarting && !restartSuccessAwaitingFreshStatus && (serverState.stopped || actionStopped || actionFailed) ? attentionHomeHealthCards() : null;
+  const attentionHealth = !isStarting && !restartSuccessAwaitingFreshStatus && (serverState.stopped || actionStopped || actionFailed) ? attentionHomeHealthCards(serverState.stopped || actionStopped ? "stopped" : "failed") : null;
+  // status and readiness are two separate reads, so they can disagree: a stop
+  // updates status to STOPPED while readiness is still the previous "READY:".
+  // Believing readiness there left the heading and all six rows reading Ready
+  // under a "Battlegroup Stopped" banner. A stop we observed, or an Overall:
+  // STOPPED, beats a stale all-clear.
+  const readyOverride = readinessReady && !attentionHealth ? { label: "OK", status: "Ready", detail: "" } : null;
+  const overall = readinessReady && !runningAction && !attentionHealth ? "OK" : isStarting ? transitionOverall : runningAction ? transitionOverall : serverState.stopped || actionStopped ? "Stopped" : coreReadyWithReview ? "Needs Review" : warmingOverall || liveOverall;
   const transitionAction: "start" | "stop" | "restart" | "" = restartStartObserved
     ? "start"
     : runningAction === "restart" ? ""
@@ -1944,8 +1988,14 @@ function textHasContainerReadiness(text: string, state: "OK" | "FAIL", container
   });
 }
 
-function attentionHomeHealthCards() {
-  const item = { label: "Needs Review", status: "WARN", detail: "" };
+// Applied when the battlegroup is down or an action failed. The two are not
+// the same: a stopped battlegroup has a known cause and every subsystem is off,
+// while a failed start leaves the subsystems in whatever state the failure left
+// them. Saying "Stopped" for a failed start would be a false claim.
+function attentionHomeHealthCards(reason: "stopped" | "failed") {
+  const item = reason === "stopped"
+    ? { label: "Stopped", status: "FAILED", detail: "" }
+    : { label: "Needs Review", status: "WARN", detail: "" };
   return {
     containers: item,
     listeners: item,
