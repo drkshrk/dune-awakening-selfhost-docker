@@ -58,10 +58,11 @@ function healthRow(status: string, readiness: string, label: string) {
 describe("Containers row with the coordinator switched off", () => {
   const status = statusText({ overall: "WARMING", battlegroup: "Up 20 minutes", coordinator: "missing" });
 
+  // There is no longer a Containers row -- the services it listed each have
+  // their own home now -- so this asserts the summariser directly, as the rest
+  // of this file already does.
   it("reads OK rather than blaming an optional service that is meant to be off", () => {
-    const row = healthRow(status, NOT_READY, "Containers");
-    expect(row.value).toBe("OK");
-    expect(row.status).toBe("Ready");
+    expect(summarizeContainers(status)).toMatchObject({ label: "OK", status: "Ready" });
   });
 
   // Guards the fix from being "ignore every row": a real battlegroup container

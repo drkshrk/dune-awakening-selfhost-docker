@@ -285,3 +285,24 @@ describe("stopped detection survives the wider roster", () => {
     expect(getHomeServerState(status, READINESS).stopped).toBe(false);
   });
 });
+
+// isHomeActionComplete has a final fallback: warming maps with everything else
+// OK counts as complete once the grace window has passed. It reads the games
+// row out of summary.health, and it used to find that row by its display label
+// -- so renaming the row silently disabled this path with nothing failing.
+// These pin the fallback itself, which is what makes a label-keyed lookup fail
+// a test rather than fail quietly.
+describe("the warming fallback finds the games row", () => {
+  const warming = statusWith("WARMING", "READY", { extra: DUNE2_EXTRA, concurrency: 2 });
+
+  it("does not complete before the grace window, on any path", () => {
+    expect(isHomeActionComplete(warming, "", 0)).toBe(false);
+  });
+
+  // Readiness is empty, so isHomeReadinessOperational is false and
+  // isHomeStartComplete is false too (the maps are not ready). The only route
+  // left to true is the warming fallback, which needs the games row by id.
+  it("completes after the grace window via the warming fallback alone", () => {
+    expect(isHomeActionComplete(warming, "", gameServerWarmupGraceMs(warming))).toBe(true);
+  });
+});
