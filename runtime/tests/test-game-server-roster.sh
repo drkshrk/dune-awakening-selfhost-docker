@@ -229,6 +229,25 @@ expect_no_issue "queued map with a pending uptime is not an issue" \
 expect_issue "the same row with a missing uptime WOULD be an issue" \
   "$(printf '%-24s %-13s %s\n' SH_Arrakeen WAIT missing)"
 
+# An always-on map with no container is pending while the battlegroup is still
+# coming up, and a fault once it is up. Gating this on the autoscaler instead --
+# the first attempt -- never fired at all: the autoscaler starts roughly 100
+# seconds into a cold start, long after the roster is first reported, so every
+# unspawned map read NOT RUNNING and Overall sat at ISSUE for the whole startup.
+expect_eq "absent map while the stack is still starting is pending" \
+  "WAIT" "$(game_server_absent_state 0)"
+expect_eq "absent map once the stack is fully up is a fault" \
+  "NOT RUNNING" "$(game_server_absent_state 1)"
+# Unset/garbage must fail safe to pending rather than crying wolf mid-start.
+expect_eq "absent map with no stack reading is pending" \
+  "WAIT" "$(game_server_absent_state)"
+
+# The two states differ in the roll-up, which is the whole point of the split.
+expect_no_issue "a pending map is not an issue" \
+  "$(printf '%-24s %-13s %s\n' SH_Arrakeen "$(game_server_absent_state 0)" pending)"
+expect_issue "a map absent from a fully-started stack is an issue" \
+  "$(printf '%-24s %-13s %s\n' SH_Arrakeen "$(game_server_absent_state 1)" missing)"
+
 expect_no_issue "empty section" ""
 expect_no_warming "empty section" ""
 

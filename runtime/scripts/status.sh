@@ -247,11 +247,7 @@ game_server_state_for() {
   # inspect: map_state's is_running already does its own inspect, so probing
   # here too cost two extra docker calls for every expected map.
   if [ "$uptime" = "missing" ]; then
-    if [ "${autoscaler_running:-0}" = "1" ]; then
-      printf 'WAIT\n'
-    else
-      printf 'NOT RUNNING\n'
-    fi
+    game_server_absent_state "${core_stack_up:-0}"
     return 0
   fi
 
@@ -526,10 +522,17 @@ if [ -z "$game_server_partitions" ]; then
   game_server_roster_unavailable=1
 fi
 
-autoscaler_running=0
-if [ "$(autoscaler_state)" = "RUNNING" ]; then
-  autoscaler_running=1
-fi
+# Is the battlegroup itself fully up? Used to tell a map that has not been
+# spawned yet from one that is genuinely missing.
+core_stack_up=1
+for _core in dune-postgres dune-rmq-admin dune-rmq-game dune-text-router \
+  dune-director dune-server-gateway dune-server-survival-1 dune-server-overmap
+do
+  if ! is_running "$_core"; then
+    core_stack_up=0
+    break
+  fi
+done
 
 load_container_state_snapshot
 game_server_rows="$(render_game_server_rows)"

@@ -138,10 +138,12 @@ describe("Readiness & Health rows carry an x-of-y count", () => {
     expect(counts(statusText({ maps: warming }))["Game servers"]).toBe("3 of 7");
   });
 
-  // The partition count is a property of the world, not a measure of how much
-  // of this subsystem is ready, so the Database row carries nothing.
-  it("shows nothing on the Database row", () => {
-    expect(counts(statusText()).Database).toBe("");
+  // Database counts its one service, like every other row. The partition
+  // figure deliberately does NOT appear: it is a property of the world, not a
+  // measure of how much of the subsystem is ready.
+  it("counts Database's single service", () => {
+    expect(counts(statusText()).Database).toBe("1 of 1");
+    expect(counts(statusText({ downContainers: 1 })).Database).toBe("0 of 1");
   });
 
   // Funcom/FLS is the last section status.sh prints, so sectionLines runs to
@@ -188,10 +190,10 @@ describe("counts survive the display overrides", () => {
     const stopped = statusText({ downContainers: 8, maps: MAPS.map(([l]) => [l, "NOT RUNNING"] as [string, string]) })
       .replace("Overall:     READY", "Overall:     STOPPED");
     expect(counts(stopped, "")).toMatchObject({
+      Database: "0 of 1",
       Messaging: "0 of 3",
       "Battlegroup services": "0 of 2",
-      "Game servers": "0 of 7",
-      Database: ""
+      "Game servers": "0 of 7"
     });
   });
 });
@@ -237,5 +239,46 @@ describe("health rows are addressed by a stable id", () => {
     for (const key of Object.keys(HOME_SUBSYSTEM_ROUTES)) {
       expect(ids.has(key), `route "${key}" matches no row`).toBe(true);
     }
+  });
+});
+
+// ready.sh decides READY from the core containers and the two protected maps
+// only, so on a host with more always-on maps it reports READY while several
+// are still warming. Believing it left the hero reading "Ready" beside
+// "Game servers 2 of 7" -- observed live on dune2 during a restart.
+describe("a readiness all-clear does not override an incomplete roster", () => {
+  const partlyWarm = statusText({
+    maps: [
+      ["Survival_1", "READY"],
+      ["Survival_1#60", "READY"],
+      ["Overmap", "READY"],
+      ["SH_Arrakeen", "WARMING"],
+      ["SH_HarkoVillage", "WARMING"],
+      ["DeepDesert_1", "WARMING"],
+      ["DeepDesert_1#59", "WARMING"]
+    ]
+  });
+
+  function overall(status: string, readiness: string) {
+    return summarizeHomeStatus(status, readiness, "", false).identity.find((i) => i.label === "Overall")?.value;
+  }
+
+  it("reads Starting, not OK, while maps are still coming up", () => {
+    expect(overall(partlyWarm, READY_READINESS)).toBe("Starting");
+  });
+
+  it("still shows the real reading on the row rather than a blanket OK", () => {
+    expect(values(partlyWarm, READY_READINESS)["Game servers"]).toBe("Warming");
+    expect(counts(partlyWarm, READY_READINESS)["Game servers"]).toBe("3 of 7");
+  });
+
+  // The rows that ARE fine must not be dragged down with it.
+  it("leaves the healthy rows alone", () => {
+    expect(values(partlyWarm, READY_READINESS).Messaging).toBe("OK");
+    expect(values(partlyWarm, READY_READINESS).Database).toBe("OK");
+  });
+
+  it("reads OK once the whole roster is up", () => {
+    expect(overall(statusText(), READY_READINESS)).toBe("OK");
   });
 });

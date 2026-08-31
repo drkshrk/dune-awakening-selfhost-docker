@@ -115,6 +115,25 @@ $sorted
 EOF
 }
 
+# State for an expected map server whose container does not exist.
+#
+# Pending, not faulty, while the battlegroup itself is still coming up: nothing
+# has had the chance to spawn it yet, and reporting NOT RUNNING there put
+# Overall: ISSUE through every cold start. Once the core stack is fully up, an
+# absent always-on map IS a fault -- including when the autoscaler is the thing
+# that is down, which is why this does not test the autoscaler.
+#
+# Gating on the autoscaler was the first attempt and never fired once: it starts
+# roughly 100 seconds into a cold start, long after the roster is first
+# reported, so every unspawned map still read NOT RUNNING.
+game_server_absent_state() {
+  if [ "${1:-0}" = "1" ]; then
+    printf 'NOT RUNNING\n'
+  else
+    printf 'WAIT\n'
+  fi
+}
+
 # Roll-up over the RENDERED section body.
 #
 # status.sh builds the rows inside a command substitution, so any issue=/warming=
