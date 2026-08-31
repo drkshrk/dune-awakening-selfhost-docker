@@ -302,17 +302,17 @@ export function HomePanel({ status, readiness, taskResult, setTaskResult, funcom
       if (homeActionRunId.current !== actionRunId) return;
       if (postLoad) applyHomeLoadResult(postLoad);
       const postState = getHomeServerState(postLoad?.statusText || status, postLoad?.readinessText || readiness);
-      const postReady = isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness);
+      const elapsedMs = Date.now() - homeActionStartedAt.current;
+      const postReady = isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness, elapsedMs);
       if (action === "restart") {
         homeRestartLifecycle.current = advanceRestartLifecycle(homeRestartLifecycle.current, postLoad?.statusText || status, postLoad?.readinessText || readiness);
       }
       const restartReady = isRestartLifecycleReady(action, homeRestartLifecycle.current);
-      const elapsedMs = Date.now() - homeActionStartedAt.current;
       if (action === "stop" && isHomeStopComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness)) {
         setTaskResult({ status: "stopped", title: copy.success, details });
       } else if (action === "restart" && restartReady) {
         keepPolling = true;
-        if (isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness)) {
+        if (isHomeActionComplete(postLoad?.statusText || status, postLoad?.readinessText || readiness, elapsedMs)) {
           setTaskResult((current) => preserveTerminalStackResult(current, { status: "succeeded", title: copy.success, details }));
           setHomeAction("");
         }
@@ -1043,11 +1043,11 @@ export function ServerPanel(props: {
         setTaskResult({ status: "stopped", title: copy.success, details });
       } else if (action === "restart" && restartReady) {
         keepPolling = true;
-        if (isHomeActionComplete(statusText, readinessText)) {
+        if (isHomeActionComplete(statusText, readinessText, elapsedMs)) {
           setTaskResult((current) => preserveTerminalStackResult(current, { status: "succeeded", title: copy.success, details }));
           setControlAction("");
         }
-      } else if (action === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
+      } else if (action === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText, elapsedMs)) {
         keepPolling = true;
         setTaskResult((current) => preserveTerminalStackResult(current, { ...stackActionPendingResult(action, "confirming"), details }));
       } else if (final.status !== "succeeded") {
@@ -1812,7 +1812,48 @@ function isTerminalTask(status: string) {
   return ["succeeded", "failed", "cancelled"].includes(status);
 }
 
-export function isHomeActionComplete(status: string, readiness: string) {
+// Game servers are the slowest part of a start: measured on a live restart, two
+// maps took roughly four minutes to reach READY, and a host with more always-on
+// maps brings them up in batches (DUNE_ALWAYS_ON_STARTUP_PARALLELISM). So wait
+// for them -- but never indefinitely. A map that stays WARMING must not pin the
+// console in "Starting" with its controls disabled forever, so once this window
+// has passed a battlegroup whose only remaining gap is warming maps counts as
+// started. This is a backstop, not a target.
+export const GAME_SERVER_WARMUP_GRACE_MS = 10 * 60 * 1000;
+
+// Measured on the 2026-08-31 live restart: a map reached READY roughly three
+// minutes after its container started. Four gives margin.
+const GAME_SERVER_WARMUP_PER_BATCH_MS = 4 * 60 * 1000;
+
+// A backstop on the backstop. However many maps are configured, the console
+// stops waiting eventually.
+const GAME_SERVER_WARMUP_GRACE_CAP_MS = 45 * 60 * 1000;
+
+// How long a start may legitimately take before a still-warming map is treated
+// as "close enough to done".
+//
+// A flat budget was wrong once the section reported every always-on map rather
+// than two: the autoscaler brings them up a few at a time
+// (DUNE_ALWAYS_ON_STARTUP_PARALLELISM, clamped by host memory safety), so the
+// wait scales with the number of BATCHES, not the number of maps. status.sh
+// publishes the concurrency on the section's Note: line -- which every row
+// parser already ignores -- so no extra request is needed to read it.
+//
+// Falls back to the flat floor when the section or the note is absent, so an
+// older backend or a roster that could not be read behaves exactly as before.
+export function gameServerWarmupGraceMs(status: string) {
+  const rows = gameServerRows(status);
+  if (!rows.length) return GAME_SERVER_WARMUP_GRACE_MS;
+  const noted = String(status || "").match(/starting\s+(\d+)\s+at a time/i);
+  const concurrency = Math.max(1, Number(noted?.[1]) || 1);
+  const batches = Math.ceil(rows.length / concurrency);
+  return Math.min(
+    GAME_SERVER_WARMUP_GRACE_CAP_MS,
+    Math.max(GAME_SERVER_WARMUP_GRACE_MS, batches * GAME_SERVER_WARMUP_PER_BATCH_MS)
+  );
+}
+
+export function isHomeActionComplete(status: string, readiness: string, elapsedMs: number = Number.POSITIVE_INFINITY) {
   const statusReady = isHomeStartComplete(status, readiness);
   const readinessReady = isHomeReadinessOperational(readiness);
   const summary = summarizeHomeStatus(status, readiness, "", false);
@@ -1824,6 +1865,15 @@ export function isHomeActionComplete(status: string, readiness: string) {
     /^OK$/i.test(String(item.value || "")) && /^Ready$/i.test(String(item.status || ""))
   );
   const gamesWarming = /^Warming$/i.test(String(games?.value || ""));
+  // Inside the grace window a warming map blocks completion outright. None of
+  // the signals below can stand in for it: isHomeReadinessOperational only
+  // proves the map containers are up, not that the maps are playable.
+  //
+  // Read the raw summariser rather than gamesWarming above: summarizeHomeStatus
+  // rewrites every health row to OK once readiness reports READY (readyOverride),
+  // so the view model reports a warming map as OK and the gate would never fire.
+  const rawGamesWarming = /^Warming$/i.test(String(summarizeGameServers(status).label || ""));
+  if (rawGamesWarming && elapsedMs < gameServerWarmupGraceMs(status)) return false;
   return statusReady || readinessReady || (healthOk || (gamesWarming && nonGameHealthOk));
 }
 
@@ -1869,6 +1919,11 @@ const BATTLEGROUP_CONTAINERS = [
 // any other producer of a container table.
 const CONTAINER_DOWN = /\b(missing|stopped|exited|dead|paused|not running)\b/i;
 
+// A completed stop, which is a different question from "is this container
+// down". A paused container is down but has not stopped, so the restart
+// lifecycle must not read it as a finished stop.
+const CONTAINER_STOPPED = /\b(missing|stopped|exited|dead|not running)\b/i;
+
 // The status table pads columns, so the name is everything before the first gap.
 function containerLineName(line: string) {
   const trimmed = line.trim();
@@ -1876,20 +1931,46 @@ function containerLineName(line: string) {
   return firstSpace < 0 ? "" : trimmed.slice(0, firstSpace);
 }
 
-function battlegroupContainerLines(containerLines: string[]) {
-  return containerLines.filter((line) => {
-    const name = containerLineName(line).toLowerCase();
-    return BATTLEGROUP_CONTAINERS.some((expected) => expected === name);
-  });
+function containerSectionLines(status: string) {
+  return sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
 }
+
+// The single definition of which printed rows belong to the battlegroup, and
+// the only way to ask about their status. Two shapes, deliberately NOT
+// interchangeable -- collapsing either onto the other is a real bug:
+//
+//   rows()          the printed rows for the eight. A name with no printed row
+//                   is simply absent, so the length shrinks. Callers that count
+//                   rows or test emptiness want this.
+//   all() / any()   quantify over the eight *names*. A name with no printed row
+//                   makes all() false, so a truncated or partial table can
+//                   never read as "they are all down" / "they are all up".
+//
+// all() and any() match the status text only, via containerStatusLineHas, so a
+// container's name can never satisfy a status pattern.
+const battlegroup = {
+  rows(status: string) {
+    return containerSectionLines(status).filter((line) =>
+      BATTLEGROUP_CONTAINERS.includes(containerLineName(line).toLowerCase())
+    );
+  },
+  all(status: string, pattern: RegExp) {
+    const lines = containerSectionLines(status);
+    return BATTLEGROUP_CONTAINERS.every((name) =>
+      lines.some((line) => containerStatusLineHas(name, line, pattern))
+    );
+  },
+  any(status: string, pattern: RegExp) {
+    const lines = containerSectionLines(status);
+    return BATTLEGROUP_CONTAINERS.some((name) =>
+      lines.some((line) => containerStatusLineHas(name, line, pattern))
+    );
+  }
+};
 
 export function isHomeStopComplete(status: string, readiness: string) {
   if (getHomeServerState(status, readiness).stopped) return true;
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  const statusContainersStopped = BATTLEGROUP_CONTAINERS.every((name) =>
-    containerLines.some((line) => containerStatusLineHas(name, line, /\b(missing|stopped|exited|dead|not running)\b/i))
-  );
-  if (statusContainersStopped) return true;
+  if (battlegroup.all(status, CONTAINER_STOPPED)) return true;
 
   const text = `${status}\n${readiness}`;
   const readinessContainersStopped = BATTLEGROUP_CONTAINERS.every((name) =>
@@ -1903,30 +1984,21 @@ export function isHomeStopComplete(status: string, readiness: string) {
 
 function hasRestartStopSignal(status: string, readiness: string) {
   const text = `${status}\n${readiness}`;
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  return BATTLEGROUP_CONTAINERS.some((name) =>
-    containerLines.some((line) => containerStatusLineHas(name, line, /\b(missing|stopped|exited|dead|not running)\b/i)) ||
-    textHasContainerReadiness(text, "FAIL", name)
-  );
+  return battlegroup.any(status, CONTAINER_STOPPED) ||
+    BATTLEGROUP_CONTAINERS.some((name) => textHasContainerReadiness(text, "FAIL", name));
 }
 
 function hasRestartStartSignal(status: string, readiness: string) {
   const text = `${status}\n${readiness}`;
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  return BATTLEGROUP_CONTAINERS.some((name) =>
-    containerLines.some((line) => containerStatusLineHas(name, line, /\bUp\b/i)) ||
-    textHasContainerReadiness(text, "OK", name)
-  );
+  return battlegroup.any(status, /\bUp\b/i) ||
+    BATTLEGROUP_CONTAINERS.some((name) => textHasContainerReadiness(text, "OK", name));
 }
 
-function isHomeStartComplete(status: string, readiness: string) {
+export function isHomeStartComplete(status: string, readiness: string) {
   const serverState = getHomeServerState(status, readiness);
   if (serverState.stopped) return false;
 
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  const containersReady = BATTLEGROUP_CONTAINERS.every((name) =>
-    containerLines.some((line) => containerStatusLineHas(name, line, /^Up\b/i))
-  );
+  const containersReady = battlegroup.all(status, /^Up\b/i);
 
   const listenerLines = sectionLines(status, "Listeners").filter((line) => !/^CHECK\s+PORT\s+STATUS/i.test(line));
   const listenersReady = listenerLines.length > 0 && !listenerLines.some((line) => /\b(MISSING|FAIL|ERROR)\b/i.test(line));
@@ -1940,7 +2012,14 @@ function isHomeStartComplete(status: string, readiness: string) {
   const rabbit = summarizeRabbit(status);
   const rabbitReady = /^OK$/i.test(rabbit.label) && /^Ready$/i.test(rabbit.status);
 
-  return containersReady && listenersReady && databaseReady && flsReady && rabbitReady;
+  // A battlegroup whose containers are up but whose maps are still WARMING is
+  // not ready to play on, so the maps gate "started" like everything else.
+  // isHomeActionComplete owns the grace window that stops a map stuck warming
+  // from hanging the lifecycle on this.
+  const games = summarizeGameServers(status);
+  const gameServersReady = /^OK$/i.test(games.label) && /^Ready$/i.test(games.status);
+
+  return containersReady && listenersReady && databaseReady && flsReady && rabbitReady && gameServersReady;
 }
 
 export function containerStatusLineHas(containerName: string, line: string, statusPattern: RegExp) {
@@ -1992,12 +2071,10 @@ function preferKnownHomeHealth(primary: { label: string; status: string; detail:
 export function getHomeServerState(status: string, readiness: string) {
   const text = `${status}\n${readiness}`;
   const overall = findLineValue(status, ["overall"]);
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  // No length guard needed: an inclusion check over the eight is already false
-  // when the section is empty or partial.
-  const allContainersMissing = BATTLEGROUP_CONTAINERS.every((name) =>
-    containerLines.some((line) => containerStatusLineHas(name, line, CONTAINER_DOWN))
-  );
+  const containerLines = containerSectionLines(status);
+  // No length guard needed: all() quantifies over the eight names, so a name
+  // with no printed row already makes this false on an empty or partial table.
+  const allContainersMissing = battlegroup.all(status, CONTAINER_DOWN);
   const coreRuntimeContainerUp = containerLines.some((line) =>
     /^(dune-postgres|dune-rmq-admin|dune-rmq-game|dune-text-router|dune-server-survival-1|dune-server-overmap)\s+.*\bUp\b/i.test(line)
   );
@@ -2031,8 +2108,8 @@ function isHomeBootStarting(status: string, readiness: string) {
   if (!text.trim()) return false;
   if (/\b(server|stack)\s+(is\s+)?(stopped|offline)\b/i.test(text) || /\bNo\s+(running\s+)?containers\b/i.test(text)) return false;
   if (/Overall:\s*(READY|STOPPED|OFFLINE)/i.test(status) || /^READY:/m.test(readiness)) return false;
-  const containerLines = sectionLines(status, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line));
-  const battlegroupLines = battlegroupContainerLines(containerLines);
+  const containerLines = containerSectionLines(status);
+  const battlegroupLines = battlegroup.rows(status);
   const anyContainerUp = battlegroupLines.some((line) => /\bUp\b/i.test(line));
   const coreStartupContainerUp = containerLines.some((line) =>
     /^(dune-postgres|dune-rmq-admin|dune-rmq-game|dune-text-router|dune-server-survival-1|dune-server-overmap)\s+.*\bUp\b/i.test(line)
@@ -2125,7 +2202,7 @@ export function summarizeContainers(text: string) {
   // Scoped to the battlegroup eight: a coordinator that is off by configuration
   // is not a container problem, and reporting it as one put "Needs Review" on
   // the row while the other five read OK.
-  const lines = battlegroupContainerLines(sectionLines(text, "Containers").filter((line) => !/^SERVICE\s+STATUS/i.test(line)));
+  const lines = battlegroup.rows(text);
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
   const bad = lines.find((line) => CONTAINER_DOWN.test(line));
   return bad ? { label: "Needs Review", status: "WARN", detail: "" } : { label: "OK", status: "Ready", detail: "" };
@@ -2146,8 +2223,15 @@ function summarizeDatabase(text: string) {
   return { label: "Needs Review", status: "WARN", detail: "" };
 }
 
+// The map rows of the Game servers section: the header and any Note: line are
+// not servers. status.sh reports one row per expected always-on map server, so
+// the length of this is the denominator for how long a start should take.
+function gameServerRows(text: string) {
+  return sectionLines(text, "Game servers").filter((line) => !/^MAP\s+STATE\s+UPTIME/i.test(line) && !/^Note:/i.test(line));
+}
+
 function summarizeGameServers(text: string) {
-  const lines = sectionLines(text, "Game servers").filter((line) => !/^MAP\s+STATE\s+UPTIME/i.test(line) && !/^Note:/i.test(line));
+  const lines = gameServerRows(text);
   if (!lines.length) return { label: "Unknown", status: "Unknown", detail: "" };
   const bad = lines.find((line) => /\b(ERROR|NOT RUNNING|MISSING)\b/i.test(line));
   const wait = lines.find((line) => /\b(WARMING|WAIT)\b/i.test(line));
