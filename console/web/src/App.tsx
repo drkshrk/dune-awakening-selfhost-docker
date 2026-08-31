@@ -614,8 +614,8 @@ export function App() {
           stackRestartSuccessAnnounced.current = true;
           setHomeTaskResult({ status: "succeeded", title: "Battlegroup Restarted Successfully" });
         }
-        if (isHomeActionComplete(statusText, readinessText)) setHomeRunningAction("");
-      } else if (homeRunningAction === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText)) {
+        if (isHomeActionComplete(statusText, readinessText, elapsedMs)) setHomeRunningAction("");
+      } else if (homeRunningAction === "start" && elapsedMs >= 8000 && isHomeActionComplete(statusText, readinessText, elapsedMs)) {
         stackActionReadyPolls.current += 1;
         if (stackActionReadyPolls.current >= 2) {
           setHomeTaskResult({ status: "succeeded", title: "Battlegroup Started Successfully" });
