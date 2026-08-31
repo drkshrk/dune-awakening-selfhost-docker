@@ -10,6 +10,7 @@ set +a
 source runtime/scripts/runtime-env.sh
 source runtime/scripts/fls-signals.sh
 source runtime/scripts/farm-readiness.sh
+source runtime/scripts/container-issue-scan.sh
 
 issue=0
 warming=0
@@ -552,9 +553,10 @@ if ! is_running dune-postgres \
   main_stack_stopped=1
 fi
 
-case "$container_rows" in
-  *missing*|*stopped*) issue=1 ;;
-esac
+coriolis_enabled="$(first_known_value "$(config_value .env DUNE_CORIOLIS_COORDINATOR_ENABLED 2>/dev/null || true)" "${DUNE_CORIOLIS_COORDINATOR_ENABLED:-}" "1")"
+if container_rows_have_issue "$container_rows" "$coriolis_enabled"; then
+  issue=1
+fi
 
 for listener_state in \
   "$postgres_tcp" \
