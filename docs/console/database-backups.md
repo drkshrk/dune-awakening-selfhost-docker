@@ -192,6 +192,11 @@ of that and would wipe world partitions the restore then replaces.)
 It refuses while a world server is running, since it deliberately cannot stop
 one; `--force` overrides that.
 
+The download is several GB. From the console it runs as a task with its own
+timeout, `ADMIN_ASSET_DOWNLOAD_TIMEOUT_MS` (4 hours by default); if a very
+slow link exceeds it the task is killed mid-download and needs
+`dune update fix-steamcmd` before retrying.
+
 ### A stopped battlegroup starts Postgres by itself
 
 Stopping the battlegroup does not stop the database, it removes the
