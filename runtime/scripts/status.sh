@@ -18,6 +18,12 @@ warming=0
 rmq_game_connections_cache="__unset__"
 udp_check_retries="${DUNE_STATUS_UDP_CHECK_RETRIES:-3}"
 udp_check_retry_sleep="${DUNE_STATUS_UDP_CHECK_RETRY_SLEEP:-0.25}"
+docker_timeout_seconds="${DUNE_STATUS_DOCKER_TIMEOUT_SECONDS:-12}"
+log_tail_lines="${DUNE_STATUS_LOG_TAIL_LINES:-4000}"
+
+docker_timeout() {
+  timeout --kill-after=2s "${docker_timeout_seconds}s" "$@"
+}
 
 config_value() {
   local file="$1"
@@ -82,7 +88,7 @@ container_logs_have_udp_listener() {
   [ -n "$container" ] || return 1
   is_running "$container" || return 1
 
-  docker logs --tail 4000 "$container" 2>&1 \
+  docker_timeout docker logs --tail "$log_tail_lines" "$container" 2>&1 \
     | grep -Eq "listening for (Clients|Servers) on [0-9.]+:${port}\\b"
 }
 
@@ -198,7 +204,7 @@ map_state() {
 
   # Bounded: crash markers land at the end of the log, and an unbounded read
   # across every always-on map is the single largest cost in this section.
-  logs="$(docker logs --tail "${2:-6000}" "$container" 2>&1 || true)"
+  logs="$(docker_timeout docker logs --tail "$log_tail_lines" "$container" 2>&1 || true)"
 
   if grep -Eiq 'fatal error|segmentation fault|sigsegv|assertion failed|unhandled exception|core dumped|panic:' <<< "$logs"; then
     issue=1
@@ -308,13 +314,13 @@ count_rmq_prefix() {
 
 recent_director_logs() {
   if is_running dune-director; then
-    docker logs --tail 5000 dune-director 2>&1 || true
+    docker_timeout docker logs --tail "$log_tail_lines" dune-director 2>&1 || true
   fi
 }
 
 recent_gateway_logs() {
   if is_running dune-server-gateway; then
-    docker logs --tail 5000 dune-server-gateway 2>&1 || true
+    docker_timeout docker logs --tail "$log_tail_lines" dune-server-gateway 2>&1 || true
   fi
 }
 

@@ -3,6 +3,7 @@ import type { Dispatch, SetStateAction } from "react";
 import type { Tab } from "../../App";
 import { Play, Trash2 } from "lucide-react";
 import { serverApi, type PerformanceSnapshot } from "../../api/server";
+import { ServerHostnameSetting, useServerHostname } from "./ServerHostnameSetting";
 import { getServerPorts } from "../../api/serverPorts";
 import { runGatedRestart, serviceRestartTarget, type RestartGate } from "./restartQueueGuard";
 import { setupApi, type Task } from "../../api/setup";
@@ -819,6 +820,7 @@ export function ServerPanel(props: {
   const [restartTime, setRestartTime] = useState("05:00");
   const [scheduleResult, setScheduleResult] = useState<HomeTaskResult | null>(null);
   const [serverTitle, setServerTitle] = useState("");
+  const hostname = useServerHostname();
   const [savedServerTitle, setSavedServerTitle] = useState("");
   const [serverMode, setServerMode] = useState<ServerMode>("public");
   const [savedServerMode, setSavedServerMode] = useState<ServerMode>("public");
@@ -910,7 +912,9 @@ export function ServerPanel(props: {
     }
     const titleChanged = title !== savedServerTitle.trim();
     const modeChanged = serverMode !== savedServerMode;
-    if (!titleChanged && !modeChanged) {
+    const hostnameChanged = hostname.changed;
+    if (!hostname.ready || !hostname.valid) return;
+    if (!titleChanged && !modeChanged && !hostnameChanged) {
       setTitleResult({ status: "succeeded", title: "No Changes to Save" });
       return;
     }
@@ -918,10 +922,15 @@ export function ServerPanel(props: {
       titleChanged ? `title to "${title}"` : "",
       modeChanged ? `mode to ${titleCase(serverMode)}` : ""
     ].filter(Boolean).join(" and ");
-    if (!(await confirmAction(`Change server ${changeList}? This saves the setting and refreshes Director/Gateway only if they are already running.`))) return;
+    if ((titleChanged || modeChanged) && !(await confirmAction(`Change server ${changeList}? This saves the setting and refreshes Director/Gateway only if they are already running.${hostnameChanged ? " The hostname will be saved afterward and requires your next Battlegroup restart." : ""}`))) return;
     setTitleResult({ status: "running", title: "Saving Settings" });
     props.onError("");
     try {
+      if (!titleChanged && !modeChanged) {
+        await hostname.save();
+        setTitleResult({ status: "succeeded", title: "Settings Saved — Battlegroup Restart Required" });
+        return;
+      }
       const final = await waitForTaskSilently((await serverApi.saveConfig({
         ...(titleChanged ? { title } : {}),
         ...(modeChanged ? { mode: serverMode } : {})
@@ -931,9 +940,10 @@ export function ServerPanel(props: {
       if (final.status === "succeeded") {
         if (titleChanged) setSavedServerTitle(title);
         if (modeChanged) setSavedServerMode(serverMode);
+        if (hostnameChanged) await hostname.save();
       }
       setTitleResult(final.status === "succeeded"
-        ? { status: "succeeded", title: "Settings Saved Successfully", details }
+        ? { status: "succeeded", title: hostnameChanged ? "Settings Saved — Battlegroup Restart Required" : "Settings Saved Successfully", details }
         : { status: "failed", title: "Settings Save Failed", details });
     } catch (error) {
       setTitleResult({ status: "failed", title: "Settings Save Failed", details: error instanceof Error ? error.message : String(error) });
@@ -1315,7 +1325,8 @@ export function ServerPanel(props: {
             <option value="public">Public</option>
             <option value="local">Local</option>
           </select></label>
-          <button disabled={actionRunning || serviceRestartRunning || titleSaving} onClick={saveServerConfig}>Save Settings</button>
+          <ServerHostnameSetting hostname={hostname} disabled={actionRunning || serviceRestartRunning || titleSaving} />
+          <button disabled={actionRunning || serviceRestartRunning || titleSaving || !hostname.ready || !hostname.valid} onClick={saveServerConfig}>Save Settings</button>
           {titleResult && <span className={`inline-task-result result-${titleResult.status === "succeeded" ? "ok" : titleResult.status === "failed" ? "fail" : "running"}`}>
             <strong className={titleResult.status === "running" ? "loading-dots" : ""}>{formatResultTitle(titleResult.title, titleResult.status === "running")}</strong>
           </span>}
