@@ -350,6 +350,33 @@ describe("restoring a system backup", () => {
     expect(card?.classList.contains("result-persistent")).toBe(true);
   });
 
+  it("shows a failed restore's log, where the actual reason is", async () => {
+    // The card's own message is only the exit line. "dune-postgres is not
+    // running", and the fact that nothing was changed, live in the log --
+    // which is useless behind a display:none debug gate.
+    vi.mocked(backupsApi.restoreSystem).mockResolvedValue(
+      { task: { id: "r9", status: "queued", logLines: [
+        { line: "Restoring database..." },
+        { line: "dune-postgres is not running." },
+        { line: "Database restore failed (exit 1). Configuration and secrets were NOT changed." }
+      ] } } as never
+    );
+    renderPanel({ waitForTask: vi.fn(async (task) => ({ ...task, status: "failed", errorMessage: "dune db restore-system ... failed with exit 1" })) as never });
+    const field = await openRestore();
+    fireEvent.change(field, { target: { value: RESTORE_PASSPHRASE } });
+    fireEvent.click(await screen.findByText("Preview Restore"));
+
+    const details = await waitFor(() => {
+      const found = document.querySelector("details.technical-details");
+      if (!found) throw new Error("no details element");
+      return found as HTMLDetailsElement;
+    });
+    expect(details.open).toBe(true);
+    expect(getComputedStyle(details).display).not.toBe("none");
+    expect(details.textContent).toContain("dune-postgres is not running.");
+    expect(details.textContent).toContain("were NOT changed");
+  });
+
   it("opens the technical details on a successful preview, since its message promises the replace list is shown below", async () => {
     await preview();
     await screen.findByText(/Preview Only - Nothing Changed/);

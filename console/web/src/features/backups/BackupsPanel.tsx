@@ -720,6 +720,12 @@ function BackupResultCard({ result, cardRef }: { result: BackupResult; cardRef?:
   // "Backup Created"; not for a failure, or for a card whose own message sends
   // the operator to output rendered inside it.
   const persistent = result.status === "failed" || result.detailsOpen;
+  // A failure's message is the exit line ("... failed with exit 1"); the reason
+  // it failed is in the log below it. Leaving that behind the debug gate showed
+  // an operator that a restore failed while hiding "dune-postgres is not
+  // running" and the fact that nothing had been changed.
+  const failed = result.status === "failed";
+  const showDetails = Boolean(result.detailsOpen) || failed;
   // tabIndex -1 so the panel can take focus programmatically when a result
   // lands, without joining the tab order.
   return <section ref={cardRef} tabIndex={cardRef ? -1 : undefined} className={`result-panel backup-result ${persistent ? "result-persistent " : ""}${attention ? "warning-panel result-attention" : danger ? "result-danger" : result.status === "failed" ? "warning-panel result-fail" : result.status === "succeeded" ? "result-ok" : "result-running"}`}>
@@ -734,10 +740,10 @@ function BackupResultCard({ result, cardRef }: { result: BackupResult; cardRef?:
         disclosure. A card that tells the operator to read something inside it
         needs backup-result-details, which overrides that. */}
     {result.details && <TechnicalDetails
-      title={result.detailsTitle || "Technical details"}
+      title={result.detailsTitle || (failed ? "What went wrong" : "Technical details")}
       text={result.details}
-      open={result.detailsOpen}
-      className={result.detailsOpen ? "backup-result-details" : ""}
+      open={showDetails}
+      className={showDetails ? "backup-result-details" : ""}
     />}
   </section>;
 }
