@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
+import { pipeline } from "node:stream/promises";
 import { createServer as createNetServer } from "node:net";
 import { totalmem } from "node:os";
 import { spawn } from "node:child_process";
-import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, readFileSync, statSync } from "node:fs";
+import { existsSync, writeFileSync, chmodSync, mkdirSync, createReadStream, createWriteStream, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { loadConfig, publicConfig, parseAllowedIps, resolvePorts } from "./config.js";
 import { createAuth, setSessionCookie, clearSessionCookie, json, withSecurityHeaders } from "./auth.js";
@@ -27,14 +28,15 @@ import { redact } from "./redact.js";
 import { buildingUnlockStatus, customizationGrantGroups, customizationGrantStatus, isBuildingUnlockItem, isCustomizationGrantItem, itemIsRankedSchematic, itemIsSchematic, itemRequiresDatabaseGrant, listBuildingUnlockItems, listCatalogItems, listCustomizationGrantItems, resolveCatalogItem, resolveFillableCatalogItem, resolveItemVolume } from "./adminCatalog.js";
 import { buildBroadcastCommand, buildShutdownBroadcastCommand, publishServerCommand } from "./rmq.js";
 import { clearCarePackageHistory, enableCarePackage, ensureCarePackageServerPersona, grantEligibleCarePackages, grantCarePackage, retryCarePackageGrant, runCarePackageAutoScan, maintainCarePackageHistory, saveCarePackageConfig, carePackageCapabilities, carePackageConfig, carePackageEligiblePlayers, carePackageHistory } from "./carePackage.js";
-import { readJsonBody, readMultipartForm } from "./httpSafety.js";
+import { readJsonBody, readMultipartForm, streamRequestToFile } from "./httpSafety.js";
 import { parseBackupAutoStatus, parseBackupListRows } from "./statusParsers.js";
 import { assertInstalledAddonPermission, fetchCommunityAddons, installCommunityAddon, installedAddonContentPath, listInstalledAddons, removeInstalledAddon, setInstalledAddonEnabled, syncInstalledAddonLifecycle, updateCommunityAddon } from "./addons.js";
 import { createHardwareStatusProvider, performanceSnapshot as collectPerformanceSnapshot } from "./services/performance.js";
 import { serveStatic, contentTypeForPath } from "./http/staticFiles.js";
 import { discoverServices } from "./services/serviceDiscovery.js";
-import { listSystemBackups, systemBackupDir, validSystemArchiveName, validSystemBackupName } from "./services/systemBackups.js";
-import { createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
+import { listSystemBackups, systemBackupBundleMembers, systemBackupDir, validSystemArchiveName, validSystemBackupName } from "./services/systemBackups.js";
+import { looksLikeTar, mintSystemBackupName, normalizeImportedSystemMetadata, readEncryptedArchiveHeader, readTarMemberIndex, synthesizeSystemMetadata } from "./services/systemBackupImport.js";
+import { createTarHeader, tarArchiveLength, tarPadding, TAR_TRAILER_BYTES, createBackupDownloadArchive, enrichBackupRows, nextImportedBackupName, normalizeImportedBackupMetadata, readCurrentBattlegroupId, validBackupDownloadName } from "./services/backups.js";
 import { createMemoryBalancer } from "./services/memoryBalancer.js";
 import { collectContainerHealth } from "./services/containerHealth.js";
 import { parseMemorySwapStatus } from "./services/memorySwap.js";
@@ -814,6 +816,7 @@ async function handleApi(req, res) {
   if (path === "/api/backups") return backupsListRoute(res);
   if (path === "/api/backups/system" && req.method === "GET") return json(res, 200, { rows: listSystemBackups(config) });
   if (path === "/api/backups/system/create" && req.method === "POST") return systemBackupCreateRoute(req, res);
+  if (path === "/api/backups/system/import" && req.method === "POST") return systemBackupImportRoute(req, res);
   if (path.match(/^\/api\/backups\/system\/[^/]+\/download$/) && req.method === "GET") {
     return sendSystemBackupArchive(req, res, decodeURIComponent(path.split("/").at(-2)));
   }
@@ -1768,6 +1771,113 @@ async function systemBackupCreateRoute(req, res) {
   return task(req, res, "backup", "backupSystemCreate", {}, { env: { DUNE_SYSTEM_BACKUP_PASSPHRASE: passphrase } });
 }
 
+// Accepts the same .tar the download hands out, or a bare .tar.gz.enc for an
+// archive someone already had. The body is the file itself rather than a
+// multipart form: there is only one file to send now that the pair travels
+// together, and a raw body streams to disk without a boundary parser standing
+// between a gigabyte of upload and the filesystem.
+async function systemBackupImportRoute(req, res) {
+  if (!applyMutationRateLimit(req, res, "backups.system.import")) return;
+  const query = new URL(req.url || "/", "http://localhost").searchParams;
+  const suppliedName = basename(String(query.get("filename") || "")).replace(/\.tar$/i, "");
+  const onConflict = query.get("onConflict") || "";
+
+  const directory = systemBackupDir(config);
+  mkdirSync(directory, { recursive: true });
+  const staging = resolve(directory, `import-${Date.now()}-${Math.floor(Math.random() * 1e9)}.partial`);
+  const discard = () => { try { rmSync(staging, { force: true }); } catch { /* nothing to clean up */ } };
+
+  try {
+    const received = await streamRequestToFile(req, staging, config.maxUploadBytes);
+    if (!received) { discard(); return json(res, 400, { error: "The uploaded file was empty." }); }
+
+    const head = Buffer.alloc(512);
+    const handle = createReadStream(staging, { start: 0, end: 511 });
+    const chunks = [];
+    for await (const chunk of handle) chunks.push(chunk);
+    Buffer.concat(chunks).copy(head);
+
+    // What arrived: the bundle, or a bare archive.
+    let archiveSource = { path: staging, start: 0, size: received };
+    let sidecarText = "";
+    let originalName = suppliedName;
+    let encryption = "";
+
+    if (looksLikeTar(head)) {
+      const members = readTarMemberIndex(staging);
+      const archive = members.find((member) => validSystemArchiveName(member.name));
+      const sidecar = members.find((member) => member.name.endsWith(".yaml"));
+      if (!archive) { discard(); return json(res, 400, { error: "That .tar does not contain a system backup archive." }); }
+      archiveSource = { path: staging, start: archive.start, size: archive.size };
+      originalName = archive.name;
+      if (sidecar) sidecarText = await readSlice(staging, sidecar.start, sidecar.size);
+      const inner = Buffer.alloc(6);
+      (await readSliceBuffer(staging, archive.start, 6)).copy(inner);
+      const format = readEncryptedArchiveHeader(inner);
+      if (!format.ok) { discard(); return json(res, 400, { error: format.reason }); }
+      encryption = format.encryption;
+    } else {
+      const format = readEncryptedArchiveHeader(head);
+      if (!format.ok) { discard(); return json(res, 400, { error: format.reason }); }
+      encryption = format.encryption;
+    }
+
+    // Naming. An archive whose name does not conform would land where restore,
+    // download and delete all refuse to touch it, so it is renamed rather than
+    // stored unusable.
+    let name = validSystemArchiveName(originalName) ? originalName : mintSystemBackupName();
+    let renamedFrom = "";
+    if (existsSync(resolve(directory, name))) {
+      // Never decide this silently: overwriting destroys the only copy of the
+      // credentials in the archive already there.
+      if (onConflict !== "overwrite" && onConflict !== "rename") {
+        discard();
+        return json(res, 409, { error: "A system backup with that name already exists.", conflict: name });
+      }
+      if (onConflict === "rename") { renamedFrom = name; name = mintSystemBackupName(); }
+    } else if (name !== originalName) {
+      renamedFrom = originalName || "the uploaded file";
+    }
+
+    const target = resolve(directory, name);
+    if (!target.startsWith(`${directory}/`)) { discard(); return json(res, 400, { error: "Invalid system backup name." }); }
+
+    if (archiveSource.start === 0 && archiveSource.size === received) {
+      renameSync(staging, target);
+    } else {
+      await writeSlice(staging, archiveSource.start, archiveSource.size, target);
+      discard();
+    }
+    chmodSync(target, 0o600);
+
+    const metadata = sidecarText
+      ? normalizeImportedSystemMetadata(sidecarText, { importedFrom: originalName })
+      : synthesizeSystemMetadata({ archiveName: name, importedFrom: originalName, encryption });
+    writeFileSync(`${target}.yaml`, metadata, { mode: 0o600 });
+    chmodSync(`${target}.yaml`, 0o600);
+
+    audit(config, req, "backup.import-system", { backup: name, renamedFrom, hadSidecar: Boolean(sidecarText) });
+    return json(res, 200, { ok: true, backup: name, renamedFrom, hadSidecar: Boolean(sidecarText), encryption, rows: listSystemBackups(config) });
+  } catch (error) {
+    discard();
+    return json(res, error.statusCode || 400, { error: error.message || "The upload failed." });
+  }
+}
+
+async function readSliceBuffer(filePath, start, length) {
+  const chunks = [];
+  for await (const chunk of createReadStream(filePath, { start, end: start + length - 1 })) chunks.push(chunk);
+  return Buffer.concat(chunks);
+}
+
+async function readSlice(filePath, start, length) {
+  return (await readSliceBuffer(filePath, start, length)).toString("utf8");
+}
+
+function writeSlice(filePath, start, length, destination) {
+  return pipeline(createReadStream(filePath, { start, end: start + length - 1 }), createWriteStream(destination, { mode: 0o600 }));
+}
+
 async function sendSystemBackupArchive(req, res, name) {
   if (!validSystemBackupName(name)) return json(res, 400, { error: "Invalid system backup name." });
   const directory = systemBackupDir(config);
@@ -1776,14 +1886,44 @@ async function sendSystemBackupArchive(req, res, name) {
   if (!existsSync(archivePath)) return json(res, 404, { error: "System backup was not found." });
 
   audit(config, req, "backup.download-system", { backup: name });
-  // Already an encrypted archive, and can be GB-scale: stream it, do not re-tar
-  // it or hold it in memory the way the database download does.
+
+  // A sidecar asked for by name, and ?raw=1 for scripts, still stream the single
+  // file. Everything else gets the pair, because moving a backup to a new host
+  // means moving both and the sidecar is the easy one to forget.
+  const wantsRaw = new URL(req.url || "/", "http://localhost").searchParams.get("raw") === "1";
+  if (wantsRaw || name.endsWith(".yaml")) {
+    res.writeHead(200, withSecurityHeaders({
+      "content-type": "application/octet-stream",
+      "content-length": statSync(archivePath).size,
+      "content-disposition": `attachment; filename="${name.replace(/"/g, "")}"`
+    }));
+    createReadStream(archivePath).pipe(res);
+    return;
+  }
+
+  // Uncompressed on purpose. gzip would make Content-Length unknowable before
+  // the last byte, and the payload is already encrypted, so there is nothing
+  // for it to compress -- it would spend CPU on a GB file to save nothing.
+  const members = systemBackupBundleMembers(config, name);
   res.writeHead(200, withSecurityHeaders({
-    "content-type": "application/octet-stream",
-    "content-length": statSync(archivePath).size,
-    "content-disposition": `attachment; filename="${name.replace(/"/g, "")}"`
+    "content-type": "application/x-tar",
+    "content-length": tarArchiveLength(members),
+    "content-disposition": `attachment; filename="${name.replace(/"/g, "")}.tar"`
   }));
-  createReadStream(archivePath).pipe(res);
+  for (const member of members) {
+    res.write(createTarHeader(member.name, member.size));
+    // The declared Content-Length was computed from stat(); if the file is not
+    // the size it claimed, stop rather than finish a tar that does not match its
+    // own headers.
+    let written = 0;
+    const source = createReadStream(member.path);
+    source.on("data", (chunk) => { written += chunk.length; });
+    await pipeline(source, res, { end: false });
+    if (written !== member.size) return res.destroy();
+    const padding = tarPadding(member.size);
+    if (padding) res.write(Buffer.alloc(padding, 0));
+  }
+  res.end(Buffer.alloc(TAR_TRAILER_BYTES, 0));
 }
 
 async function backupDownloadRoute(req, res, backupName) {

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { backupsApi } from "../../api/backups";
+import { setCsrfToken } from "../../api/client";
 import { BackupsPanel } from "./BackupsPanel";
 
 const assert_eq = (actual: unknown, expected: unknown) => expect(actual).toEqual(expected);
@@ -26,7 +27,8 @@ vi.mock("../../api/backups", async (importOriginal) => {
       deleteSystem: vi.fn(),
       deleteSystemSelected: vi.fn(),
       deleteSystemAll: vi.fn(),
-      restoreSystem: vi.fn()
+      restoreSystem: vi.fn(),
+      importSystemUrl: vi.fn(original.backupsApi.importSystemUrl)
     }
   };
 });
@@ -41,6 +43,7 @@ function renderPanel(overrides: Partial<Parameters<typeof BackupsPanel>[0]> = {}
     onError={() => {}}
     confirmAction={vi.fn(async () => true)}
     chooseBackupIdentity={vi.fn(async () => "keep-current" as const)}
+    chooseImportConflict={vi.fn(async () => "rename" as const)}
     waitForTask={vi.fn(async (task) => ({ ...task, status: "succeeded" }))}
     waitForTaskWithUpdates={vi.fn(async (task) => task)}
     withTimeout={((promise: Promise<unknown>) => promise) as never}
@@ -54,7 +57,14 @@ function renderPanel(overrides: Partial<Parameters<typeof BackupsPanel>[0]> = {}
   />);
 }
 
+async function openCreate() {
+  // The button now opens the panel rather than creating straight away, so the
+  // passphrase fields do not exist until it is clicked.
+  fireEvent.click(await screen.findByText("Create System Backup"));
+}
+
 async function fillPassphrases(first: string, second: string) {
+  await openCreate();
   const passphrase = await screen.findByLabelText(/^Passphrase$/);
   const confirm = await screen.findByLabelText(/Confirm Passphrase/);
   fireEvent.change(passphrase, { target: { value: first } });
@@ -111,16 +121,20 @@ describe("system backups", () => {
 
   it("will not create until both fields are filled", async () => {
     renderPanel();
-    const button = await screen.findByText("Create System Backup");
+    await openCreate();
+    const button = await screen.findByLabelText("Create the system backup");
     expect(button).toBeDisabled();
-    await fillPassphrases(PASSPHRASE, PASSPHRASE);
+    const passphrase = await screen.findByLabelText(/^Passphrase$/);
+    const confirm = await screen.findByLabelText(/Confirm Passphrase/);
+    fireEvent.change(passphrase, { target: { value: PASSPHRASE } });
+    fireEvent.change(confirm, { target: { value: PASSPHRASE } });
     expect(button).not.toBeDisabled();
   });
 
   it("refuses a mismatch without calling the API", async () => {
     renderPanel();
     await fillPassphrases(PASSPHRASE, "something-else-entirely");
-    fireEvent.click(await screen.findByText("Create System Backup"));
+    fireEvent.click(await screen.findByLabelText("Create the system backup"));
     await waitFor(() => expect(screen.getByText(/do not match/i)).toBeTruthy());
     expect(backupsApi.createSystem).not.toHaveBeenCalled();
   });
@@ -128,7 +142,7 @@ describe("system backups", () => {
   it("refuses a degenerate passphrase without calling the API", async () => {
     renderPanel();
     await fillPassphrases("aaaaaaaaaaaaaa", "aaaaaaaaaaaaaa");
-    fireEvent.click(await screen.findByText("Create System Backup"));
+    fireEvent.click(await screen.findByLabelText("Create the system backup"));
     await waitFor(() => expect(screen.getByText(/at least 5 different characters/i)).toBeTruthy());
     expect(backupsApi.createSystem).not.toHaveBeenCalled();
   });
@@ -136,7 +150,7 @@ describe("system backups", () => {
   it("refuses a short passphrase without calling the API", async () => {
     renderPanel();
     await fillPassphrases("short", "short");
-    fireEvent.click(await screen.findByText("Create System Backup"));
+    fireEvent.click(await screen.findByLabelText("Create the system backup"));
     await waitFor(() => expect(screen.getByText(/at least 12 characters/i)).toBeTruthy());
     expect(backupsApi.createSystem).not.toHaveBeenCalled();
   });
@@ -144,7 +158,7 @@ describe("system backups", () => {
   it("sends the passphrase and then clears both fields", async () => {
     renderPanel();
     const { passphrase, confirm } = await fillPassphrases(PASSPHRASE, PASSPHRASE);
-    fireEvent.click(await screen.findByText("Create System Backup"));
+    fireEvent.click(await screen.findByLabelText("Create the system backup"));
     await waitFor(() => expect(backupsApi.createSystem).toHaveBeenCalledWith(PASSPHRASE));
     // Never leave a passphrase sitting in the DOM.
     await waitFor(() => expect((passphrase as HTMLInputElement).value).toBe(""));
@@ -155,7 +169,7 @@ describe("system backups", () => {
     vi.mocked(backupsApi.createSystem).mockRejectedValue(new Error("gpg exploded"));
     renderPanel();
     const { passphrase, confirm } = await fillPassphrases(PASSPHRASE, PASSPHRASE);
-    fireEvent.click(await screen.findByText("Create System Backup"));
+    fireEvent.click(await screen.findByLabelText("Create the system backup"));
     await waitFor(() => expect((passphrase as HTMLInputElement).value).toBe(""));
     expect((confirm as HTMLInputElement).value).toBe("");
   });
@@ -327,5 +341,167 @@ describe("restoring a system backup", () => {
     await waitFor(() => expect(screen.getByText("Apply Restore")).not.toBeDisabled());
     fireEvent.click(screen.getByText("Apply Restore"));
     await waitFor(() => expect(screen.queryByLabelText("Restore passphrase")).toBeNull());
+  });
+});
+
+describe("importing a system backup", () => {
+  const ROW = {
+    name: ARCHIVE, createdAt: "2026-08-30T12:00:00-04:00", origin: "manual",
+    encryption: "aes-256-ocb-gpg-aead", serverTitle: "Kovalt", battlegroupId: "sh-abc-def",
+    type: "Manual Backup", source: "Local", hasSidecar: true, sizeBytes: 2048, size: "2 KB"
+  };
+  let sent: { url: string; body: unknown; headers: Record<string, string>; withCredentials: boolean }[] = [];
+  let responses: { status: number; body: unknown }[] = [];
+
+  class FakeXhr {
+    url = "";
+    headers: Record<string, string> = {};
+    withCredentials = false;
+    status = 0;
+    responseText = "";
+    upload = { onprogress: null as ((event: unknown) => void) | null };
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    open(_method: string, url: string) { this.url = url; }
+    setRequestHeader(name: string, value: string) { this.headers[name] = value; }
+    send(body: unknown) {
+      sent.push({ url: this.url, body, headers: this.headers, withCredentials: this.withCredentials });
+      const next = responses.shift() || { status: 200, body: { ok: true, backup: ARCHIVE } };
+      this.status = next.status;
+      this.responseText = JSON.stringify(next.body);
+      this.upload.onprogress?.({ lengthComputable: true, loaded: 5, total: 10 });
+      this.onload?.();
+    }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sent = [];
+    responses = [];
+    vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    vi.mocked(backupsApi.list).mockResolvedValue({ stdout: "", currentBattlegroupId: "sh-1", rows: [] });
+    vi.mocked(backupsApi.autoStatus).mockResolvedValue({ stdout: "", status: { enabled: false } });
+    vi.mocked(backupsApi.listSystem).mockResolvedValue({ rows: [ROW] });
+  });
+
+  function chooseFile(name = "dune-system-20260830-120000-4711-9931.tar.gz.enc.tar") {
+    const input = screen.getByLabelText(/Backup file/);
+    const file = new File(["payload"], name, { type: "application/x-tar" });
+    Object.defineProperty(input, "files", { value: [file], configurable: true });
+    fireEvent.change(input);
+    return file;
+  }
+
+  it("opens the import panel from the button row", async () => {
+    renderPanel();
+    fireEvent.click(await screen.findByText("Import Backup"));
+    expect(await screen.findByLabelText(/Backup file/)).toBeTruthy();
+  });
+
+  it("will not upload until a file is chosen", async () => {
+    renderPanel();
+    fireEvent.click(await screen.findByText("Import Backup"));
+    const button = await screen.findByLabelText("Import system backup");
+    expect(button).toBeDisabled();
+    chooseFile();
+    await waitFor(() => expect(button).not.toBeDisabled());
+  });
+
+  it("closes the restore panel, so two forms are never open at once", async () => {
+    renderPanel();
+    fireEvent.click(await screen.findByLabelText(`Restore system backup ${ARCHIVE}`));
+    expect(await screen.findByLabelText("Restore passphrase")).toBeTruthy();
+    fireEvent.click(await screen.findByText("Import Backup"));
+    await waitFor(() => expect(screen.queryByLabelText("Restore passphrase")).toBeNull());
+    expect(screen.getByLabelText(/Backup file/)).toBeTruthy();
+  });
+
+  it("opening import closes create, and opening create closes import", async () => {
+    // Create, import and restore share one slot: three forms stacked above the
+    // table would be worse than any one of them being a click away.
+    renderPanel();
+    fireEvent.click(await screen.findByText("Create System Backup"));
+    expect(await screen.findByLabelText(/^Passphrase$/)).toBeTruthy();
+
+    fireEvent.click(await screen.findByText("Import Backup"));
+    await waitFor(() => expect(screen.queryByLabelText(/^Passphrase$/)).toBeNull());
+    expect(screen.getByLabelText(/Backup file/)).toBeTruthy();
+
+    fireEvent.click(await screen.findByText("Create System Backup"));
+    await waitFor(() => expect(screen.queryByLabelText(/Backup file/)).toBeNull());
+    expect(screen.getByLabelText(/^Passphrase$/)).toBeTruthy();
+  });
+
+  it("uploads the file and reports where it was stored", async () => {
+    responses = [{ status: 200, body: { ok: true, backup: ARCHIVE, hadSidecar: true } }];
+    renderPanel();
+    fireEvent.click(await screen.findByText("Import Backup"));
+    chooseFile();
+    fireEvent.click(await screen.findByLabelText("Import system backup"));
+    await waitFor(() => expect(sent.length).toBe(1));
+    expect(sent[0].url).toContain("filename=");
+    await waitFor(() => expect(screen.getByText(/Stored as/)).toBeTruthy());
+  });
+
+  it("says so when no sidecar came with the archive", async () => {
+    responses = [{ status: 200, body: { ok: true, backup: ARCHIVE, hadSidecar: false } }];
+    renderPanel();
+    fireEvent.click(await screen.findByText("Import Backup"));
+    chooseFile();
+    fireEvent.click(await screen.findByLabelText("Import system backup"));
+    // Otherwise the Unknown columns look like a bug rather than a consequence.
+    await waitFor(() => expect(screen.getByText(/read Unknown/)).toBeTruthy());
+  });
+
+  it("asks before overwriting, and resends the answer", async () => {
+    responses = [
+      { status: 409, body: { error: "exists", conflict: ARCHIVE } },
+      { status: 200, body: { ok: true, backup: "dune-system-20260901-000000-1-2.tar.gz.enc", renamedFrom: ARCHIVE } }
+    ];
+    renderPanel();
+    fireEvent.click(await screen.findByText("Import Backup"));
+    chooseFile();
+    fireEvent.click(await screen.findByLabelText("Import system backup"));
+    await waitFor(() => expect(sent.length).toBe(2));
+    // The server refuses to guess; the second request carries the operator's answer.
+    expect(sent[0].url).not.toContain("onConflict");
+    expect(sent[1].url).toContain("onConflict=rename");
+    await waitFor(() => expect(screen.getByText(/to avoid overwriting/)).toBeTruthy());
+  });
+
+  it("sends nothing more when the conflict prompt is cancelled", async () => {
+    responses = [{ status: 409, body: { error: "exists", conflict: ARCHIVE } }];
+    renderPanel({ chooseImportConflict: vi.fn(async () => "cancel" as const) });
+    fireEvent.click(await screen.findByText("Import Backup"));
+    chooseFile();
+    fireEvent.click(await screen.findByLabelText("Import system backup"));
+    await waitFor(() => expect(sent.length).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sent.length).toBe(1);
+  });
+
+  it("sends the CSRF header and cookies, like every other mutating request", async () => {
+    // The first version built an XHR in this panel and sent neither, so the
+    // server rejected the upload as an expired login. Going through the shared
+    // client is what fixes it, and this is the assertion that would have caught
+    // it without a live host.
+    setCsrfToken("token-abc");
+    responses = [{ status: 200, body: { ok: true, backup: ARCHIVE, hadSidecar: true } }];
+    renderPanel();
+    fireEvent.click(await screen.findByText("Import Backup"));
+    chooseFile();
+    fireEvent.click(await screen.findByLabelText("Import system backup"));
+    await waitFor(() => expect(sent.length).toBe(1));
+    assert_eq(sent[0].headers["x-csrf-token"], "token-abc");
+    assert_eq(sent[0].withCredentials, true);
+  });
+
+  it("surfaces a rejection from the server", async () => {
+    responses = [{ status: 400, body: { error: "That file is not an OpenPGP message." } }];
+    renderPanel();
+    fireEvent.click(await screen.findByText("Import Backup"));
+    chooseFile("notes.zip");
+    fireEvent.click(await screen.findByLabelText("Import system backup"));
+    await waitFor(() => expect(screen.getByText(/not an OpenPGP message/)).toBeTruthy());
   });
 });
