@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 
@@ -9,6 +9,8 @@ const REWARD_TYPES = new Set(["item", "xp", "intel", "currency", "building-unloc
 const MAX_TICK_DELIVERIES = 50;
 const MAX_DELIVERIES_PER_ADDON = 100_000;
 const DEFERRED_RETRY_MS = 30_000;
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const queues = new Map();
 const deliveryCounts = new Map();
 
@@ -50,11 +52,20 @@ export function createAddonDeliveryService(config, options = {}) {
   const now = options.now || (() => new Date());
   const deliver = options.deliver;
   const canRun = options.canRun || (() => true);
+  // Finished records older than this are removed so the per-addon history
+  // cap counts recent deliveries rather than every delivery ever made. A
+  // requestId is protected against repeats for this long after it finishes;
+  // pending and uncertain records are never pruned.
+  const retentionMs = Math.max(1, Number(options.retentionDays || 30)) * DAY_MS;
+  let lastPruneAt = 0;
   if (typeof deliver !== "function") throw new Error("Addon delivery service requires a deliver function.");
   const pendingKeys = new Set();
   let pendingLoaded = false;
 
-  async function request(addonId, input, { permission = "rewards:grant", kind = "reward" } = {}) {
+  // attemptNow: false only records the delivery; the background tick makes
+  // the attempt. Used by scheduled batches so they never run a burst of live
+  // grants inline.
+  async function request(addonId, input, { permission = "rewards:grant", kind = "reward", attemptNow = true } = {}) {
     const requestId = validRequestId(input?.requestId);
     const payload = kind === "message" ? normalizeAddonMessage(input) : normalizeAddonReward(input);
     const fingerprint = fingerprintFor({ permission, payload });
@@ -65,6 +76,7 @@ export function createAddonDeliveryService(config, options = {}) {
         if (existing.fingerprint !== fingerprint) throw new Error("Addon delivery requestId was already used with different delivery details.");
         if (existing.status === "delivered") return publicDelivery(existing, true);
         if (existing.status !== "pending") return publicDelivery(existing, false);
+        if (!attemptNow) return publicDelivery(existing, true);
         const nextAttemptAt = Date.parse(existing.nextAttemptAt || "");
         if (Number.isFinite(nextAttemptAt) && nextAttemptAt > now().getTime()) return publicDelivery(existing, true);
         return attempt(addonId, path, existing);
@@ -91,6 +103,7 @@ export function createAddonDeliveryService(config, options = {}) {
       writeDelivery(path, record);
       deliveryCounts.set(deliveryCountKey(config, addonId), count + 1);
       pendingKeys.add(pendingKey(addonId, requestId));
+      if (!attemptNow) return publicDelivery(record, false);
       return attempt(addonId, path, record);
     });
   }
@@ -138,6 +151,7 @@ export function createAddonDeliveryService(config, options = {}) {
   }
 
   async function tick() {
+    pruneFinished();
     let attempted = 0;
     const runnable = new Map();
     loadPendingKeys();
@@ -185,7 +199,37 @@ export function createAddonDeliveryService(config, options = {}) {
     }
   }
 
-  return { request, get, list, tick };
+  function pruneFinished() {
+    const at = now().getTime();
+    if (at - lastPruneAt < PRUNE_INTERVAL_MS) return { removed: 0 };
+    lastPruneAt = at;
+    const cutoff = at - retentionMs;
+    const root = resolve(config.repoRoot, "runtime/addons/deliveries");
+    if (!existsSync(root)) return { removed: 0 };
+    let removed = 0;
+    for (const addonId of readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)) {
+      const dir = resolve(root, addonId);
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        const path = resolve(dir, entry.name);
+        let record;
+        try {
+          record = readDelivery(path);
+        } catch {
+          continue; // Unreadable records are kept for inspection, never guessed at.
+        }
+        if (!record || !["delivered", "failed"].includes(record.status)) continue;
+        const finishedAt = Date.parse(record.updatedAt || "");
+        if (!Number.isFinite(finishedAt) || finishedAt >= cutoff) continue;
+        unlinkSync(path);
+        removed += 1;
+      }
+      deliveryCounts.delete(deliveryCountKey(config, addonId));
+    }
+    return { removed };
+  }
+
+  return { request, get, list, tick, pruneFinished };
 }
 
 function publicDelivery(record, duplicate) {

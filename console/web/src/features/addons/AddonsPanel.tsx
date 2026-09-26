@@ -371,7 +371,13 @@ function formatPermissionPart(value: string) {
   return value.replaceAll("-", " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+// Permissions whose name alone undersells what the owner is approving.
+const PERMISSION_APPROVAL_TEXT: Record<string, string> = {
+  "rewards:schedule": "Rewards Schedule (grants rewards automatically, even when nobody has this addon open)"
+};
+
 function formatPermissionLabel(permission: string) {
+  if (PERMISSION_APPROVAL_TEXT[permission]) return PERMISSION_APPROVAL_TEXT[permission];
   const [scope, action] = String(permission || "").split(":");
   if (!scope || !action) return permission;
   return `${formatPermissionPart(scope)} ${formatPermissionPart(action)}`;

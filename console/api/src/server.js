@@ -67,6 +67,8 @@ import { resolveMapCombatState } from "./services/mapCombatState.js";
 import { grantAddonItem } from "./addonItemGrants.js";
 import { deleteAddonData, listAddonData, readAddonData, writeAddonData } from "./addonDataStore.js";
 import { createAddonDeliveryService, deferAddonDelivery } from "./addonDeliveries.js";
+import { REWARD_SCHEDULE_PERMISSION, createRewardOutboxScheduler, readRewardSchedule, rewardScheduleStatus, saveRewardSchedule } from "./addonRewardOutbox.js";
+import { clampInt } from "./jsonStore.js";
 import { EDA_EXCHANGE_BOT_ADDON_ID, ADDON_SCHEDULER_PERMISSION, createAddonJobScheduler, probeBuybackEligibility, refreshBuybackLog, readBuybackLog, clearBuybackLog, readBuybackSchedule, saveBuybackSchedule, readSeedSchedule, saveSeedSchedule } from "./addonJobs.js";
 import { createPublicDirectoryReporter, normalizeDiscordInvite, readDirectorySettings } from "./services/publicDirectory.js";
 import { choamTerminalOverview, installChoamTerminals, removeChoamTerminals, setChoamTerminalPosition, clearChoamTerminalPosition, derivePlacementFromPlayer, evaluateCaptureFreshness } from "./services/choamTerminals.js";
@@ -224,7 +226,15 @@ const addonDeliveryService = createAddonDeliveryService(config, {
       return false;
     }
   },
-  deliver: (payload, context) => deliverAddonPayload(payload, context)
+  deliver: (payload, context) => deliverAddonPayload(payload, context),
+  retentionDays: clampInt(process.env.DUNE_ADDON_DELIVERY_RETENTION_DAYS, 30, 1, 3650)
+});
+// Reads approved addons' reward outbox views on a schedule and queues the rows
+// into addonDeliveryService; see addonRewardOutbox.js for the safeguards.
+const rewardOutboxScheduler = createRewardOutboxScheduler(config, {
+  getDb: () => db,
+  deliveryService: addonDeliveryService,
+  audit: (action, detail) => audit(config, null, action, detail)
 });
 const publicDirectory = createPublicDirectoryReporter(config, { getDb: () => db });
 let carePackageAutoRunning = false;
@@ -351,6 +361,7 @@ setInterval(() => {
   runBackgroundTick("Message of the Day", messageOfTheDayAutoTick);
   runBackgroundTick("Player announcements", playerAnnouncementsAutoTick);
   runBackgroundTick("Addon scheduled jobs", () => addonJobScheduler.tick());
+  runBackgroundTick("Addon scheduled rewards", () => rewardOutboxScheduler.tick());
   runBackgroundTick("Addon queued deliveries", () => addonDeliveryService.tick());
   runBackgroundTick("Scheduled map messages", () => scheduledMapMessages.tick());
   runBackgroundTick("Landsraad milestone preset", () => landsraadMilestoneReconciler.tick());
@@ -1505,6 +1516,35 @@ async function addonBridgeRoute(req, res, path) {
       return json(res, 200, { ok: true, result });
     } catch (error) {
       audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, requestId: String(body.requestId || ""), ok: false, error: redact(error?.message || "Unexpected error.") });
+      return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
+    }
+  }
+  if (action === "rewards.schedule.get" || action === "rewards.schedule.set") {
+    const addon = assertInstalledAddonPermission(config, id, "rewards:grant");
+    const outbox = addon.manifest.rewardOutbox;
+    if (action === "rewards.schedule.get") {
+      const result = rewardScheduleStatus(config, addon.id, outbox);
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: true });
+      return json(res, 200, { ok: true, result });
+    }
+    const payload = body.schedule && typeof body.schedule === "object" ? body.schedule : body;
+    // Enabling means rewards go out with nobody watching, so it needs the
+    // owner's separate rewards:schedule approval and a declared outbox.
+    // Disabling only needs rewards:grant.
+    const leavesEnabled = payload.enabled === undefined ? readRewardSchedule(config, addon.id).enabled : payload.enabled === true;
+    if (leavesEnabled) {
+      if (!outbox) return json(res, 400, { error: "This addon does not declare a rewardOutbox in its manifest." });
+      assertInstalledAddonPermission(config, id, "database:read");
+      assertInstalledAddonPermission(config, id, REWARD_SCHEDULE_PERMISSION);
+    }
+    if (!applyMutationRateLimit(req, res, `addon:${id}:rewards.schedule.set`)) return;
+    try {
+      const saved = saveRewardSchedule(config, addon.id, payload);
+      const result = rewardScheduleStatus(config, addon.id, outbox);
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, enabled: saved.enabled, intervalMinutes: saved.intervalMinutes, watermark: saved.watermark, ok: true });
+      return json(res, 200, { ok: true, result });
+    } catch (error) {
+      audit(config, req, "addons.bridge", { id: addon.id, action, permission: addon.permission, ok: false, error: redact(error?.message || "Unexpected error.") });
       return json(res, 400, { ok: false, error: redact(error?.message || "Unexpected error.") });
     }
   }

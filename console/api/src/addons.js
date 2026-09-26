@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, relative, resolve } from "node:path";
+import { clampInt } from "./jsonStore.js";
 
 export const COMMUNITY_ADDONS_INDEX_URL = "https://raw.githubusercontent.com/Red-Blink/dune-docker-addons/main/index.json";
 
@@ -30,9 +31,15 @@ const ALLOWED_ADDON_PERMISSIONS = new Set([
   "server:restart",
   "files:addon-data",
   "broadcast:send",
-  "scheduler:server"
+  "scheduler:server",
+  "rewards:schedule"
 ]);
 const communityCatalogCaches = new WeakMap();
+const REWARD_OUTBOX_NAME_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
+// Schemas an addon can never point the scheduled reward reader at: the game's
+// own, the console's, and Postgres internals.
+const REWARD_OUTBOX_DENIED_SCHEMAS = new Set(["dune", "public", "ext", "information_schema", "dune_runtime"]);
+export const DEFAULT_REWARD_OUTBOX_MAX_PER_HOUR = 200;
 
 export async function fetchCommunityAddons(fetchImpl = globalThis.fetch, indexUrl = COMMUNITY_ADDONS_INDEX_URL) {
   if (typeof fetchImpl !== "function") throw new Error("Fetch is unavailable in this runtime.");
@@ -605,8 +612,23 @@ export function normalizeAddonManifest(manifest) {
       navigation: stringField(entry.navigation, "entry.navigation", { optional: true }),
       path: safeAddonRelativePath(entry.path, "entry.path")
     },
-    permissions
+    permissions,
+    rewardOutbox: normalizeRewardOutbox(manifest.rewardOutbox)
   };
+}
+
+// Manifest field: { "rewardOutbox": { "schema": "...", "view": "...", "maxPerHour": 200 } }
+export function normalizeRewardOutbox(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("rewardOutbox must be an object.");
+  const schema = String(value.schema || "").trim();
+  const view = String(value.view || "").trim();
+  if (!REWARD_OUTBOX_NAME_PATTERN.test(schema)) throw new Error("rewardOutbox.schema must be a lowercase Postgres identifier.");
+  if (!REWARD_OUTBOX_NAME_PATTERN.test(view)) throw new Error("rewardOutbox.view must be a lowercase Postgres identifier.");
+  if (REWARD_OUTBOX_DENIED_SCHEMAS.has(schema) || schema.startsWith("pg_") || schema.startsWith("console_")) {
+    throw new Error(`rewardOutbox.schema cannot be ${schema}; use a schema the addon owns.`);
+  }
+  return { schema, view, maxPerHour: clampInt(value.maxPerHour, DEFAULT_REWARD_OUTBOX_MAX_PER_HOUR, 1, 1000) };
 }
 
 export function validateZipEntries(entries) {

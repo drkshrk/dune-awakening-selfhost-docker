@@ -130,3 +130,48 @@ test("keeps reward and message listings separated before applying the limit", as
     f.cleanup();
   }
 });
+
+test("attemptNow: false records the delivery and leaves the attempt to the background tick", async () => {
+  const f = fixture();
+  try {
+    const payload = { requestId: "sched:1", type: "item", playerId: "FLS_1", itemId: "WaterBottle_1", quantity: 1 };
+    const queued = await f.service.request("battle-pass", payload, { attemptNow: false });
+    assert.equal(queued.status, "pending");
+    assert.equal(f.calls.length, 0);
+    const again = await f.service.request("battle-pass", payload, { attemptNow: false });
+    assert.equal(again.duplicate, true);
+    assert.equal(f.calls.length, 0);
+    await f.service.tick();
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.service.get("battle-pass", "sched:1").status, "delivered");
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("prunes finished records past the retention window and keeps pending, uncertain and recent ones", async () => {
+  let clock = new Date("2026-01-01T00:00:00Z");
+  const repoRoot = mkdtempSync(join(tmpdir(), "dune-addon-deliveries-"));
+  const service = createAddonDeliveryService({ repoRoot }, {
+    deliver: async (payload) => {
+      if (payload.itemId === "Offline_1") deferAddonDelivery("Player is offline.");
+      return { ok: true };
+    },
+    now: () => clock,
+    retentionDays: 30
+  });
+  try {
+    const item = (requestId, itemId = "WaterBottle_1") => ({ requestId, type: "item", playerId: "FLS_1", itemId, quantity: 1 });
+    await service.request("battle-pass", item("old:delivered"));
+    await service.request("battle-pass", item("old:pending", "Offline_1"));
+    clock = new Date("2026-02-15T00:00:00Z");
+    await service.request("battle-pass", item("new:delivered"));
+    // Records only; the first tick prunes before attempting anything.
+    await service.tick();
+    assert.equal(service.get("battle-pass", "old:delivered"), null, "a delivery finished 45 days ago is pruned");
+    assert.equal(service.get("battle-pass", "old:pending").status, "pending", "pending records are never pruned");
+    assert.equal(service.get("battle-pass", "new:delivered").status, "delivered");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+});

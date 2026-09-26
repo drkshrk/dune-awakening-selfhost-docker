@@ -956,10 +956,13 @@ Successful and partially delivered grants are preserved as compact eligibility r
 supported progression data under `players:read`. `addon.storage.*` provides
 versioned addon-scoped JSON storage under `files:addon-data`.
 `rewards.deliver`, `rewards.status`, and `rewards.list` provide persistent,
-idempotent reward delivery under `rewards:grant`. `players.message.*` provides
-queued private messages under `players:message`. See
-[Addon Runtime API](../addons/addon-runtime-api.md) for payloads and delivery
-semantics.
+idempotent reward delivery under `rewards:grant`. `rewards.schedule.get` and
+`rewards.schedule.set` manage scheduled delivery from an addon's declared
+reward outbox under `rewards:grant`; enabling a schedule also needs
+`database:read` and `rewards:schedule`. `players.message.*` provides queued private messages under
+`players:message`. See [Addon Runtime API](../addons/addon-runtime-api.md) for
+payloads and delivery semantics, and [Scheduled reward delivery](../addons/addon-runtime-api.md#scheduled-reward-delivery)
+for scheduled delivery details.
 
 ### Hardware Status Bridge
 

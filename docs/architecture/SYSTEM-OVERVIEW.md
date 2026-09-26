@@ -1,6 +1,6 @@
 # System Architecture Overview
 
-**Status:** Current | **Last Updated:** August 2026
+**Status:** Current | **Last Updated:** September 2026
 
 This document is the whole-system engineering reference for
 `dune-awakening-selfhost-docker`. It exists because the repository's
@@ -211,8 +211,8 @@ from `https://raw.githubusercontent.com/Red-Blink/dune-docker-addons/main/index.
 verified by SHA-256 against the addon's manifest, and validated against a
 fixed, hardcoded permission allowlist
 (`ALLOWED_ADDON_PERMISSIONS`, e.g. `players:read`,
-`files:addon-data`, `rewards:grant`, `players:message`, `database:write`,
-`admin:grant-items`, `broadcast:send` — see the source
+`files:addon-data`, `rewards:grant`, `rewards:schedule`, `players:message`,
+`database:write`, `admin:grant-items`, `broadcast:send` — see the source
 for the exact, current full list). An optional
 `DUNE_SELF_UPDATE_TOKEN` (GitHub token), if configured, is attached to
 the catalog index/manifest fetch only — it is never sent with the addon

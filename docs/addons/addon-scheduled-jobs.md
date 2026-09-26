@@ -8,6 +8,12 @@ No browser page or addon needs to remain open. Market Bot is managed from
 `runtime/data/market-seed-plan.json` by default, or an operator-named custom
 plan under `runtime/generated/market-bot/plans/`).
 
+Addons may also declare scheduled reward delivery (see
+[addon-runtime-api.md](addon-runtime-api.md#scheduled-reward-delivery)) to read
+reward rows from a database view on an interval without requiring the addon UI
+to be open. This document covers Market Bot; the addon rewards feature is
+documented separately.
+
 ## How scheduled jobs work
 
 The scheduler ticks with the console's other background tasks. A due buyback run:
